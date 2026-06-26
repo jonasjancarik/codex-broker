@@ -113,10 +113,26 @@ class ToolAdapterServer:
         if "application/json" in content_type:
             try:
                 parsed = json.loads(body)
+                direct_result = self.mcp_result(parsed)
+                if direct_result is not None:
+                    return direct_result
                 body = json.dumps(parsed, ensure_ascii=False, indent=2)
             except json.JSONDecodeError:
                 pass
         return self.content(body)
+
+    @staticmethod
+    def mcp_result(payload: Any) -> dict[str, Any] | None:
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+            return None
+        result: dict[str, Any] = {"content": payload["content"]}
+        if isinstance(payload.get("isError"), bool):
+            result["isError"] = payload["isError"]
+        if "structuredContent" in payload:
+            result["structuredContent"] = payload["structuredContent"]
+        if isinstance(payload.get("_meta"), dict):
+            result["_meta"] = payload["_meta"]
+        return result
 
     @staticmethod
     def content(text: str, *, is_error: bool = False) -> dict[str, Any]:

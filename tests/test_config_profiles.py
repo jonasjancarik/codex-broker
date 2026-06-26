@@ -43,6 +43,9 @@ class ConfigProfileTests(unittest.TestCase):
                         "serviceTier": "flex",
                         "effort": "high",
                         "summary": "auto",
+                        "webSearch": "live",
+                        "modelVerbosity": "medium",
+                        "imageGeneration": True,
                     }
                 },
             )
@@ -66,14 +69,58 @@ class ConfigProfileTests(unittest.TestCase):
                 turn_params = services.scheduler._turn_params(
                     "codex_thread_1",
                     [{"type": "text", "text": "review"}],
-                    {"codexOptions": {"effort": "medium"}},
+                    {"runtime": {"reasoningEffort": "medium", "reasoningSummary": "concise"}},
                     profile,
                 )
                 self.assertEqual(turn_params["model"], "gpt-5")
                 self.assertEqual(turn_params["serviceTier"], "flex")
                 self.assertEqual(turn_params["effort"], "medium")
                 self.assertEqual(turn_params["personality"], "concise")
-                self.assertEqual(turn_params["summary"], "auto")
+                self.assertEqual(turn_params["summary"], "concise")
+
+                process_args = services.scheduler._codex_process_config_args(
+                    {
+                        "runtime": {
+                            "webSearch": "disabled",
+                            "modelVerbosity": "low",
+                            "imageGeneration": False,
+                            "reasoningEffort": "minimal",
+                        }
+                    },
+                    profile,
+                )
+                self.assertEqual(
+                    process_args,
+                    (
+                        ("web_search", "disabled"),
+                        ("model_verbosity", "low"),
+                        ("model_reasoning_effort", "minimal"),
+                        ("features.image_generation", "false"),
+                    ),
+                )
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_runtime_profile_alias_is_accepted_for_urad_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(
+                config_for(Path(tmp_raw)),
+                config_profiles={"urad": {"enabledBundles": ["allowed-bundle"]}},
+            )
+            services = BrokerServices.build(config)
+            try:
+                bundle_dir = config.allowed_bundle_roots[0] / "allowed-bundle"
+                bundle_dir.mkdir(parents=True)
+                (bundle_dir / "bundle.json").write_text(
+                    '{"id":"allowed-bundle","allowedPaths":[]}',
+                    encoding="utf-8",
+                )
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"runtimeProfile": "urad", "bundleId": "allowed-bundle"},
+                )
+                self.assertEqual(thread["configProfile"], "urad")
             finally:
                 services.pool.close_all()
                 services.state.close()

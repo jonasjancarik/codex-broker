@@ -91,6 +91,57 @@ class ToolAdapterTests(unittest.TestCase):
             self.assertTrue(missing["result"]["isError"])
             self.assertIn("HOST_TOOL_KEY", missing["result"]["content"][0]["text"])
 
+    def test_broker_hosted_adapter_passes_through_mcp_tool_results(self) -> None:
+        class FakeResponse:
+            headers = {"Content-Type": "application/json"}
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "content": [{"type": "text", "text": "Saved /workspaces/app/file.pdf"}],
+                        "structuredContent": {
+                            "artifacts": [
+                                {"path": "/workspaces/app/file.pdf", "mimeType": "application/pdf"}
+                            ]
+                        },
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(req: Any, timeout: float) -> FakeResponse:
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = Path(tmp_raw) / "adapter.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "tools": [
+                            {
+                                "name": "host.attachment",
+                                "endpoint": "http://host-app.internal/tool",
+                                "headers": {},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            adapter = ToolAdapterServer(path)
+            with patch("urllib.request.urlopen", fake_urlopen):
+                result = adapter.handle({"id": 1, "method": "tools/call", "params": {"name": "host.attachment", "arguments": {}}})
+
+            self.assertEqual(result["result"]["content"][0]["text"], "Saved /workspaces/app/file.pdf")
+            self.assertEqual(
+                result["result"]["structuredContent"],
+                {"artifacts": [{"path": "/workspaces/app/file.pdf", "mimeType": "application/pdf"}]},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

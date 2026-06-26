@@ -207,6 +207,23 @@ class AppServerRoutingTests(unittest.TestCase):
                 first_state.close()
                 second_state.close()
 
+    def test_build_command_includes_codex_process_config_args(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            client = AppServerClient.__new__(AppServerClient)
+            client.config = config_for(Path(tmp_raw))
+            client.mcp_servers = ()
+            client.codex_config_args = (
+                ("web_search", "disabled"),
+                ("model_verbosity", "low"),
+                ("features.image_generation", "false"),
+            )
+
+            command = client._build_command()
+
+            self.assertIn("web_search=disabled", command)
+            self.assertIn("model_verbosity=low", command)
+            self.assertIn("features.image_generation=false", command)
+
     def test_pool_key_includes_resolved_mcp_env_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             tmp = Path(tmp_raw)

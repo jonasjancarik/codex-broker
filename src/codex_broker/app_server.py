@@ -80,6 +80,7 @@ class AppServerClient:
         pool_key_hash: str,
         state: StateStore | None = None,
         mcp_servers: tuple[McpServerRef, ...] = (),
+        codex_config_args: tuple[tuple[str, str], ...] = (),
     ) -> None:
         self.config = config
         self.state = state
@@ -89,6 +90,7 @@ class AppServerClient:
         self.pool_key_hash = pool_key_hash
         self.codex_home = codex_home
         self.mcp_servers = mcp_servers
+        self.codex_config_args = codex_config_args
         self.started_at = time.monotonic()
         self.last_used_at = self.started_at
         self._next_request_id = 1
@@ -281,6 +283,8 @@ class AppServerClient:
 
     def _build_command(self) -> list[str]:
         args = [*self.config.codex_command, "app-server", "--listen", "stdio://"]
+        for key, value in self.codex_config_args:
+            args.extend(["-c", f"{key}={value}"])
         for server in self.mcp_servers:
             name = server.name.replace('"', "")
             args.extend(["-c", f'mcp_servers."{name}".command={json.dumps(server.command)}'])
@@ -466,6 +470,7 @@ class AppServerPool:
         codex_home: Path,
         config_profile: str,
         mcp_servers: tuple[McpServerRef, ...],
+        codex_config_args: tuple[tuple[str, str], ...] = (),
     ) -> AppServerClient:
         key = (
             owner_hash,
@@ -477,6 +482,7 @@ class AppServerPool:
             self.config.client_name,
             self.config.client_title,
             self.config.client_version,
+            codex_config_args,
             tuple((server.name, server.command, server.args, tuple(sorted(server.env.items())), str(server.cwd)) for server in mcp_servers),
             self._mcp_env_fingerprint(mcp_servers),
         )
@@ -506,6 +512,7 @@ class AppServerPool:
                 pool_key_hash=key_hash,
                 state=self.state,
                 mcp_servers=mcp_servers,
+                codex_config_args=codex_config_args,
             )
             self._clients[key] = client
             return client

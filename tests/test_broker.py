@@ -480,6 +480,43 @@ class BrokerTests(unittest.TestCase):
             self.assertEqual(events[1]["payload"]["delta"], "test")
             self.assertTrue(events[3]["ambiguous"])
 
+    def test_reasoning_summary_events_are_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            state = StateStore(config_for(Path(tmp_raw)).state_db_path)
+            context = BrokerTurnContext(
+                state=state,
+                owner_hash="owner_hash",
+                thread_id="thread_1",
+                turn_id="turn_1",
+                codex_thread_id="codex_thread_1",
+                product_correlation_id="product_1",
+                debug_raw_events=False,
+            )
+            context.handle_notification(
+                "item/reasoning/summaryPartAdded",
+                {"itemId": "reasoning_1", "summaryIndex": 0},
+                ambiguous=False,
+            )
+            context.handle_notification(
+                "item/reasoning/summaryTextDelta",
+                {"itemId": "reasoning_1", "summaryIndex": 0, "delta": "thinking"},
+                ambiguous=False,
+            )
+            context.handle_notification(
+                "item/completed",
+                {"item": {"id": "reasoning_1", "type": "reasoning"}},
+                ambiguous=False,
+            )
+
+            events = state.list_events("owner_hash", "thread_1")
+            self.assertEqual([event["event_type"] for event in events], [
+                "reasoning.summary.started",
+                "reasoning.summary.delta",
+                "reasoning.completed",
+            ])
+            self.assertEqual(events[0]["payload"]["summaryId"], "reasoning_1:0")
+            self.assertEqual(events[1]["payload"]["delta"], "thinking")
+
     def test_service_startup_recovers_incomplete_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             tmp = Path(tmp_raw)

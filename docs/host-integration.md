@@ -37,6 +37,10 @@ Use `mode=reject` or `mode=steer` for live chat and `mode=queue` for job workers
 
 Use `idempotencyKey` for host retries. A repeated turn create with the same owner, broker `threadId`, and idempotency key returns the original broker turn without creating a second Codex turn.
 
+`configProfile` is the canonical profile field. The broker also accepts the legacy `runtimeProfile` field as an alias for host integrations that were written against earlier broker drafts. `codexOptions` is the canonical per-request Codex options object. The broker also accepts `runtime` as an alias and normalizes common option aliases such as `reasoningEffort` to `effort` and `reasoningSummary` to `summary`.
+
+Some Codex options affect the app-server child process rather than a single `turn/start` request. The broker launches and pools app-server children separately when `webSearch`, `modelVerbosity`, `imageGeneration`, or reasoning-effort process config differs, so one host turn cannot accidentally reuse a child started with incompatible runtime settings.
+
 Profile ids are canonicalized before they are used for auth state or filesystem paths. Characters outside `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-` are replaced with `_`, so host apps should treat the returned `profile` value as the broker's canonical profile id.
 
 Auth logout removes Codex credentials for an owner/profile and closes pooled app-server children for that profile only. Other profiles for the same owner continue running. Passing `deleteProfile: true` also deletes the broker-managed profile directory and profile metadata while preserving thread/turn history.
@@ -75,6 +79,8 @@ The sample chat bundle exposes `host.evidence.search` through a broker-hosted ad
 
 Approval-gated tool work emits `tool.requested` before `approval.requested`, followed by `approval.resolved` after the broker answers the app-server approval request. Host UIs can use `tool.requested` for generic tool lifecycle display and approval events for approval-specific state.
 
+Reasoning summary notifications are normalized as `reasoning.summary.started`, `reasoning.summary.delta`, and `reasoning.completed` events. The payload includes `itemId`, `summaryIndex`, and a stable `summaryId` when Codex supplies both item id and summary index.
+
 If app-server notifications arrive before all Codex turn metadata is known, the broker either attaches them to the best active context or buffers them by Codex turn id until the turn is registered. Such events are marked `ambiguous` so host consumers can distinguish early routed events from fully keyed events.
 
 The `/events` stream validates the broker `threadId` and optional `turnId` filter before opening the SSE response. Unknown ids return the same JSON 404 behavior as other thread and turn endpoints.
@@ -112,6 +118,8 @@ When a bundle turn omits `cwd`, the broker runs Codex from the broker-owned per-
 When inline bundles are enabled, `POST /v1/bundles/inline` stores the bundle by content digest and records its `bundleId` for later turn requests. Re-sending the same payload is idempotent; reusing an accepted inline `bundleId` with different content is rejected. Inline bundle ids also cannot shadow mounted bundle ids.
 
 Bundle-declared `tools` with `type: "broker-hosted"` become a broker-hosted MCP adapter that forwards tool calls to host-owned HTTP endpoints. The broker validates the declaration and transports calls; it does not implement product-specific evidence or business logic. Hosted tool URLs must match `CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES` by parsed scheme and host, with optional explicit port and path-prefix restrictions. Broker-hosted HTTP tools support the `host-allowlist` network policy in v1; unsupported policy modes are rejected.
+
+Hosted tool endpoints may return ordinary JSON, which the adapter exposes to Codex as formatted text. If an endpoint returns a valid MCP tool result shape with `content`, optional `isError`, optional `structuredContent`, and optional `_meta`, the adapter passes that result through directly. Use this for host-owned tools that need to expose artifact metadata, resource content, or file paths without the broker flattening them into a JSON text blob.
 
 Adapters are transport shims. They may declare HTTP headers and opaque tool context. Secret-looking headers such as `Authorization`, cookies, tokens, keys, and secrets must use `env:VAR` indirection so secrets come from the broker process environment rather than bundle files. The broker also includes broker context such as `ownerHash`, profile, broker `threadId`, broker `turnId`, `hostApp`, `configProfile`, and `productCorrelationId`, plus the validated hosted-tool `approvalPolicy`, `scope`, and `networkPolicy`. Host endpoints should use those opaque fields to map back to their own authorization, identity, and data models.
 

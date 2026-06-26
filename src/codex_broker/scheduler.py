@@ -41,6 +41,14 @@ def is_tool_item(item: dict[str, Any]) -> bool:
     return any(marker in item_type for marker in ("tool", "command", "function", "mcp"))
 
 
+def reasoning_summary_id(params: dict[str, Any]) -> str | None:
+    item_id = params.get("itemId")
+    summary_index = params.get("summaryIndex")
+    if not isinstance(item_id, str) or not isinstance(summary_index, int):
+        return None
+    return f"{item_id}:{summary_index}"
+
+
 @dataclass
 class ThreadGate:
     lock: threading.Lock
@@ -166,6 +174,19 @@ class BrokerTurnContext:
             return "turn.interrupted", {"params": params}
         if method == "item/agentMessage/delta":
             return "message.delta", {"delta": params.get("delta"), "itemId": params.get("itemId")}
+        if method == "item/reasoning/summaryPartAdded":
+            return "reasoning.summary.started", {
+                "itemId": params.get("itemId"),
+                "summaryIndex": params.get("summaryIndex"),
+                "summaryId": reasoning_summary_id(params),
+            }
+        if method == "item/reasoning/summaryTextDelta":
+            return "reasoning.summary.delta", {
+                "itemId": params.get("itemId"),
+                "summaryIndex": params.get("summaryIndex"),
+                "summaryId": reasoning_summary_id(params),
+                "delta": params.get("delta"),
+            }
         if method == "item/started":
             item = params.get("item") if isinstance(params.get("item"), dict) else {}
             if is_tool_item(item):
@@ -175,6 +196,8 @@ class BrokerTurnContext:
             item = params.get("item") if isinstance(params.get("item"), dict) else {}
             if item.get("type") == "agentMessage":
                 return "message.completed", {"item": item}
+            if item.get("type") == "reasoning":
+                return "reasoning.completed", {"item": item}
             if is_tool_item(item):
                 return "tool.completed", {"item": item}
             return "item.completed", {"item": item}
@@ -230,7 +253,7 @@ class TurnScheduler:
     def create_thread(self, owner_id: str, body: dict[str, Any]) -> dict[str, Any]:
         owner_hash = self.auth.hash_owner(owner_id)
         profile = self.auth.profile_key(body.get("profile") if body.get("profile") is not None else "default")
-        config_profile = str(body.get("configProfile") or "default")
+        config_profile = self._request_config_profile(body)
         config_profile_config = self._config_profile_config(config_profile)
         host_app = optional_text(body.get("hostApp"))
         product_thread_id = optional_text(body.get("productThreadId"))
@@ -310,7 +333,7 @@ class TurnScheduler:
         elif mode == "queue":
             self._metric("queued_turns", 1)
         bundle_id = str(body.get("bundleId") or thread.get("bundle_id") or "") or None
-        config_profile = str(body.get("configProfile") or thread.get("config_profile") or "default")
+        config_profile = self._request_config_profile(body, thread.get("config_profile") or "default")
         config_profile_config = self._config_profile_config(config_profile)
         host_app = optional_text(body.get("hostApp")) or thread.get("host_app")
         profile = self.auth.profile_key(body.get("profile") if body.get("profile") is not None else thread.get("profile") or "default")
@@ -587,12 +610,14 @@ class TurnScheduler:
             profile = str(turn["profile"])
             codex_home = self.auth.profile_home(owner_hash, profile)
             mcp_servers = self.bundles.mcp_servers_for_bundle(bundle, overlay) if bundle else ()
+            codex_config_args = self._codex_process_config_args(body, config_profile_config)
             client = self.pool.get(
                 owner_hash=owner_hash,
                 profile=profile,
                 codex_home=codex_home,
                 config_profile=str(turn["config_profile"]),
                 mcp_servers=mcp_servers,
+                codex_config_args=codex_config_args,
             )
             context = BrokerTurnContext(
                 state=self.state,
@@ -716,7 +741,7 @@ class TurnScheduler:
         bundle: ResolvedBundle | None,
         config_profile_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        codex_options = body.get("codexOptions") if isinstance(body.get("codexOptions"), dict) else {}
+        codex_options = self._request_codex_options(body)
         profile_config = config_profile_config or {}
         params: dict[str, Any] = {}
         if cwd:
@@ -738,17 +763,17 @@ class TurnScheduler:
         body: dict[str, Any],
         config_profile_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        codex_options = body.get("codexOptions") if isinstance(body.get("codexOptions"), dict) else {}
+        codex_options = self._request_codex_options(body)
         profile_config = config_profile_config or {}
         params: dict[str, Any] = {"threadId": codex_thread_id, "input": input_items}
-        for request_key, app_server_key in (
-            ("serviceTier", "serviceTier"),
-            ("model", "model"),
-            ("effort", "effort"),
-            ("personality", "personality"),
-            ("summary", "summary"),
+        for request_key, app_server_key, aliases in (
+            ("serviceTier", "serviceTier", ()),
+            ("model", "model", ()),
+            ("effort", "effort", ("reasoningEffort",)),
+            ("personality", "personality", ()),
+            ("summary", "summary", ("reasoningSummary",)),
         ):
-            value = self._codex_option(codex_options, profile_config, request_key)
+            value = self._codex_option(codex_options, profile_config, request_key, *aliases)
             if value is not None:
                 params[app_server_key] = value
         return params
@@ -799,8 +824,54 @@ class TurnScheduler:
             raise BundleError(f"cwd is outside configuration profile workspace roots: {cwd}")
 
     @staticmethod
-    def _codex_option(codex_options: dict[str, Any], profile_config: dict[str, Any], key: str) -> Any:
-        return codex_options[key] if key in codex_options and codex_options[key] is not None else profile_config.get(key)
+    def _request_config_profile(body: dict[str, Any], fallback: Any = "default") -> str:
+        return str(body.get("configProfile") or body.get("runtimeProfile") or fallback or "default")
+
+    @staticmethod
+    def _request_codex_options(body: dict[str, Any]) -> dict[str, Any]:
+        options: dict[str, Any] = {}
+        runtime = body.get("runtime")
+        if isinstance(runtime, dict):
+            options.update(runtime)
+        codex_options = body.get("codexOptions")
+        if isinstance(codex_options, dict):
+            options.update(codex_options)
+        return options
+
+    def _codex_process_config_args(
+        self,
+        body: dict[str, Any],
+        profile_config: dict[str, Any] | None = None,
+    ) -> tuple[tuple[str, str], ...]:
+        codex_options = self._request_codex_options(body)
+        profile = profile_config or {}
+        args: list[tuple[str, str]] = []
+        for request_key, config_key, aliases in (
+            ("webSearch", "web_search", ("web_search",)),
+            ("modelVerbosity", "model_verbosity", ("model_verbosity",)),
+            ("effort", "model_reasoning_effort", ("reasoningEffort", "modelReasoningEffort", "model_reasoning_effort")),
+            ("imageGeneration", "features.image_generation", ("features.image_generation",)),
+        ):
+            value = self._codex_option(codex_options, profile, request_key, *aliases)
+            if value is not None:
+                args.append((config_key, self._format_codex_config_value(value)))
+        return tuple(args)
+
+    @staticmethod
+    def _codex_option(codex_options: dict[str, Any], profile_config: dict[str, Any], key: str, *aliases: str) -> Any:
+        for candidate in (key, *aliases):
+            if candidate in codex_options and codex_options[candidate] is not None:
+                return codex_options[candidate]
+        for candidate in (key, *aliases):
+            if profile_config.get(candidate) is not None:
+                return profile_config.get(candidate)
+        return None
+
+    @staticmethod
+    def _format_codex_config_value(value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
 
     def _gate(self, owner_hash: str, thread_id: str) -> ThreadGate:
         with self._gates_lock:
