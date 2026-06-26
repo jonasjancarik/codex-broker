@@ -1,0 +1,24 @@
+{
+  "id": "document-jobs-v1",
+  "version": "2026-06-26",
+  "instructions": [
+    "Normalize document citations according to the mounted job workflow.",
+    "Keep job queue, artifact, and review semantics in the host app; use the broker only for managed Codex execution."
+  ],
+  "skills": [
+    {
+      "name": "normalize-citations",
+      "source": {
+        "type": "mount",
+        "path": "/bundles/document-jobs-v1/skills/normalize-citations"
+      }
+    }
+  ],
+  "allowedPaths": [
+    "/workspaces/app",
+    "/host-data/jobs"
+  ],
+  "sandbox": {
+    "mode": "workspace-write"
+  }
+}

@@ -1,0 +1,20 @@
+[project]
+name = "codex-broker"
+version = "0.1.0"
+description = "Internal service that brokers Codex app-server sessions for host applications."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+codex-broker = "codex_broker.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_broker"]

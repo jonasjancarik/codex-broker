@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+
+stdout_lock = threading.Lock()
+next_thread = 1
+next_turn = 1
+
+
+def send(message: dict[str, Any]) -> None:
+    with stdout_lock:
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
+
+
+def auth_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or ".codex").resolve()
+
+
+def handle_login(args: list[str]) -> int:
+    home = auth_home()
+    home.mkdir(parents=True, exist_ok=True)
+    auth_file = home / "auth.json"
+    if args[:1] == ["status"]:
+        if auth_file.exists():
+            print("Logged in")
+            return 0
+        print("Not logged in", file=sys.stderr)
+        return 1
+    if "--with-api-key" in args:
+        _ = sys.stdin.read()
+        auth_file.write_text('{"OPENAI_API_KEY":"redacted"}', encoding="utf-8")
+        print("Logged in with API key")
+        return 0
+    if "--device-auth" in args:
+        line = "Open https://example.test/device and enter code ABCD-1234. This code expires in 15 minutes."
+        if os.environ.get("FAKE_CODEX_DEVICE_AUTH_SECRET_OUTPUT") == "1":
+            line += " access_token=secret-device-token"
+        print(line)
+        sys.stdout.flush()
+        time.sleep(float(os.environ.get("FAKE_CODEX_DEVICE_AUTH_DELAY", "0.05")))
+        auth_file.write_text('{"CHATGPT":"redacted"}', encoding="utf-8")
+        print("Logged in")
+        return 0
+    return 0
+
+
+def handle_logout() -> int:
+    auth_file = auth_home() / "auth.json"
+    if auth_file.exists():
+        auth_file.unlink()
+    print("Logged out")
+    return 0
+
+
+def complete_turn(thread_id: str, turn_id: str) -> None:
+    delay = float(os.environ.get("FAKE_CODEX_TURN_DELAY", "0.01"))
+    send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id}}})
+    if os.environ.get("FAKE_CODEX_REQUEST_APPROVAL") == "1":
+        send(
+            {
+                "id": 9000,
+                "method": "item/commandExecution/requestApproval",
+                "params": {"threadId": thread_id, "turnId": turn_id, "command": "printf test"},
+            }
+        )
+    send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg1", "delta": "hello"}})
+    time.sleep(delay)
+    send(
+        {
+            "method": "item/completed",
+            "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": "msg1", "type": "agentMessage", "text": "hello"}},
+        }
+    )
+    send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
+
+
+def handle_app_server() -> int:
+    global next_thread, next_turn
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        message = json.loads(line)
+        method = message.get("method")
+        request_id = message.get("id")
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        if method is None:
+            continue
+        if method == "initialized":
+            continue
+        if method == "initialize":
+            send({"id": request_id, "result": {"serverInfo": {"name": "fake-codex"}}})
+        elif method == "thread/start":
+            thread_id = f"thr_fake_{next_thread}"
+            next_thread += 1
+            send({"id": request_id, "result": {"thread": {"id": thread_id}}})
+            send({"method": "thread/started", "params": {"thread": {"id": thread_id}}})
+        elif method == "thread/resume":
+            send({"id": request_id, "result": {"thread": {"id": params.get("threadId")}}})
+            send({"method": "thread/resumed", "params": {"threadId": params.get("threadId"), "thread": {"id": params.get("threadId")}}})
+        elif method == "turn/start":
+            if os.environ.get("FAKE_CODEX_HANG_ON_TURN_START_ONCE") == "1":
+                marker = auth_home() / ".fake-hung-turn-start-once"
+                if not marker.exists():
+                    marker.write_text("hung", encoding="utf-8")
+                    while True:
+                        time.sleep(60)
+            if os.environ.get("FAKE_CODEX_CRASH_ON_TURN_ONCE") == "1":
+                marker = auth_home() / ".fake-crashed-once"
+                if not marker.exists():
+                    marker.write_text("crashed", encoding="utf-8")
+                    os._exit(42)
+            if os.environ.get("FAKE_CODEX_CRASH_ON_TURN") == "1":
+                os._exit(42)
+            turn_id = f"turn_fake_{next_turn}"
+            next_turn += 1
+            thread_id = str(params.get("threadId"))
+            send({"id": request_id, "result": {"turn": {"id": turn_id}}})
+            threading.Thread(target=complete_turn, args=(thread_id, turn_id), daemon=True).start()
+        elif method == "turn/steer":
+            send({"id": request_id, "result": {"accepted": True}})
+        elif method == "turn/interrupt":
+            send({"id": request_id, "result": {"accepted": True}})
+            send({"method": "turn/interrupted", "params": {"threadId": params.get("threadId"), "turnId": params.get("turnId")}})
+        else:
+            send({"id": request_id, "error": {"code": -32601, "message": f"unknown method {method}"}})
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if "--version" in args:
+        print(os.environ.get("FAKE_CODEX_VERSION", "fake-codex 0.1"))
+        return 0
+    if args[:1] == ["login"]:
+        return handle_login(args[1:])
+    if args[:1] == ["logout"]:
+        return handle_logout()
+    if "app-server" in args:
+        return handle_app_server()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

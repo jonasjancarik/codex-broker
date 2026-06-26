@@ -1,0 +1,55 @@
+{
+  "id": "example-chat-v1",
+  "version": "2026-06-26",
+  "instructions": [
+    "Use host evidence tools only through the declared broker-hosted adapter.",
+    "Treat all returned evidence as host-owned product data."
+  ],
+  "skills": [
+    {
+      "name": "example-evidence",
+      "source": {
+        "type": "mount",
+        "path": "/bundles/example-chat-v1/skills/example-evidence"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "host.evidence.search",
+      "type": "broker-hosted",
+      "description": "Search host-owned product evidence.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+        },
+        "required": ["query"]
+      },
+      "context": {
+        "capability": "evidence-search"
+      },
+      "policy": {
+        "approval": "on-request",
+        "scope": "profile"
+      },
+      "networkPolicy": {
+        "mode": "host-allowlist"
+      },
+      "http": {
+        "url": "http://app:3000/internal/codex/tools/evidence-search",
+        "headers": {
+          "X-Codex-Tool-Key": "env:CODEX_HOST_TOOL_KEY"
+        },
+        "timeoutSeconds": 30
+      }
+    }
+  ],
+  "allowedPaths": [
+    "/workspaces/app"
+  ],
+  "sandbox": {
+    "mode": "workspace-write"
+  }
+}

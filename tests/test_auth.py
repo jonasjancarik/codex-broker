@@ -1,0 +1,179 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+
+from codex_broker.auth import AuthManager, normalize_profile
+from codex_broker.http_api import BrokerServices
+from codex_broker.state import StateStore
+from test_broker import config_for, wait_turn
+
+
+class AuthProfileTests(unittest.TestCase):
+    def test_profile_ids_are_canonicalized_for_auth_state_and_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            state = StateStore(config.state_db_path)
+            auth = AuthManager(config, state)
+            try:
+                self.assertEqual(normalize_profile("work/team"), "work_team")
+                result = auth.login_api_key("user@example.com", "sk-test", "work/team")
+                owner_hash = result["ownerHash"]
+
+                self.assertEqual(result["profile"], "work_team")
+                self.assertTrue((config.auth_root / owner_hash / "profiles" / "work_team" / "codex-home" / "auth.json").exists())
+                self.assertFalse((config.auth_root / owner_hash / "profiles" / "work" / "team").exists())
+                self.assertEqual([row["profile"] for row in state.list_profiles(owner_hash)], ["work_team"])
+
+                status = auth.status("user@example.com", "work/team")
+                self.assertEqual(status["profile"], "work_team")
+                self.assertEqual([row["profile"] for row in state.list_profiles(owner_hash)], ["work_team"])
+
+                logout = auth.logout("user@example.com", "work/team", delete_profile=True)
+                self.assertEqual(logout["profile"], "work_team")
+                self.assertEqual(state.list_profiles(owner_hash), [])
+                self.assertFalse((config.auth_root / owner_hash / "profiles" / "work_team").exists())
+            finally:
+                state.close()
+
+    def test_scheduler_records_canonical_profile_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))
+            try:
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"profile": "work/team", "cwd": str(services.config.allowed_workspace_roots[0])},
+                )
+                self.assertEqual(thread["profile"], "work_team")
+
+                turn = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"profile": "ops/team", "input": [{"type": "text", "text": "profile"}]},
+                )
+                self.assertEqual(turn["profile"], "ops_team")
+                self.assertEqual(wait_turn(services, "owner-a", thread["threadId"], turn["turnId"])["status"], "completed")
+
+                owner_hash = services.auth.hash_owner("owner-a")
+                self.assertEqual([row["profile"] for row in services.state.list_profiles(owner_hash)], ["ops_team", "work_team"])
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_api_key_auth_records_start_audit_and_auth_lifecycle_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            try:
+                result = services.auth.login_api_key("owner-a", "sk-test", "default")
+                self.assertEqual(result["state"], "authenticated")
+
+                owner_hash = services.auth.hash_owner("owner-a")
+                services.state.append_audit(owner_hash, "auth.device.failure", {}, profile="default")
+                actions = [entry["action"] for entry in services.state.list_audit_logs(owner_hash)]
+                self.assertIn("auth.api_key.start", actions)
+                self.assertIn("auth.api_key.success", actions)
+
+                start_log = next(entry for entry in services.state.list_audit_logs(owner_hash) if entry["action"] == "auth.api_key.start")
+                self.assertEqual(start_log["payload"], {})
+
+                metrics = services.scheduler.metrics()
+                self.assertEqual(metrics["auth_starts"], 1)
+                self.assertEqual(metrics["auth_successes"], 1)
+                self.assertEqual(metrics["auth_failures"], 1)
+                self.assertEqual(metrics["audit_auth_api_key_start"], 1)
+                self.assertEqual(metrics["audit_auth_api_key_success"], 1)
+                self.assertEqual(metrics["audit_auth_device_failure"], 1)
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_api_key_auth_spawn_failure_is_audited_without_key_material(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw)), codex_command=("missing-codex-binary",))
+            services = BrokerServices.build(config)
+            try:
+                result = services.auth.login_api_key("owner-a", "sk-live-secret-value", "default")
+                self.assertEqual(result["state"], "failed")
+                self.assertEqual(result["exitCode"], -1)
+                self.assertNotIn("sk-live-secret-value", result["output"])
+
+                owner_hash = services.auth.hash_owner("owner-a")
+                actions = [entry["action"] for entry in services.state.list_audit_logs(owner_hash)]
+                self.assertEqual(actions, ["auth.api_key.start", "auth.api_key.failure"])
+                metrics = services.scheduler.metrics()
+                self.assertEqual(metrics["auth_starts"], 1)
+                self.assertEqual(metrics["auth_failures"], 1)
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_device_auth_spawn_failure_is_audited_as_failed_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw)), codex_command=("missing-codex-binary",))
+            services = BrokerServices.build(config)
+            try:
+                started = services.auth.start_device_auth("owner-a", "default")
+                self.assertEqual(started["state"], "failed")
+                self.assertEqual(started["exitCode"], -1)
+                self.assertIsNotNone(started["error"])
+
+                owner_hash = services.auth.hash_owner("owner-a")
+                actions = [entry["action"] for entry in services.state.list_audit_logs(owner_hash)]
+                self.assertEqual(actions, ["auth.device.start", "auth.device.failure"])
+                metrics = services.scheduler.metrics()
+                self.assertEqual(metrics["auth_starts"], 1)
+                self.assertEqual(metrics["auth_failures"], 1)
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_logout_removes_auth_file_even_when_codex_logout_fails_to_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw)), codex_command=("missing-codex-binary",))
+            services = BrokerServices.build(config)
+            try:
+                owner_hash = services.auth.hash_owner("owner-a")
+                home = services.auth.profile_home(owner_hash, "default")
+                auth_file = home / "auth.json"
+                auth_file.write_text('{"OPENAI_API_KEY":"local-secret"}', encoding="utf-8")
+
+                result = services.auth.logout("owner-a", "default")
+                self.assertEqual(result["state"], "unauthenticated")
+                self.assertEqual(result["exitCode"], -1)
+                self.assertFalse(auth_file.exists())
+                self.assertNotIn("local-secret", result["output"])
+
+                logs = services.state.list_audit_logs(owner_hash)
+                self.assertEqual(logs[-1]["action"], "auth.logout")
+                self.assertEqual(logs[-1]["payload"], {"exitCode": -1, "deleteProfile": False})
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_logout_delete_profile_continues_when_codex_logout_fails_to_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw)), codex_command=("missing-codex-binary",))
+            services = BrokerServices.build(config)
+            try:
+                owner_hash = services.auth.hash_owner("owner-a")
+                home = services.auth.profile_home(owner_hash, "work")
+                home.joinpath("auth.json").write_text('{"OPENAI_API_KEY":"local-secret"}', encoding="utf-8")
+
+                result = services.auth.logout("owner-a", "work", delete_profile=True)
+                self.assertEqual(result["state"], "deleted")
+                self.assertTrue(result["deleted"])
+                self.assertEqual(result["exitCode"], -1)
+                self.assertFalse(home.parent.exists())
+                self.assertEqual(services.state.list_profiles(owner_hash), [])
+
+                actions = [entry["action"] for entry in services.state.list_audit_logs(owner_hash)]
+                self.assertEqual(actions[-2:], ["auth.profile.delete", "auth.logout"])
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
