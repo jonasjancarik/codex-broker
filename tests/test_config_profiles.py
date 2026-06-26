@@ -46,6 +46,7 @@ class ConfigProfileTests(unittest.TestCase):
                         "webSearch": "live",
                         "modelVerbosity": "medium",
                         "imageGeneration": True,
+                        "features": {"multi_agent": True},
                     }
                 },
             )
@@ -85,6 +86,7 @@ class ConfigProfileTests(unittest.TestCase):
                             "modelVerbosity": "low",
                             "imageGeneration": False,
                             "reasoningEffort": "minimal",
+                            "features": {"multi_agent": False},
                         }
                     },
                     profile,
@@ -96,6 +98,7 @@ class ConfigProfileTests(unittest.TestCase):
                         ("model_verbosity", "low"),
                         ("model_reasoning_effort", "minimal"),
                         ("features.image_generation", "false"),
+                        ("features.multi_agent", "false"),
                     ),
                 )
             finally:

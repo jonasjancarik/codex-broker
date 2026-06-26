@@ -32,6 +32,13 @@ def metric_key(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", value).strip("_").lower()
 
 
+def feature_config_key(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", value).strip("._-")
+    if not name:
+        raise ValueError("Feature name must contain at least one alphanumeric character.")
+    return f"features.{name}"
+
+
 def optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
@@ -850,11 +857,25 @@ class TurnScheduler:
             ("webSearch", "web_search", ("web_search",)),
             ("modelVerbosity", "model_verbosity", ("model_verbosity",)),
             ("effort", "model_reasoning_effort", ("reasoningEffort", "modelReasoningEffort", "model_reasoning_effort")),
-            ("imageGeneration", "features.image_generation", ("features.image_generation",)),
         ):
             value = self._codex_option(codex_options, profile, request_key, *aliases)
             if value is not None:
                 args.append((config_key, self._format_codex_config_value(value)))
+        feature_values: dict[str, Any] = {}
+        for key in ("imageGeneration", "features.image_generation"):
+            if profile.get(key) is not None:
+                feature_values["image_generation"] = profile.get(key)
+        for source in (profile.get("features"),):
+            if isinstance(source, dict):
+                feature_values.update(source)
+        for key in ("imageGeneration", "features.image_generation"):
+            if codex_options.get(key) is not None:
+                feature_values["image_generation"] = codex_options.get(key)
+        if isinstance(codex_options.get("features"), dict):
+            feature_values.update(codex_options["features"])
+        for name, value in sorted(feature_values.items()):
+            if value is not None:
+                args.append((feature_config_key(str(name)), self._format_codex_config_value(value)))
         return tuple(args)
 
     @staticmethod
