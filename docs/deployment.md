@@ -9,6 +9,8 @@ The Dockerfile installs the official Codex CLI Linux musl release from `openai/c
 - `CODEX_VERSION`: Codex release version without the `rust-v` prefix, default `0.142.2`.
 - `TARGETARCH`: supplied by Docker BuildKit; `amd64` maps to `x86_64`, `arm64` maps to `aarch64`.
 
+GitHub Actions publishes multi-architecture images to `ghcr.io/jonasjancarik/codex-broker`. Pushes to `main` publish `edge`, and `v*` tags publish both `latest` and the matching version tag. Pull requests build the image without pushing it.
+
 ## Docker Mounts
 
 Use one persistent `/data` volume for broker SQLite state, auth homes, inline bundles, and overlays. The image creates `/data` for the non-root `broker` user before startup. Mount host workspaces under `/workspaces`, stable reviewed bundles under `/bundles`, and host-owned job data under a separate path such as `/host-data`.
