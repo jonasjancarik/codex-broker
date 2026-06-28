@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -144,13 +145,50 @@ class AuthManager:
             },
         )
 
+    def auth_file(self, owner_hash: str, profile: str = "default") -> Path:
+        profile_key = self.profile_key(profile)
+        return self.profile_home(owner_hash, profile_key) / "auth.json"
+
+    def auth_fingerprint(self, owner_hash: str, profile: str = "default") -> str:
+        auth_file = self.auth_file(owner_hash, profile)
+        if not auth_file.exists():
+            return "missing"
+        try:
+            digest = hashlib.sha256(auth_file.read_bytes()).hexdigest()
+            stat = auth_file.stat()
+        except OSError:
+            return "unreadable"
+        return f"sha256:{digest}:size:{stat.st_size}"
+
+    def mark_runtime_auth_failure(
+        self,
+        owner_hash: str,
+        profile: str,
+        *,
+        code: str,
+        admin_message: str,
+    ) -> None:
+        profile_key = self.profile_key(profile)
+        fingerprint = self.auth_fingerprint(owner_hash, profile_key)
+        self.state.update_auth_status(owner_hash, profile_key, "refresh_failed", auth_fingerprint=fingerprint)
+        self.state.append_audit(
+            owner_hash,
+            "auth.runtime.failure",
+            {"code": code, "authFingerprint": fingerprint, "adminMessage": redact(admin_message, 1200)},
+            profile=profile_key,
+        )
+
     def status(self, owner_id: str, profile: str = "default") -> dict[str, Any]:
         profile_key = self.profile_key(profile)
         owner_hash = self.hash_owner(owner_id)
         home = self.profile_home(owner_hash, profile_key)
         session = self._session(owner_hash, profile_key)
         auth_file_exists = (home / "auth.json").exists()
-        state = "authenticated" if auth_file_exists else "unknown"
+        fingerprint = self.auth_fingerprint(owner_hash, profile_key)
+        profile_row = self.state.get_profile(owner_hash, profile_key)
+        remembered_state = str(profile_row.get("auth_status")) if profile_row else "unknown"
+        remembered_fingerprint = str(profile_row.get("auth_fingerprint")) if profile_row and profile_row.get("auth_fingerprint") else None
+        state = "missing" if not auth_file_exists else "present_unverified"
         output = ""
         exit_code: int | None = None
         command = [*self.config.codex_command, "login", "status"]
@@ -172,22 +210,23 @@ class AuthManager:
                 if result.returncode == 0 and "not logged in" not in normalized and "not authenticated" not in normalized:
                     if "logged in" in normalized or "authenticated" in normalized or auth_file_exists:
                         state = "authenticated"
-                elif not auth_file_exists:
-                    state = "unauthenticated"
+                elif auth_file_exists:
+                    state = "invalid"
+                else:
+                    state = "missing"
             except (OSError, subprocess.SubprocessError) as exc:
                 output = redact(str(exc), 1200)
-                if not auth_file_exists:
-                    state = "unknown"
-        auth_file_exists = (home / "auth.json").exists()
-        if auth_file_exists and state != "authenticated":
-            state = "authenticated"
-        self.state.update_auth_status(owner_hash, profile_key, state)
+                state = "missing" if not auth_file_exists else "present_unverified"
+        if remembered_state == "refresh_failed" and remembered_fingerprint == fingerprint:
+            state = "refresh_failed"
+        self.state.update_auth_status(owner_hash, profile_key, state, auth_fingerprint=fingerprint)
         return {
             "ownerHash": owner_hash,
             "profile": profile_key,
             "state": state,
             "deviceAuth": session.public() if session else None,
             "authFilePresent": auth_file_exists,
+            "authFingerprint": fingerprint,
             "loginStatusExitCode": exit_code,
             "loginStatusOutput": output,
         }
@@ -271,7 +310,7 @@ class AuthManager:
             exit_code = -1
             output = redact(str(exc), 1200)
         status = "authenticated" if exit_code == 0 else "failed"
-        self.state.update_auth_status(owner_hash, profile_key, status, "api-key")
+        self.state.update_auth_status(owner_hash, profile_key, status, "api-key", self.auth_fingerprint(owner_hash, profile_key))
         self.state.append_audit(
             owner_hash,
             "auth.api_key.success" if status == "authenticated" else "auth.api_key.failure",
@@ -282,6 +321,7 @@ class AuthManager:
             "ownerHash": owner_hash,
             "profile": profile_key,
             "state": status,
+            "authFingerprint": self.auth_fingerprint(owner_hash, profile_key),
             "exitCode": exit_code,
             "output": output,
         }
@@ -318,7 +358,7 @@ class AuthManager:
             self.state.append_audit(owner_hash, "auth.profile.delete", {"exitCode": exit_code}, profile=profile_key)
             deleted = True
         else:
-            self.state.update_auth_status(owner_hash, profile_key, "unauthenticated")
+            self.state.update_auth_status(owner_hash, profile_key, "missing", auth_fingerprint=self.auth_fingerprint(owner_hash, profile_key))
         self.state.append_audit(owner_hash, "auth.logout", {"exitCode": exit_code, "deleteProfile": delete_profile}, profile=profile_key)
         return {
             "ownerHash": owner_hash,
@@ -395,7 +435,13 @@ class AuthManager:
             if code == 0:
                 session.state = "completed"
                 session.error = None
-                self.state.update_auth_status(session.owner_hash, session.profile, "authenticated", "chatgpt")
+                self.state.update_auth_status(
+                    session.owner_hash,
+                    session.profile,
+                    "authenticated",
+                    "chatgpt",
+                    self.auth_fingerprint(session.owner_hash, session.profile),
+                )
                 self.state.append_audit(
                     session.owner_hash,
                     "auth.device.success",

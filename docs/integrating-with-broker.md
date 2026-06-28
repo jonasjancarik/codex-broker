@@ -49,6 +49,8 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/status?profile=default"
 ```
 
+The `state` field is one of `missing`, `present_unverified`, `authenticated`, `invalid`, `refresh_failed`, `failed`, or `unknown`. `authFingerprint` changes when the owner/profile auth file changes, and pooled app-server children are keyed by that fingerprint so refreshed auth starts fresh runtime processes.
+
 For service-account style deployments, store an API key in the owner profile:
 
 ```bash
@@ -58,6 +60,17 @@ curl -sS \
   -H "Content-Type: application/json" \
   -d '{"profile":"default","apiKey":"'"$OPENAI_API_KEY"'"}' \
   "$BROKER/v1/owners/$OWNER/auth/api-key"
+```
+
+If an administrator refreshes shared auth outside the broker, close the profile's pooled app-server children before retrying failed work:
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"profile":"default"}' \
+  "$BROKER/v1/owners/$OWNER/auth/runtime/invalidate"
 ```
 
 Create or reuse a broker thread:
@@ -133,6 +146,9 @@ Response shape:
   "productCorrelationId": "chat-123:message-456",
   "status": "queued",
   "error": null,
+  "errorCode": null,
+  "publicMessage": null,
+  "adminMessage": null,
   "createdAt": "2026-06-28T12:00:01Z",
   "startedAt": null,
   "completedAt": null,
@@ -162,6 +178,8 @@ curl -sS \
 ```
 
 Terminal turn statuses are `completed`, `failed`, `timed_out`, and `interrupted`. Nonterminal statuses are `starting`, `queued`, and `running`.
+
+On failed turns, `error` remains the legacy display field. New integrations should prefer `publicMessage` for end-user UI, use `errorCode` for programmatic handling, and keep `adminMessage` for admin-only logs. For shared Codex auth refresh failures, `errorCode` is `codex_auth_requires_admin` and `publicMessage` tells the user to wait for administrator attention instead of asking them to log out.
 
 ## Python Client
 

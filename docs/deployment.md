@@ -41,7 +41,7 @@ Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` t
 
 ## Operations
 
-- App-server children are started lazily and keyed by owner, auth profile, configuration profile, Codex command/version, credential-store mode, mounted MCP config, and hashes of resolved MCP `env:VAR` values. They are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS` idle seconds. TTL cleanup skips children with active turn contexts.
+- App-server children are started lazily and keyed by owner, auth profile, owner/profile auth fingerprint, configuration profile, Codex command/version, credential-store mode, mounted MCP config, and hashes of resolved MCP `env:VAR` values. They are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS` idle seconds. TTL cleanup skips children with active turn contexts.
 - Turns using broker-hosted adapters close their per-turn app-server child after finalization because the adapter config includes per-turn overlay context.
 - A crashed child fails its active turns and the pool restarts lazily before later work.
 - A restarted broker marks abandoned `starting`, `queued`, and `running` turns failed on startup and emits a recovered `turn.failed` event.
@@ -49,5 +49,6 @@ Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` t
 - During process shutdown, `CODEX_BROKER_SHUTDOWN_MODE=interrupt` interrupts active turns and finalizes them as `interrupted`; `drain` rejects new turns and waits up to `CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` for accepted work before interrupting leftovers.
 - `/metrics` includes in-memory broker counters, HTTP request count/duration sums and counts by templated endpoint, SSE disconnects, turn duration sums/counts, aggregate auth start/success/failure counters, and durable audit-derived counters such as turn start, approvals, interrupts, and logout.
 - Auth command spawn and timeout failures are recorded as failed auth sessions/results with redacted output and durable `auth.*.failure` audit entries. Logout still invalidates broker-managed auth files or deletes the requested profile when the Codex logout command fails.
+- Runtime Codex auth refresh failures are classified as `codex_auth_requires_admin`, mark the owner/profile auth status as `refresh_failed`, close that profile's pooled app-server children, and preserve the raw Codex message in `adminMessage`. After refreshing shared auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` when you need to force-close any remaining profile runtimes before retrying work.
 - Raw app-server event capture is disabled by default; when enabled, secret-looking fields and strings, including JSON-like quoted secret fields, are redacted before persistence. `CODEX_BROKER_RAW_EVENT_RETENTION_SECONDS` controls startup pruning of persisted raw app-server method/params fields while preserving normalized events.
 - Structured JSON logs are enabled by default with `CODEX_BROKER_JSON_LOGS=true`. Log events include templated HTTP endpoints, owner hashes, broker thread/turn ids, product correlation ids, app-server process ids, and pool-key hashes; secret-looking fields are redacted before writing.

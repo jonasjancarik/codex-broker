@@ -206,7 +206,17 @@ class BrokerHandler(BaseHTTPRequestHandler):
             return
         if method == "POST" and tail == ["api-key"]:
             body = self._read_json()
-            self._json(self.broker.auth.login_api_key(owner_id, str(body.get("apiKey") or ""), str(body.get("profile") or profile)))
+            result = self.broker.auth.login_api_key(owner_id, str(body.get("apiKey") or ""), str(body.get("profile") or profile))
+            self.broker.pool.close_profile(result["ownerHash"], result["profile"])
+            self._json(result)
+            return
+        if method == "POST" and tail == ["runtime", "invalidate"]:
+            body = self._read_json(allow_empty=True)
+            profile_key = self.broker.auth.profile_key(str(body.get("profile") or profile))
+            owner_hash = self.broker.auth.hash_owner(owner_id)
+            self.broker.pool.close_profile(owner_hash, profile_key)
+            self.broker.state.append_audit(owner_hash, "auth.runtime.invalidate", {}, profile=profile_key)
+            self._json({"ownerHash": owner_hash, "profile": profile_key, "invalidated": True})
             return
         if method == "POST" and tail == ["logout"]:
             body = self._read_json(allow_empty=True)
@@ -427,7 +437,7 @@ def openapi_document() -> dict[str, Any]:
     turn_param = {"$ref": "#/components/parameters/turnId"}
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Codex Broker", "version": "0.3.0"},
+        "info": {"title": "Codex Broker", "version": "0.4.0"},
         "security": [{"brokerKey": []}],
         "paths": {
             "/healthz": {
@@ -480,6 +490,13 @@ def openapi_document() -> dict[str, Any]:
                     "parameters": [owner_param],
                     "requestBody": request_body(ref("ApiKeyLoginRequest")),
                     "responses": {"200": json_response(ref("AuthCommandResult"), "API key stored in owner auth home")},
+                }
+            },
+            "/v1/owners/{ownerId}/auth/runtime/invalidate": {
+                "post": {
+                    "parameters": [owner_param],
+                    "requestBody": request_body(ref("ProfileRequest"), required=False),
+                    "responses": {"200": json_response(ref("RuntimeInvalidationResult"), "Owner profile runtime invalidated")},
                 }
             },
             "/v1/owners/{ownerId}/auth/logout": {
@@ -635,9 +652,10 @@ def openapi_document() -> dict[str, Any]:
                     "properties": {
                         "ownerHash": {"type": "string"},
                         "profile": {"type": "string"},
-                        "state": {"type": "string"},
+                        "state": {"enum": ["missing", "present_unverified", "authenticated", "refresh_failed", "invalid", "failed", "unknown"]},
                         "deviceAuth": {"anyOf": [ref("DeviceAuthSession"), {"type": "null"}]},
                         "authFilePresent": {"type": "boolean"},
+                        "authFingerprint": {"type": "string"},
                         "loginStatusExitCode": {"type": ["integer", "null"]},
                         "loginStatusOutput": {"type": "string"},
                     },
@@ -650,8 +668,18 @@ def openapi_document() -> dict[str, Any]:
                         "profile": {"type": "string"},
                         "state": {"type": "string"},
                         "deleted": {"type": "boolean"},
+                        "authFingerprint": {"type": "string"},
                         "exitCode": {"type": "integer"},
                         "output": {"type": "string"},
+                    },
+                },
+                "RuntimeInvalidationResult": {
+                    "type": "object",
+                    "required": ["ownerHash", "profile", "invalidated"],
+                    "properties": {
+                        "ownerHash": {"type": "string"},
+                        "profile": {"type": "string"},
+                        "invalidated": {"type": "boolean"},
                     },
                 },
                 "AuditLog": {
@@ -764,6 +792,9 @@ def openapi_document() -> dict[str, Any]:
                         "productCorrelationId": {"type": ["string", "null"]},
                         "status": {"type": "string"},
                         "error": {"type": ["string", "null"]},
+                        "errorCode": {"type": ["string", "null"]},
+                        "publicMessage": {"type": ["string", "null"]},
+                        "adminMessage": {"type": ["string", "null"]},
                         "createdAt": {"type": "string"},
                         "startedAt": {"type": ["string", "null"]},
                         "completedAt": {"type": ["string", "null"]},

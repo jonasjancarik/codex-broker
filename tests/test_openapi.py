@@ -14,6 +14,7 @@ class OpenApiTests(unittest.TestCase):
             "/v1/owners/{ownerId}/auth/device/start",
             "/v1/owners/{ownerId}/auth/device/submit",
             "/v1/owners/{ownerId}/auth/api-key",
+            "/v1/owners/{ownerId}/auth/runtime/invalidate",
             "/v1/owners/{ownerId}/auth/logout",
             "/v1/owners/{ownerId}/audit-logs",
             "/v1/owners/{ownerId}/threads",
@@ -66,6 +67,10 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("hostApp", components["schemas"]["Turn"]["properties"])
         self.assertIn("deleteProfile", components["schemas"]["ProfileRequest"]["properties"])
         self.assertIn("deleted", components["schemas"]["AuthCommandResult"]["properties"])
+        self.assertIn("authFingerprint", components["schemas"]["AuthStatus"]["properties"])
+        self.assertIn("errorCode", components["schemas"]["Turn"]["properties"])
+        self.assertIn("publicMessage", components["schemas"]["Turn"]["properties"])
+        self.assertIn("adminMessage", components["schemas"]["Turn"]["properties"])
         self.assertIn("expiresAt", components["schemas"]["DeviceAuthSession"]["properties"])
         inline_bundle = paths["/v1/bundles/inline"]["post"]["requestBody"]["content"]["application/json"]["schema"]
         self.assertEqual(inline_bundle["$ref"], "#/components/schemas/TaskBundle")

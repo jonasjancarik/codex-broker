@@ -47,6 +47,8 @@ Profile ids are canonicalized before they are used for auth state or filesystem 
 
 Auth logout removes Codex credentials for an owner/profile and closes pooled app-server children for that profile only. Other profiles for the same owner continue running. Passing `deleteProfile: true` also deletes the broker-managed profile directory and profile metadata while preserving thread/turn history.
 
+Auth status distinguishes `missing`, `present_unverified`, `authenticated`, `invalid`, and `refresh_failed`, and includes an `authFingerprint` for the owner/profile auth file. When Codex reports a reusable shared auth problem, failed turns expose a stable `errorCode`, end-user-safe `publicMessage`, and raw `adminMessage`; host UIs should show `publicMessage` or `error` and keep `adminMessage` in admin-only logs. After an administrator refreshes shared auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for that profile so the next turn starts a fresh app-server child with the new auth.
+
 Device-auth responses include `loginUrl`, `userCode`, `expiresAt`, and current `state` when the Codex CLI exposes them. `expiresAt` is `null` when no expiry can be inferred.
 
 Owner-scoped audit logs are available from `GET /v1/owners/{ownerId}/audit-logs`, with optional `profile`, `action`, `threadId`, `turnId`, and `limit` filters. The response includes the broker owner hash, not the raw product owner id.

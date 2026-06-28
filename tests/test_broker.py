@@ -20,6 +20,7 @@ from codex_broker.app_server import AppServerClient, AppServerError, AppServerPo
 from codex_broker.bundles import BundleError, BundleRegistry
 from codex_broker.config import BrokerConfig
 from codex_broker.http_api import BrokerHandler, BrokerServices, is_unauthenticated_path, metric_path_template
+from codex_broker.runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE
 from codex_broker.scheduler import ActiveTurnError, BrokerTurnContext, ConflictError, TurnScheduler
 from codex_broker.state import StateStore
 from codex_broker.util import json_log
@@ -626,6 +627,41 @@ class BrokerTests(unittest.TestCase):
                 services.pool.close_all()
                 services.state.close()
 
+    def test_runtime_invalidate_api_closes_owner_profile_pool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            try:
+                owner_hash = services.auth.hash_owner("owner/a")
+                codex_home = services.auth.profile_home(owner_hash, "work")
+                client = services.pool.get(
+                    owner_hash=owner_hash,
+                    profile="work",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=(),
+                    auth_fingerprint="sha256:old-auth",
+                )
+                captured: dict[str, Any] = {}
+
+                def capture_json(payload: dict[str, Any], status: Any = None) -> None:
+                    captured["payload"] = payload
+                    captured["status"] = status
+
+                handler = BrokerHandler.__new__(BrokerHandler)
+                handler.broker = services
+                handler._read_json = lambda allow_empty=False: {"profile": "work"}  # type: ignore[method-assign]
+                handler._json = capture_json
+
+                handler._auth_route("POST", ["runtime", "invalidate"], "owner/a", {})
+
+                self.assertTrue(client.closed)
+                self.assertEqual(captured["payload"], {"ownerHash": owner_hash, "profile": "work", "invalidated": True})
+                audit = services.state.list_audit_logs(owner_hash, action="auth.runtime.invalidate", profile="work")
+                self.assertEqual(len(audit), 1)
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
     def test_internal_api_key_is_required_unless_explicitly_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             base = replace(config_for(Path(tmp_raw)), internal_key=None, allow_unauthenticated=False)
@@ -976,6 +1012,43 @@ class BrokerTests(unittest.TestCase):
                 self.assertGreaterEqual(services.scheduler.metrics()["app_server_restarts"], 1)
             finally:
                 os.environ.pop("FAKE_CODEX_HANG_ON_TURN_START_ONCE", None)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_codex_auth_refresh_failure_has_public_and_admin_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))
+            try:
+                services.auth.login_api_key("owner-a", "sk-test", "default")
+                thread = services.scheduler.create_thread("owner-a", {"cwd": str(services.config.allowed_workspace_roots[0])})
+                os.environ["FAKE_CODEX_AUTH_REFRESH_FAILURE"] = "1"
+
+                turn = services.scheduler.start_turn("owner-a", thread["threadId"], {"input": [{"type": "text", "text": "auth"}]})
+                failed = wait_turn(services, "owner-a", thread["threadId"], turn["turnId"])
+
+                self.assertEqual(failed["status"], "failed")
+                self.assertEqual(failed["error"], CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE)
+                self.assertEqual(failed["errorCode"], CODEX_AUTH_REQUIRES_ADMIN)
+                self.assertEqual(failed["publicMessage"], CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE)
+                self.assertIn("Please log out and sign in again", failed["adminMessage"])
+
+                owner_hash = services.auth.hash_owner("owner-a")
+                events = services.state.list_events(owner_hash, thread["threadId"], turn_id=turn["turnId"], limit=100)
+                failed_events = [event for event in events if event["event_type"] == "turn.failed"]
+                self.assertTrue(failed_events)
+                self.assertEqual(failed_events[-1]["payload"]["code"], CODEX_AUTH_REQUIRES_ADMIN)
+                self.assertEqual(failed_events[-1]["payload"]["publicMessage"], CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE)
+                self.assertIn("Please log out and sign in again", failed_events[-1]["payload"]["adminMessage"])
+
+                status = services.auth.status("owner-a", "default")
+                self.assertEqual(status["state"], "refresh_failed")
+
+                auth_file = services.auth.auth_file(owner_hash, "default")
+                auth_file.write_text('{"OPENAI_API_KEY":"rotated"}', encoding="utf-8")
+                rotated = services.auth.status("owner-a", "default")
+                self.assertNotEqual(rotated["state"], "refresh_failed")
+            finally:
+                os.environ.pop("FAKE_CODEX_AUTH_REFRESH_FAILURE", None)
                 services.pool.close_all()
                 services.state.close()
 

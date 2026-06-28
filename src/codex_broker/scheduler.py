@@ -13,8 +13,9 @@ from .auth import AuthManager
 from .bundles import BundleError, BundleRegistry, ResolvedBundle
 from .config import BrokerConfig
 from .events import normalize_app_server_event
+from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, RuntimeErrorInfo, classify_app_server_error, classify_runtime_error
 from .state import StateStore
-from .util import json_dumps, json_log, redact_json, utc_now
+from .util import json_log, redact_json, utc_now
 
 
 class ActiveTurnError(RuntimeError):
@@ -73,6 +74,9 @@ class BrokerTurnContext:
         self.completed_event = threading.Event()
         self.final_status: str | None = None
         self.error_text: str | None = None
+        self.error_code: str | None = None
+        self.public_message: str | None = None
+        self.admin_message: str | None = None
         self.debug_raw_events = debug_raw_events
         self._lock = threading.RLock()
 
@@ -88,6 +92,17 @@ class BrokerTurnContext:
 
     def handle_notification(self, method: str, params: dict[str, Any], *, ambiguous: bool) -> None:
         event_type, payload = self._normalize(method, params)
+        error_info: RuntimeErrorInfo | None = None
+        if method == "turn/completed":
+            turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+            status = str(turn.get("status") or "completed")
+            error = turn.get("error")
+            self.final_status = "completed" if status == "completed" else "failed"
+            error_info = classify_app_server_error(error)
+            self._set_error_info(error_info)
+            if error_info:
+                payload = payload | error_info.public_payload()
+            self.completed_event.set()
         self._append_event(event_type, payload, method, params, ambiguous=ambiguous)
         if event_type in {"approval.requested", "approval.resolved"}:
             self.state.append_audit(
@@ -97,13 +112,6 @@ class BrokerTurnContext:
                 thread_id=self.thread_id,
                 turn_id=self.turn_id,
             )
-        if method == "turn/completed":
-            turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
-            status = str(turn.get("status") or "completed")
-            error = turn.get("error")
-            self.final_status = "completed" if status == "completed" else "failed"
-            self.error_text = json_dumps(error) if error else None
-            self.completed_event.set()
 
     def record_tool_requested(self, method: str, params: dict[str, Any], *, ambiguous: bool) -> None:
         self._append_event("tool.requested", {"method": method, "params": params}, method, params, ambiguous=ambiguous)
@@ -137,14 +145,15 @@ class BrokerTurnContext:
         with self._lock:
             if self.completed_event.is_set():
                 return
+            error_info = classify_runtime_error(message)
             self.final_status = status
-            self.error_text = message
+            self._set_error_info(error_info)
             self.state.append_event(
                 self.owner_hash,
                 self.thread_id,
                 self.turn_id,
                 event_type or ("turn.failed" if status != "interrupted" else "turn.interrupted"),
-                {"message": message},
+                error_info.public_payload(),
                 product_correlation_id=self.product_correlation_id,
                 codex_thread_id=self.codex_thread_id,
                 codex_turn_id=self.codex_turn_id,
@@ -161,6 +170,18 @@ class BrokerTurnContext:
             codex_thread_id=self.codex_thread_id,
             codex_turn_id=self.codex_turn_id,
         )
+
+    def _set_error_info(self, error_info: RuntimeErrorInfo | None) -> None:
+        if not error_info:
+            self.error_text = None
+            self.error_code = None
+            self.public_message = None
+            self.admin_message = None
+            return
+        self.error_text = error_info.public_message
+        self.error_code = error_info.code
+        self.public_message = error_info.public_message
+        self.admin_message = error_info.admin_message
 
 
 class TurnScheduler:
@@ -487,6 +508,7 @@ class TurnScheduler:
         context: BrokerTurnContext | None = None
         client: AppServerClient | None = None
         bundle: ResolvedBundle | None = None
+        profile: str | None = None
         turn_started_at: float | None = None
         duration_bundle_id: str | None = None
         duration_host_app: str | None = None
@@ -562,6 +584,7 @@ class TurnScheduler:
             codex_home = self.auth.profile_home(owner_hash, profile)
             mcp_servers = self.bundles.mcp_servers_for_bundle(bundle, overlay) if bundle else ()
             codex_config_args = self._codex_process_config_args(body, config_profile_config)
+            auth_fingerprint = self.auth.auth_fingerprint(owner_hash, profile)
             client = self.pool.get(
                 owner_hash=owner_hash,
                 profile=profile,
@@ -569,6 +592,7 @@ class TurnScheduler:
                 config_profile=str(turn["config_profile"]),
                 mcp_servers=mcp_servers,
                 codex_config_args=codex_config_args,
+                auth_fingerprint=auth_fingerprint,
             )
             context = BrokerTurnContext(
                 state=self.state,
@@ -595,7 +619,17 @@ class TurnScheduler:
                 except AppServerError:
                     pass
                 context.fail("Turn timed out.")
-                self.state.update_turn(owner_hash, thread_id, turn_id, status="timed_out", error="Turn timed out.", completed=True)
+                self.state.update_turn(
+                    owner_hash,
+                    thread_id,
+                    turn_id,
+                    status="timed_out",
+                    error=context.error_text,
+                    error_code=context.error_code,
+                    public_message=context.public_message,
+                    admin_message=context.admin_message,
+                    completed=True,
+                )
                 self._metric("turns_failed", 1)
                 return
             status = context.final_status or "completed"
@@ -605,23 +639,53 @@ class TurnScheduler:
                 turn_id,
                 status=status,
                 error=context.error_text,
+                error_code=context.error_code,
+                public_message=context.public_message,
+                admin_message=context.admin_message,
                 completed=True,
             )
+            if context.error_code == CODEX_AUTH_REQUIRES_ADMIN:
+                self.auth.mark_runtime_auth_failure(
+                    owner_hash,
+                    profile,
+                    code=context.error_code,
+                    admin_message=context.admin_message or context.error_text or "",
+                )
+                self.pool.close_profile(owner_hash, profile)
             self._metric("turns_completed" if status == "completed" else "turns_failed", 1)
         except Exception as exc:  # noqa: BLE001 - background worker must persist failure state.
             message = str(exc)
-            self.state.update_turn(owner_hash, thread_id, turn_id, status="failed", error=message, completed=True)
+            error_info = classify_runtime_error(message)
+            self.state.update_turn(
+                owner_hash,
+                thread_id,
+                turn_id,
+                status="failed",
+                error=error_info.public_message,
+                error_code=error_info.code,
+                public_message=error_info.public_message,
+                admin_message=error_info.admin_message,
+                completed=True,
+            )
             turn = self.state.get_turn(owner_hash, thread_id, turn_id)
             self.state.append_event(
                 owner_hash,
                 thread_id,
                 turn_id,
                 "turn.failed",
-                {"message": message},
+                error_info.public_payload(),
                 product_correlation_id=turn.get("product_correlation_id") if turn else None,
                 codex_thread_id=thread.get("codex_thread_id") if thread else None,
                 codex_turn_id=turn.get("codex_turn_id") if turn else None,
             )
+            if error_info.code == CODEX_AUTH_REQUIRES_ADMIN and profile:
+                self.auth.mark_runtime_auth_failure(
+                    owner_hash,
+                    profile,
+                    code=error_info.code,
+                    admin_message=error_info.admin_message,
+                )
+                self.pool.close_profile(owner_hash, profile)
             self._metric("turns_failed", 1)
         finally:
             if context and client:
@@ -903,6 +967,9 @@ class TurnScheduler:
             "productCorrelationId": turn.get("product_correlation_id"),
             "status": turn["status"],
             "error": turn.get("error"),
+            "errorCode": turn.get("error_code"),
+            "publicMessage": turn.get("public_message"),
+            "adminMessage": turn.get("admin_message"),
             "createdAt": turn["created_at"],
             "startedAt": turn.get("started_at"),
             "completedAt": turn.get("completed_at"),

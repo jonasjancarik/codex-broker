@@ -52,6 +52,7 @@ class StateStore:
                   profile text not null,
                   auth_type text,
                   auth_status text not null default 'unknown',
+                  auth_fingerprint text,
                   created_at text not null,
                   updated_at text not null,
                   primary key (owner_hash, profile)
@@ -86,6 +87,9 @@ class StateStore:
                   status text not null,
                   input_json text not null,
                   error text,
+                  error_code text,
+                  public_message text,
+                  admin_message text,
                   created_at text not null,
                   started_at text,
                   completed_at text,
@@ -150,6 +154,7 @@ class StateStore:
                     "config_profile": "text not null default 'default'",
                 },
             )
+            self._ensure_columns("owner_profiles", {"auth_fingerprint": "text"})
             self._copy_column_if_present("threads", "runtime_profile", "config_profile")
             self._ensure_columns(
                 "turns",
@@ -160,6 +165,14 @@ class StateStore:
             )
             self._copy_column_if_present("turns", "runtime_profile", "config_profile")
             self._ensure_columns("turns", {"host_app": "text"})
+            self._ensure_columns(
+                "turns",
+                {
+                    "error_code": "text",
+                    "public_message": "text",
+                    "admin_message": "text",
+                },
+            )
             self._ensure_columns("app_server_processes", {"config_profile": "text not null default 'default'"})
             self._copy_column_if_present("app_server_processes", "runtime_profile", "config_profile")
             self._ensure_columns(
@@ -202,17 +215,35 @@ class StateStore:
                 (owner_hash, profile, auth_type, now, now),
             )
 
-    def update_auth_status(self, owner_hash: str, profile: str, status: str, auth_type: str | None = None) -> None:
+    def update_auth_status(
+        self,
+        owner_hash: str,
+        profile: str,
+        status: str,
+        auth_type: str | None = None,
+        auth_fingerprint: str | None = None,
+    ) -> None:
         self.ensure_profile(owner_hash, profile, auth_type)
         with self._lock, self._conn:
             self._conn.execute(
                 """
                 update owner_profiles
-                set auth_status = ?, auth_type = coalesce(?, auth_type), updated_at = ?
+                set auth_status = ?,
+                    auth_type = coalesce(?, auth_type),
+                    auth_fingerprint = coalesce(?, auth_fingerprint),
+                    updated_at = ?
                 where owner_hash = ? and profile = ?
                 """,
-                (status, auth_type, utc_now(), owner_hash, profile),
+                (status, auth_type, auth_fingerprint, utc_now(), owner_hash, profile),
             )
+
+    def get_profile(self, owner_hash: str, profile: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "select * from owner_profiles where owner_hash = ? and profile = ?",
+                (owner_hash, profile),
+            ).fetchone()
+        return dict(row) if row else None
 
     def delete_profile(self, owner_hash: str, profile: str) -> None:
         with self._lock, self._conn:
@@ -365,6 +396,9 @@ class StateStore:
         status: str | None = None,
         codex_turn_id: str | None = None,
         error: str | None = None,
+        error_code: str | None = None,
+        public_message: str | None = None,
+        admin_message: str | None = None,
         started: bool = False,
         completed: bool = False,
     ) -> dict[str, Any] | None:
@@ -375,6 +409,9 @@ class StateStore:
             "status": status if status is not None else row["status"],
             "codex_turn_id": codex_turn_id if codex_turn_id is not None else row.get("codex_turn_id"),
             "error": error,
+            "error_code": error_code,
+            "public_message": public_message,
+            "admin_message": admin_message,
             "started_at": utc_now() if started and not row.get("started_at") else row.get("started_at"),
             "completed_at": utc_now() if completed else row.get("completed_at"),
             "updated_at": utc_now(),
@@ -382,14 +419,18 @@ class StateStore:
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                update turns set status = ?, codex_turn_id = ?, error = ?, started_at = ?,
-                  completed_at = ?, updated_at = ?
+                update turns set status = ?, codex_turn_id = ?, error = ?,
+                  error_code = ?, public_message = ?, admin_message = ?,
+                  started_at = ?, completed_at = ?, updated_at = ?
                 where owner_hash = ? and thread_id = ? and turn_id = ?
                 """,
                 (
                     updates["status"],
                     updates["codex_turn_id"],
                     updates["error"],
+                    updates["error_code"],
+                    updates["public_message"],
+                    updates["admin_message"],
                     updates["started_at"],
                     updates["completed_at"],
                     updates["updated_at"],

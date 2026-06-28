@@ -123,6 +123,26 @@ def handle_app_server() -> int:
             next_turn += 1
             thread_id = str(params.get("threadId"))
             send({"id": request_id, "result": {"turn": {"id": turn_id}}})
+            if os.environ.get("FAKE_CODEX_AUTH_REFRESH_FAILURE") == "1":
+                send(
+                    {
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turn": {
+                                "id": turn_id,
+                                "status": "failed",
+                                "error": {
+                                    "message": (
+                                        "Your access token could not be refreshed because your refresh token was "
+                                        "already used. Please log out and sign in again."
+                                    )
+                                },
+                            },
+                        },
+                    }
+                )
+                continue
             threading.Thread(target=complete_turn, args=(thread_id, turn_id), daemon=True).start()
         elif method == "turn/steer":
             send({"id": request_id, "result": {"accepted": True}})

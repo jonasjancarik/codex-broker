@@ -207,6 +207,41 @@ class AppServerRoutingTests(unittest.TestCase):
                 first_state.close()
                 second_state.close()
 
+    def test_pool_key_includes_auth_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = config_for(tmp)
+            state = StateStore(config.state_db_path)
+            pool = AppServerPool(config, state)
+            try:
+                codex_home = config.auth_root / "owner_hash" / "profiles" / "default" / "codex-home"
+                codex_home.mkdir(parents=True)
+                first_client = pool.get(
+                    owner_hash="owner_hash",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=(),
+                    auth_fingerprint="sha256:first",
+                )
+                second_client = pool.get(
+                    owner_hash="owner_hash",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=(),
+                    auth_fingerprint="sha256:second",
+                )
+
+                self.assertIsNot(first_client, second_client)
+                self.assertNotEqual(first_client.pool_key_hash, second_client.pool_key_hash)
+                self.assertTrue(first_client.closed)
+                self.assertFalse(second_client.closed)
+                self.assertEqual(pool.metrics()["active_app_server_children"], 1)
+            finally:
+                pool.close_all()
+                state.close()
+
     def test_build_command_includes_codex_process_config_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             client = AppServerClient.__new__(AppServerClient)

@@ -516,10 +516,12 @@ class AppServerPool:
         config_profile: str,
         mcp_servers: tuple[McpServerRef, ...],
         codex_config_args: tuple[tuple[str, str], ...] = (),
+        auth_fingerprint: str | None = None,
     ) -> AppServerClient:
         key = (
             owner_hash,
             profile,
+            auth_fingerprint or "unknown-auth",
             config_profile,
             tuple(self.config.codex_command),
             self._codex_version(),
@@ -534,6 +536,8 @@ class AppServerPool:
         key_hash = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()[:16]
         with self._lock:
             self._sweep_locked()
+            if auth_fingerprint is not None:
+                self._close_idle_stale_auth_locked(owner_hash, profile, key[2])
             client = self._clients.get(key)
             if client and not client.closed:
                 return client
@@ -603,6 +607,12 @@ class AppServerPool:
                 self._restart_count += 1
                 client.close()
             elif not client.has_active_contexts and now - client.last_used_at > self.config.pool_idle_ttl_seconds:
+                self._clients.pop(key, None)
+                client.close()
+
+    def _close_idle_stale_auth_locked(self, owner_hash: str, profile: str, auth_fingerprint: str) -> None:
+        for key, client in list(self._clients.items()):
+            if key[0] == owner_hash and key[1] == profile and key[2] != auth_fingerprint and not client.has_active_contexts:
                 self._clients.pop(key, None)
                 client.close()
 

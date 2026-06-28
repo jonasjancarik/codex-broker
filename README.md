@@ -184,6 +184,7 @@ Core endpoints:
 - `POST /v1/owners/{ownerId}/auth/device/start`
 - `POST /v1/owners/{ownerId}/auth/device/submit`
 - `POST /v1/owners/{ownerId}/auth/api-key`
+- `POST /v1/owners/{ownerId}/auth/runtime/invalidate`
 - `POST /v1/owners/{ownerId}/auth/logout`
 - `GET /v1/owners/{ownerId}/audit-logs`
 - `POST /v1/owners/{ownerId}/threads`
@@ -196,6 +197,8 @@ Core endpoints:
 - `GET /v1/owners/{ownerId}/threads/{threadId}/events?after=0`
 
 Requests other than health and readiness require `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`. This includes `/metrics` and `/openapi.json`.
+
+Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the owner/profile auth file. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled app-server children that were started with the old auth.
 
 Set `CODEX_BROKER_INTERNAL_KEY` or `CODEX_BROKER_INTERNAL_KEY_FILE`. Unauthenticated mode is only for local development and requires `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
 
