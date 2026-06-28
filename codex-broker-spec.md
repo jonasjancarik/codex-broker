@@ -44,7 +44,6 @@ The broker also owns Codex process management, Codex auth homes, app-server JSON
 - **Owner**: a host-app identity that owns a Codex auth home. Usually a product user id or service-account id.
 - **Profile**: a named Codex auth profile under an owner.
 - **Configuration profile**: broker-side policy and defaults for model, sandbox, approval policy, workspace roots, and enabled bundles. API requests choose one with `configProfile`.
-- **Product thread id**: an optional host-owned alias, such as a chat id or job id.
 - **Broker thread**: the broker's durable thread id used by host apps.
 - **Codex thread**: the app-server conversation id managed by the broker.
 - **Turn**: one unit of Codex work on a broker thread.
@@ -176,7 +175,7 @@ Thread create example:
 
 ```json
 {
-  "productThreadId": "chat-123",
+  "threadId": "chat-123",
   "hostApp": "chat-app",
   "bundleId": "example-chat-v1",
   "configProfile": "default",
@@ -317,7 +316,6 @@ Broker-hosted adapters are transport shims. They forward declared headers, input
 The broker stores:
 
 - owner/profile auth status,
-- product thread id to broker thread id mappings,
 - broker thread id to Codex thread id mappings,
 - turns and turn status,
 - normalized events,

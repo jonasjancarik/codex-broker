@@ -59,7 +59,6 @@ class StateStore:
                 create table if not exists threads (
                   owner_hash text not null,
                   thread_id text not null,
-                  product_thread_id text,
                   profile text not null,
                   codex_thread_id text,
                   config_profile text not null default 'default',
@@ -147,19 +146,11 @@ class StateStore:
             self._ensure_columns(
                 "threads",
                 {
-                    "product_thread_id": "text",
                     "host_app": "text",
                     "config_profile": "text not null default 'default'",
                 },
             )
             self._copy_column_if_present("threads", "runtime_profile", "config_profile")
-            self._conn.execute(
-                """
-                create unique index if not exists idx_thread_product_id
-                  on threads(owner_hash, product_thread_id)
-                  where product_thread_id is not null
-                """
-            )
             self._ensure_columns(
                 "turns",
                 {
@@ -242,7 +233,7 @@ class StateStore:
         self,
         owner_hash: str,
         *,
-        product_thread_id: str | None,
+        thread_id: str | None = None,
         profile: str,
         config_profile: str,
         host_app: str | None,
@@ -250,18 +241,26 @@ class StateStore:
         cwd: str | None,
     ) -> dict[str, Any]:
         now = utc_now()
-        thread_id = random_id("thr")
+        caller_supplied_thread_id = thread_id is not None
+        thread_id = thread_id or random_id("thr")
         with self._lock, self._conn:
-            self._conn.execute(
-                """
-                insert into threads(
-                  owner_hash, thread_id, product_thread_id, profile, config_profile,
-                  host_app, bundle_id, cwd, status, created_at, updated_at
+            try:
+                self._conn.execute(
+                    """
+                    insert into threads(
+                      owner_hash, thread_id, profile, config_profile,
+                      host_app, bundle_id, cwd, status, created_at, updated_at
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                    """,
+                    (owner_hash, thread_id, profile, config_profile, host_app, bundle_id, cwd, now, now),
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-                """,
-                (owner_hash, thread_id, product_thread_id, profile, config_profile, host_app, bundle_id, cwd, now, now),
-            )
+            except sqlite3.IntegrityError:
+                if caller_supplied_thread_id:
+                    existing = self.get_thread(owner_hash, thread_id)
+                    if existing:
+                        return existing
+                raise
         return self.get_thread(owner_hash, thread_id) or {}
 
     def get_thread(self, owner_hash: str, thread_id: str) -> dict[str, Any] | None:
@@ -269,14 +268,6 @@ class StateStore:
             row = self._conn.execute(
                 "select * from threads where owner_hash = ? and thread_id = ?",
                 (owner_hash, thread_id),
-            ).fetchone()
-        return dict(row) if row else None
-
-    def get_thread_by_product_id(self, owner_hash: str, product_thread_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            row = self._conn.execute(
-                "select * from threads where owner_hash = ? and product_thread_id = ?",
-                (owner_hash, product_thread_id),
             ).fetchone()
         return dict(row) if row else None
 

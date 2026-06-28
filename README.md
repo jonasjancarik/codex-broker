@@ -59,7 +59,7 @@ The broker owns generic Codex infrastructure:
 - `codex app-server` child processes and pooling,
 - per-owner and per-profile `CODEX_HOME` directories,
 - Codex login status, device auth, API-key auth, and logout,
-- product-thread to broker-thread to Codex-thread mappings,
+- broker-thread to Codex-thread mappings,
 - turn creation, turn status, interruption, steering, and archive behavior,
 - one active turn at a time per broker thread,
 - normalized event persistence and Server-Sent Events streaming,
@@ -87,8 +87,7 @@ This split is important. The broker should not know what a product evidence hit 
 - **Host app**: the product using the broker.
 - **Owner**: the stable product identity that owns Codex credentials. Usually this is a user id or service-account id supplied by the host app.
 - **Profile**: a named Codex auth profile under an owner. `default` is enough for many apps.
-- **Broker thread**: the broker's durable thread id. Host apps submit turns to this id.
-- **Product thread id**: an optional host-owned alias, such as an app chat id or job id.
+- **Broker thread**: the broker's durable thread id. Host apps submit turns to this id. Host apps may supply this id when creating a thread, or omit it and let the broker generate one.
 - **Codex thread id**: the raw thread id returned by `codex app-server`. The broker stores it so host apps do not need to manage app-server details.
 - **Turn**: one unit of Codex work submitted to a broker thread.
 - **Bundle**: reviewed material that can provide skills, prompts, MCP servers, hosted-tool adapters, allowed paths, and sandbox policy.
@@ -101,7 +100,7 @@ A typical host integration follows this shape.
 1. The host app authenticates its own user.
 2. The host app chooses an `ownerId`, usually the product user id or a service-account id.
 3. The host app checks or starts Codex auth for that owner/profile.
-4. The host app creates or reuses a broker thread, optionally with `productThreadId`.
+4. The host app creates or reuses a broker thread, optionally with a caller-supplied `threadId`.
 5. The host app submits a turn to the broker thread.
 6. The host app streams normalized broker events from `/events`.
 7. The host app maps those events into its own UI, job logs, database rows, or artifacts.
@@ -110,7 +109,7 @@ Example thread create:
 
 ```json
 {
-  "productThreadId": "chat-123",
+  "threadId": "chat-123",
   "hostApp": "chat-app",
   "bundleId": "example-chat-v1",
   "configProfile": "default",
@@ -118,7 +117,7 @@ Example thread create:
 }
 ```
 
-If the same owner creates a thread with the same `productThreadId` again, the broker returns the existing broker thread.
+If the same owner creates a thread with the same `threadId` again, the broker returns the existing broker thread.
 
 Example turn create:
 
@@ -284,7 +283,7 @@ Implemented in this repo:
 - request waiters and turn contexts for JSON-RPC routing,
 - per-thread `reject`, `queue`, and `steer` turn behavior,
 - normalized event persistence and SSE streaming with product correlation and Codex ids,
-- durable owner-scoped `productThreadId` aliases for host product-thread to Codex-thread mapping,
+- optional caller-supplied broker `threadId` values for host chat or job ids,
 - optional raw app-server event capture with recursive secret redaction and bounded raw-field retention,
 - owner-scoped audit log API for auth, turn, approval, interrupt, and logout events,
 - durable app-server child process lifecycle records for operational diagnosis,
@@ -307,6 +306,7 @@ PYTHONDONTWRITEBYTECODE=1 uv run python -W always::ResourceWarning -m unittest d
 ## More Reading
 
 - [docs/host-integration.md](docs/host-integration.md): how host apps should call the broker.
+- [docs/integrating-with-broker.md](docs/integrating-with-broker.md): copy-pasteable integration flow, client examples, SSE events, and hosted-tool endpoint contract.
 - [docs/app-server-modes.md](docs/app-server-modes.md): version-pinned Codex app-server mode and capability coverage.
 - [docs/deployment.md](docs/deployment.md): Docker mounts, secrets, deployment, and shutdown behavior.
 - [examples/bundles/README.md](examples/bundles/README.md): example task bundles and hosted-tool declarations.

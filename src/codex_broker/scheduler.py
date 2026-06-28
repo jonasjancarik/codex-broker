@@ -205,9 +205,11 @@ class TurnScheduler:
         config_profile = self._request_config_profile(body)
         config_profile_config = self._config_profile_config(config_profile)
         host_app = optional_text(body.get("hostApp"))
-        product_thread_id = optional_text(body.get("productThreadId"))
-        if product_thread_id:
-            existing = self.state.get_thread_by_product_id(owner_hash, product_thread_id)
+        if "productThreadId" in body:
+            raise ValueError("productThreadId has been removed; pass threadId instead.")
+        requested_thread_id = optional_text(body.get("threadId"))
+        if requested_thread_id:
+            existing = self.state.get_thread(owner_hash, requested_thread_id)
             if existing:
                 return self._public_thread(existing)
         bundle_id = str(body["bundleId"]) if body.get("bundleId") else None
@@ -218,7 +220,7 @@ class TurnScheduler:
         self.auth.profile_home(owner_hash, profile)
         thread = self.state.create_thread(
             owner_hash,
-            product_thread_id=product_thread_id,
+            thread_id=requested_thread_id,
             profile=profile,
             config_profile=config_profile,
             host_app=host_app,
@@ -876,7 +878,6 @@ class TurnScheduler:
     def _public_thread(self, thread: dict[str, Any]) -> dict[str, Any]:
         return {
             "threadId": thread["thread_id"],
-            "productThreadId": thread.get("product_thread_id"),
             "codexThreadId": thread.get("codex_thread_id"),
             "profile": thread["profile"],
             "configProfile": thread["config_profile"],

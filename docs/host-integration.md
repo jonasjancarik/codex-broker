@@ -2,13 +2,15 @@
 
 The broker API is intentionally product-facing. Host apps keep product identity, authorization, data models, UI, and app-specific tool semantics. The broker owns the generic Codex work that every integration otherwise has to repeat: Codex process management, credential homes, thread locking, event streaming, and the Codex-facing interface for mounted bundles, MCP servers, or broker-hosted adapters.
 
+For copy-pasteable request flows, client examples, SSE details, and hosted-tool endpoint payloads, see [Integrating With The Broker](integrating-with-broker.md).
+
 ## Shared Request Shape
 
-Host apps should send stable product identifiers as `ownerId`, an optional `productThreadId` when creating a broker thread, `hostApp`, and a product correlation id for tracing:
+Host apps should send stable product identifiers as `ownerId`, an optional caller-supplied `threadId` when creating a broker thread, `hostApp`, and a product correlation id for tracing:
 
 ```json
 {
-  "productThreadId": "chat-123",
+  "threadId": "chat-123",
   "hostApp": "chat-app",
   "bundleId": "example-chat-v1",
   "configProfile": "default",
@@ -16,7 +18,7 @@ Host apps should send stable product identifiers as `ownerId`, an optional `prod
 }
 ```
 
-Repeated thread creates with the same owner and `productThreadId` return the existing broker thread. Store the returned broker `threadId` for turn submission; the broker keeps `productThreadId`, broker `threadId`, and Codex `codexThreadId` linked after Codex creates or resumes the Codex thread.
+Repeated thread creates with the same owner and `threadId` return the existing broker thread. Store the returned broker `threadId` for turn submission; the broker keeps broker `threadId` and Codex `codexThreadId` linked after Codex creates or resumes the Codex thread.
 
 Submit turns with the broker `threadId` and a product correlation id for tracing:
 
@@ -111,7 +113,7 @@ Recommended worker flow:
 3. Submit initial and follow-up work with `mode=queue`.
 4. Use the broker HTTP API directly or the Python `CodexBrokerClient` from `codex_broker.client` to keep worker code small.
 
-A job worker can support an opt-in broker execution mode with settings such as `CODEX_RUNTIME_MODE=broker`, `CODEX_BROKER_BASE_URL`, `CODEX_BROKER_INTERNAL_KEY`, and `CODEX_BROKER_BUNDLE_ID=document-jobs-v1`. The app keeps job records, queueing, artifacts, review rows, and UI streaming; an existing `codex_thread_id` or equivalent field can store the broker thread id for follow-up turns.
+A job worker can support an opt-in broker execution mode with settings such as `CODEX_RUNTIME_MODE=broker`, `CODEX_BROKER_BASE_URL`, `CODEX_BROKER_INTERNAL_KEY`, and `CODEX_BROKER_BUNDLE_ID=document-jobs-v1`. The app keeps job records, queueing, artifacts, review rows, and UI streaming; an existing job id or `codex_thread_id` compatibility field can be sent as the broker `threadId` for follow-up turns.
 
 ## Tool Exposure
 

@@ -427,7 +427,7 @@ def openapi_document() -> dict[str, Any]:
     turn_param = {"$ref": "#/components/parameters/turnId"}
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Codex Broker", "version": "0.2.0"},
+        "info": {"title": "Codex Broker", "version": "0.3.0"},
         "security": [{"brokerKey": []}],
         "paths": {
             "/healthz": {
@@ -679,7 +679,7 @@ def openapi_document() -> dict[str, Any]:
                 "ThreadCreateRequest": {
                     "type": "object",
                     "properties": {
-                        "productThreadId": {"type": "string"},
+                        "threadId": {"type": "string"},
                         "profile": {"type": "string", "default": "default"},
                         "configProfile": {"type": "string", "default": "default"},
                         "runtimeProfile": {"type": "string", "deprecated": True},
@@ -693,7 +693,6 @@ def openapi_document() -> dict[str, Any]:
                     "required": ["threadId", "profile", "configProfile", "status", "createdAt", "updatedAt"],
                     "properties": {
                         "threadId": {"type": "string"},
-                        "productThreadId": {"type": ["string", "null"]},
                         "codexThreadId": {"type": ["string", "null"]},
                         "profile": {"type": "string"},
                         "configProfile": {"type": "string"},

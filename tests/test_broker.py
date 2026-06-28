@@ -524,7 +524,7 @@ class BrokerTests(unittest.TestCase):
             state = StateStore(config.state_db_path)
             thread = state.create_thread(
                 "owner_hash",
-                product_thread_id=None,
+                thread_id=None,
                 profile="default",
                 config_profile="default",
                 host_app=None,
