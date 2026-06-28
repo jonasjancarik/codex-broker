@@ -433,6 +433,45 @@ class AppServerRoutingTests(unittest.TestCase):
         self.assertEqual(second.notifications, [("item/agentMessage/delta", {"turnId": "codex_turn_1", "delta": "early"}, True)])
         self.assertEqual(client._pending_notifications_by_turn, {})
 
+    def test_server_requests_use_codex_0_142_3_safe_response_shapes(self) -> None:
+        client = AppServerClient.__new__(AppServerClient)
+        client._contexts_lock = threading.RLock()
+        client._stdin_lock = threading.Lock()
+        client._stdin = io.StringIO()
+        context = FakeContext()
+        client._contexts = {context}
+        client._contexts_by_thread = {"codex_thread_1": context}
+        client._contexts_by_turn = {"codex_turn_1": context}
+
+        client._handle_server_request(
+            "item/permissions/requestApproval",
+            100,
+            {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "itemId": "perm_1"},
+        )
+        client._handle_server_request(
+            "applyPatchApproval",
+            101,
+            {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "itemId": "patch_1"},
+        )
+        client._handle_server_request(
+            "item/tool/requestUserInput",
+            102,
+            {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "itemId": "input_1"},
+        )
+        client._handle_server_request(
+            "mcpServer/elicitation/request",
+            103,
+            {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "serverName": "host", "mode": "form"},
+        )
+
+        responses = [json.loads(line) for line in client._stdin.getvalue().splitlines()]
+        self.assertEqual(responses[0]["result"], {"permissions": {}, "scope": "turn", "strictAutoReview": True})
+        self.assertEqual(responses[1]["result"], {"decision": "denied"})
+        self.assertEqual(responses[2]["result"], {"answers": {}})
+        self.assertEqual(responses[3]["result"], {"action": "decline", "content": None, "_meta": None})
+        self.assertIn(("item/tool/requestUserInput/resolved", {"method": "item/tool/requestUserInput", "answers": {}, "params": {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "itemId": "input_1"}}, False), context.notifications)
+        self.assertIn(("mcpServer/elicitation/resolved", {"method": "mcpServer/elicitation/request", "action": "decline", "params": {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "serverName": "host", "mode": "form"}}, False), context.notifications)
+
 
 if __name__ == "__main__":
     unittest.main()

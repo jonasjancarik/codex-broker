@@ -475,7 +475,7 @@ class BrokerTests(unittest.TestCase):
             )
 
             events = state.list_events("owner_hash", "thread_1")
-            self.assertEqual([event["event_type"] for event in events], ["tool.started", "tool.output.delta", "tool.completed", "tool.requested"])
+            self.assertEqual([event["event_type"] for event in events], ["tool.started", "tool.output.delta", "tool.completed", "user_input.requested"])
             self.assertEqual(events[0]["payload"]["item"]["command"], "printf test")
             self.assertEqual(events[1]["payload"]["delta"], "test")
             self.assertTrue(events[3]["ambiguous"])

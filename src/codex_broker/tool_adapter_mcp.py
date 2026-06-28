@@ -39,7 +39,7 @@ class ToolAdapterServer:
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "codex-broker-tool-adapter", "version": "0.1.0"},
+                    "serverInfo": {"name": "codex-broker-tool-adapter", "version": "0.2.0"},
                 },
             }
         if method == "tools/list":

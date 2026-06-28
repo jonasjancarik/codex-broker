@@ -288,6 +288,7 @@ Implemented in this repo:
 - optional raw app-server event capture with recursive secret redaction and bounded raw-field retention,
 - owner-scoped audit log API for auth, turn, approval, interrupt, and logout events,
 - durable app-server child process lifecycle records for operational diagnosis,
+- app-server 0.142.3 mode/capability event coverage for plan, goal, review, approvals, user input, and MCP elicitations,
 - mounted bundles, inline bundle validation, skills/prompt overlays, mounted MCP, and broker-hosted tool adapters,
 - readiness checks, Prometheus-style metrics, structured JSON logs, and schema-backed `/openapi.json`.
 
@@ -306,5 +307,6 @@ PYTHONDONTWRITEBYTECODE=1 uv run python -W always::ResourceWarning -m unittest d
 ## More Reading
 
 - [docs/host-integration.md](docs/host-integration.md): how host apps should call the broker.
+- [docs/app-server-modes.md](docs/app-server-modes.md): version-pinned Codex app-server mode and capability coverage.
 - [docs/deployment.md](docs/deployment.md): Docker mounts, secrets, deployment, and shutdown behavior.
 - [examples/bundles/README.md](examples/bundles/README.md): example task bundles and hosted-tool declarations.

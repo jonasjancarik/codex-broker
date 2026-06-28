@@ -12,6 +12,7 @@ from .app_server import AppServerClient, AppServerError, AppServerPool
 from .auth import AuthManager
 from .bundles import BundleError, BundleRegistry, ResolvedBundle
 from .config import BrokerConfig
+from .events import normalize_app_server_event
 from .state import StateStore
 from .util import json_dumps, json_log, redact_json, utc_now
 
@@ -41,19 +42,6 @@ def feature_config_key(value: str) -> str:
 
 def optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
-
-
-def is_tool_item(item: dict[str, Any]) -> bool:
-    item_type = str(item.get("type") or "").lower()
-    return any(marker in item_type for marker in ("tool", "command", "function", "mcp"))
-
-
-def reasoning_summary_id(params: dict[str, Any]) -> str | None:
-    item_id = params.get("itemId")
-    summary_index = params.get("summaryIndex")
-    if not isinstance(item_id, str) or not isinstance(summary_index, int):
-        return None
-    return f"{item_id}:{summary_index}"
 
 
 @dataclass
@@ -167,58 +155,12 @@ class BrokerTurnContext:
         self.finish("failed", message, "turn.failed")
 
     def _normalize(self, method: str, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        if method == "thread/started":
-            return "thread.started", {"thread": params.get("thread"), "threadId": self.codex_thread_id}
-        if method == "thread/resumed":
-            return "thread.resumed", {"thread": params.get("thread"), "threadId": self.codex_thread_id}
-        if method == "turn/started":
-            return "turn.started", {"turn": params.get("turn"), "turnId": self.codex_turn_id}
-        if method == "turn/completed":
-            turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
-            status = str(turn.get("status") or "completed")
-            return ("turn.completed" if status == "completed" else "turn.failed"), {"turn": turn}
-        if method == "turn/interrupted":
-            return "turn.interrupted", {"params": params}
-        if method == "item/agentMessage/delta":
-            return "message.delta", {"delta": params.get("delta"), "itemId": params.get("itemId")}
-        if method == "item/reasoning/summaryPartAdded":
-            return "reasoning.summary.started", {
-                "itemId": params.get("itemId"),
-                "summaryIndex": params.get("summaryIndex"),
-                "summaryId": reasoning_summary_id(params),
-            }
-        if method == "item/reasoning/summaryTextDelta":
-            return "reasoning.summary.delta", {
-                "itemId": params.get("itemId"),
-                "summaryIndex": params.get("summaryIndex"),
-                "summaryId": reasoning_summary_id(params),
-                "delta": params.get("delta"),
-            }
-        if method == "item/started":
-            item = params.get("item") if isinstance(params.get("item"), dict) else {}
-            if is_tool_item(item):
-                return "tool.started", {"item": item}
-            return "item.started", {"item": params.get("item")}
-        if method == "item/completed":
-            item = params.get("item") if isinstance(params.get("item"), dict) else {}
-            if item.get("type") == "agentMessage":
-                return "message.completed", {"item": item}
-            if item.get("type") == "reasoning":
-                return "reasoning.completed", {"item": item}
-            if is_tool_item(item):
-                return "tool.completed", {"item": item}
-            return "item.completed", {"item": item}
-        if method.endswith("/requestApproval"):
-            return "approval.requested", {"method": method, "params": params}
-        if method == "approval/resolved":
-            return "approval.resolved", {"method": params.get("method"), "decision": params.get("decision")}
-        if method == "item/commandExecution/outputDelta":
-            return "tool.output.delta", {"delta": params.get("delta"), "itemId": params.get("itemId")}
-        if method == "error":
-            return "error", {"error": params.get("error") or params}
-        if method.startswith("item/") and "tool" in method.lower():
-            return "tool.requested", {"method": method, "params": params}
-        return "item.completed" if method.endswith("/completed") else "item.started", {"method": method, "params": params}
+        return normalize_app_server_event(
+            method,
+            params,
+            codex_thread_id=self.codex_thread_id,
+            codex_turn_id=self.codex_turn_id,
+        )
 
 
 class TurnScheduler:

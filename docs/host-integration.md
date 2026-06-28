@@ -79,6 +79,10 @@ The sample chat bundle exposes `host.evidence.search` through a broker-hosted ad
 
 Approval-gated tool work emits `tool.requested` before `approval.requested`, followed by `approval.resolved` after the broker answers the app-server approval request. Host UIs can use `tool.requested` for generic tool lifecycle display and approval events for approval-specific state.
 
+Codex app-server `0.142.3` exposes `default` and `plan` as collaboration mode kinds. Goal tracking, review, approval, user-input, and MCP elicitation behavior are separate app-server capabilities. The broker normalizes those surfaces as `thread.settings.updated`, `plan.updated`, `plan.delta`, `goal.updated`, `goal.cleared`, `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed`, `user_input.requested`, `user_input.resolved`, `mcp.elicitation.requested`, and `mcp.elicitation.resolved`.
+
+Until host-mediated response APIs exist, the broker answers approval, user-input, and MCP elicitation server requests with safe defaults: command/file approvals are declined, legacy approvals are denied, permission-profile requests receive no extra permissions, user-input requests receive empty answers, and MCP elicitations are declined. These events are still persisted and streamed so host apps can display the attempted interaction or use it for audit/debugging.
+
 Reasoning summary notifications are normalized as `reasoning.summary.started`, `reasoning.summary.delta`, and `reasoning.completed` events. The payload includes `itemId`, `summaryIndex`, and a stable `summaryId` when Codex supplies both item id and summary index.
 
 If app-server notifications arrive before all Codex turn metadata is known, the broker either attaches them to the best active context or buffers them by Codex turn id until the turn is registered. Such events are marked `ambiguous` so host consumers can distinguish early routed events from fully keyed events.

@@ -6,7 +6,7 @@ The broker is designed as one internal Docker image that a host app can run next
 
 The Dockerfile installs the official Codex CLI Linux musl release from `openai/codex` and then installs the broker Python package. Build-time args:
 
-- `CODEX_VERSION`: Codex release version without the `rust-v` prefix, default `0.142.2`.
+- `CODEX_VERSION`: Codex release version without the `rust-v` prefix, default `0.142.3`.
 - `TARGETARCH`: supplied by Docker BuildKit; `amd64` maps to `x86_64`, `arm64` maps to `aarch64`.
 
 GitHub Actions publishes multi-architecture images to `ghcr.io/jonasjancarik/codex-broker`. Pushes to `main` publish `edge`, and `v*` tags publish both `latest` and the matching version tag. Pull requests build the image without pushing it.

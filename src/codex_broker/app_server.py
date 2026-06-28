@@ -12,6 +12,16 @@ from typing import Any, Protocol
 
 from .bundles import McpServerRef
 from .config import BrokerConfig
+from .events import (
+    APPROVAL_REQUEST_METHODS,
+    DECISION_APPROVAL_REQUEST_METHODS,
+    LEGACY_APPROVAL_REQUEST_METHODS,
+    MCP_ELICITATION_REQUEST_METHOD,
+    MCP_ELICITATION_RESOLVED_METHOD,
+    PERMISSIONS_APPROVAL_REQUEST_METHOD,
+    USER_INPUT_REQUEST_METHOD,
+    USER_INPUT_RESOLVED_METHOD,
+)
 from .state import StateStore
 from .util import clean_process_env, env_with, json_log, redact
 
@@ -173,7 +183,11 @@ class AppServerClient:
                     "title": self.config.client_title,
                     "version": self.config.client_version,
                 },
-                "capabilities": {"experimentalApi": True},
+                "capabilities": {
+                    "experimentalApi": True,
+                    "requestAttestation": False,
+                    "mcpServerOpenaiFormElicitation": True,
+                },
             },
         )
         self.send({"method": "initialized", "params": {}})
@@ -423,11 +437,11 @@ class AppServerClient:
 
     def _handle_server_request(self, method: str, message_id: Any, params: dict[str, Any]) -> None:
         context, ambiguous = self._context_for_params(params)
-        if context and method.startswith("item/") and method.endswith("/requestApproval"):
+        if context and method in APPROVAL_REQUEST_METHODS:
             context.record_tool_requested(method, params, ambiguous=ambiguous)
         if context:
             context.handle_notification(method, params, ambiguous=ambiguous)
-        if method.endswith("/requestApproval"):
+        if method in DECISION_APPROVAL_REQUEST_METHODS:
             self.send({"id": message_id, "result": {"decision": "decline"}})
             if context:
                 context.handle_notification(
@@ -435,8 +449,39 @@ class AppServerClient:
                     {"method": method, "decision": "decline", "params": params},
                     ambiguous=ambiguous,
                 )
-        elif method == "item/tool/requestUserInput":
-            self.send({"id": message_id, "result": {"answers": {}}})
+        elif method in LEGACY_APPROVAL_REQUEST_METHODS:
+            self.send({"id": message_id, "result": {"decision": "denied"}})
+            if context:
+                context.handle_notification(
+                    "approval/resolved",
+                    {"method": method, "decision": "denied", "params": params},
+                    ambiguous=ambiguous,
+                )
+        elif method == PERMISSIONS_APPROVAL_REQUEST_METHOD:
+            self.send({"id": message_id, "result": {"permissions": {}, "scope": "turn", "strictAutoReview": True}})
+            if context:
+                context.handle_notification(
+                    "approval/resolved",
+                    {"method": method, "decision": "decline", "params": params},
+                    ambiguous=ambiguous,
+                )
+        elif method == USER_INPUT_REQUEST_METHOD:
+            answers: dict[str, Any] = {}
+            self.send({"id": message_id, "result": {"answers": answers}})
+            if context:
+                context.handle_notification(
+                    USER_INPUT_RESOLVED_METHOD,
+                    {"method": method, "answers": answers, "params": params},
+                    ambiguous=ambiguous,
+                )
+        elif method == MCP_ELICITATION_REQUEST_METHOD:
+            self.send({"id": message_id, "result": {"action": "decline", "content": None, "_meta": None}})
+            if context:
+                context.handle_notification(
+                    MCP_ELICITATION_RESOLVED_METHOD,
+                    {"method": method, "action": "decline", "params": params},
+                    ambiguous=ambiguous,
+                )
         else:
             self.send({"id": message_id, "error": {"code": -32601, "message": f"Unsupported App Server request: {method}"}})
 
