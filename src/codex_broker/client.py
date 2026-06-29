@@ -99,6 +99,41 @@ class CodexBrokerClient:
             {},
         )
 
+    def list_interactions(
+        self,
+        owner_id: str,
+        thread_id: str,
+        *,
+        turn_id: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        query: dict[str, str] = {}
+        if turn_id is not None:
+            query["turnId"] = turn_id
+        if status is not None:
+            query["status"] = status
+        if limit is not None:
+            query["limit"] = str(limit)
+        return self._request("GET", f"/v1/owners/{quote(owner_id)}/threads/{quote(thread_id)}/interactions", query=query)
+
+    def resolve_interaction(
+        self,
+        owner_id: str,
+        thread_id: str,
+        turn_id: str,
+        interaction_id: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            (
+                f"/v1/owners/{quote(owner_id)}/threads/{quote(thread_id)}/turns/{quote(turn_id)}"
+                f"/interactions/{quote(interaction_id)}/resolve"
+            ),
+            body,
+        )
+
     def stream_events(
         self,
         owner_id: str,

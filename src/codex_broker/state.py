@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +146,29 @@ class StateStore:
                   payload_json text not null,
                   created_at text not null
                 );
+                create table if not exists pending_interactions (
+                  owner_hash text not null,
+                  interaction_id text not null,
+                  thread_id text not null,
+                  turn_id text not null,
+                  product_correlation_id text,
+                  codex_thread_id text,
+                  codex_turn_id text,
+                  kind text not null,
+                  method text not null,
+                  status text not null,
+                  request_json text not null,
+                  response_json text,
+                  fallback_json text not null,
+                  resolution_source text,
+                  created_at text not null,
+                  expires_at text,
+                  resolved_at text,
+                  updated_at text not null,
+                  primary key (owner_hash, interaction_id)
+                );
+                create index if not exists idx_pending_interactions_thread
+                  on pending_interactions(owner_hash, thread_id, turn_id, status, created_at);
                 """
             )
             self._ensure_columns(
@@ -183,6 +207,13 @@ class StateStore:
                     "codex_turn_id": "text",
                 },
             )
+
+    @staticmethod
+    def _future_timestamp(seconds: float | None) -> str | None:
+        if seconds is None or seconds <= 0:
+            return None
+        expires = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        return expires.isoformat().replace("+00:00", "Z")
 
     def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
         existing = {
@@ -503,6 +534,135 @@ class StateStore:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    def create_pending_interaction(
+        self,
+        owner_hash: str,
+        thread_id: str,
+        turn_id: str,
+        *,
+        kind: str,
+        method: str,
+        request: dict[str, Any],
+        fallback_response: dict[str, Any],
+        product_correlation_id: str | None,
+        codex_thread_id: str | None,
+        codex_turn_id: str | None,
+        timeout_seconds: float | None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        interaction_id = random_id("int")
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                insert into pending_interactions(
+                  owner_hash, interaction_id, thread_id, turn_id,
+                  product_correlation_id, codex_thread_id, codex_turn_id,
+                  kind, method, status, request_json, fallback_json,
+                  created_at, expires_at, updated_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                """,
+                (
+                    owner_hash,
+                    interaction_id,
+                    thread_id,
+                    turn_id,
+                    product_correlation_id,
+                    codex_thread_id,
+                    codex_turn_id,
+                    kind,
+                    method,
+                    json_dumps(request),
+                    json_dumps(fallback_response),
+                    now,
+                    self._future_timestamp(timeout_seconds),
+                    now,
+                ),
+            )
+        interaction = self.get_interaction(owner_hash, interaction_id)
+        return interaction or {}
+
+    def get_interaction(self, owner_hash: str, interaction_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "select * from pending_interactions where owner_hash = ? and interaction_id = ?",
+                (owner_hash, interaction_id),
+            ).fetchone()
+        return self._interaction_from_row(row) if row else None
+
+    def list_interactions(
+        self,
+        owner_hash: str,
+        thread_id: str,
+        *,
+        turn_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [owner_hash, thread_id]
+        where = "owner_hash = ? and thread_id = ?"
+        if turn_id:
+            where += " and turn_id = ?"
+            params.append(turn_id)
+        if status:
+            where += " and status = ?"
+            params.append(status)
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock:
+            rows = self._conn.execute(
+                f"select * from pending_interactions where {where} order by created_at asc limit ?",
+                params,
+            ).fetchall()
+        return [self._interaction_from_row(row) for row in rows]
+
+    def complete_interaction(
+        self,
+        owner_hash: str,
+        interaction_id: str,
+        *,
+        response: dict[str, Any],
+        source: str,
+        status: str = "resolved",
+    ) -> dict[str, Any] | None:
+        now = utc_now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                update pending_interactions
+                set status = ?,
+                    response_json = ?,
+                    resolution_source = ?,
+                    resolved_at = coalesce(resolved_at, ?),
+                    updated_at = ?
+                where owner_hash = ? and interaction_id = ? and status = 'pending'
+                """,
+                (status, json_dumps(response), source, now, now, owner_hash, interaction_id),
+            )
+            if cursor.rowcount <= 0:
+                return self.get_interaction(owner_hash, interaction_id)
+        return self.get_interaction(owner_hash, interaction_id)
+
+    def recover_pending_interactions(self) -> int:
+        now = utc_now()
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "select * from pending_interactions where status = 'pending'"
+            ).fetchall()
+            for row in rows:
+                self._conn.execute(
+                    """
+                    update pending_interactions
+                    set status = 'failed',
+                        response_json = fallback_json,
+                        resolution_source = 'broker_restarted',
+                        resolved_at = coalesce(resolved_at, ?),
+                        updated_at = ?
+                    where owner_hash = ? and interaction_id = ?
+                    """,
+                    (now, now, row["owner_hash"], row["interaction_id"]),
+                )
+        return len(rows)
+
     def recover_incomplete_turns(self, message: str) -> int:
         now = utc_now()
         with self._lock, self._conn:
@@ -703,4 +863,11 @@ class StateStore:
     def _audit_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         data["payload"] = json_loads(data.pop("payload_json"), {})
+        return data
+
+    def _interaction_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["request"] = json_loads(data.pop("request_json"), {})
+        data["response"] = json_loads(data.pop("response_json"), None)
+        data["fallback_response"] = json_loads(data.pop("fallback_json"), {})
         return data

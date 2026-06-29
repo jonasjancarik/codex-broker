@@ -25,6 +25,10 @@ class OpenApiTests(unittest.TestCase):
             "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/steer",
             "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interrupt",
             "/v1/owners/{ownerId}/threads/{threadId}/events",
+            "/v1/owners/{ownerId}/threads/{threadId}/interactions",
+            "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions",
+            "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}",
+            "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve",
             "/v1/bundles/inline",
         ]:
             self.assertIn(path, paths)
@@ -40,6 +44,9 @@ class OpenApiTests(unittest.TestCase):
             "TurnStartRequest",
             "Turn",
             "BrokerEvent",
+            "Interaction",
+            "InteractionList",
+            "InteractionResolveRequest",
             "TaskBundle",
             "BundleAccepted",
             "Error",
@@ -72,6 +79,8 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("publicMessage", components["schemas"]["Turn"]["properties"])
         self.assertIn("adminMessage", components["schemas"]["Turn"]["properties"])
         self.assertIn("expiresAt", components["schemas"]["DeviceAuthSession"]["properties"])
+        self.assertIn("interactionId", components["parameters"])
+        self.assertIn("fallbackResponse", components["schemas"]["Interaction"]["properties"])
         inline_bundle = paths["/v1/bundles/inline"]["post"]["requestBody"]["content"]["application/json"]["schema"]
         self.assertEqual(inline_bundle["$ref"], "#/components/schemas/TaskBundle")
         self.assertEqual(paths["/healthz"]["get"]["security"], [])

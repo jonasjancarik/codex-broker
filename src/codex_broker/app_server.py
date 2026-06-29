@@ -14,16 +14,17 @@ from .bundles import McpServerRef
 from .config import BrokerConfig
 from .events import (
     APPROVAL_REQUEST_METHODS,
-    DECISION_APPROVAL_REQUEST_METHODS,
-    LEGACY_APPROVAL_REQUEST_METHODS,
-    MCP_ELICITATION_REQUEST_METHOD,
-    MCP_ELICITATION_RESOLVED_METHOD,
-    PERMISSIONS_APPROVAL_REQUEST_METHOD,
     USER_INPUT_REQUEST_METHOD,
-    USER_INPUT_RESOLVED_METHOD,
+)
+from .interactions import (
+    INTERACTION_REQUEST_METHODS,
+    interaction_kind,
+    resolved_notification_params,
+    response_event_method,
+    safe_response_for_method,
 )
 from .state import StateStore
-from .util import clean_process_env, env_with, json_log, redact
+from .util import clean_process_env, env_with, json_log, random_id, redact
 
 
 class AppServerError(RuntimeError):
@@ -41,11 +42,29 @@ class JsonRpcWaiter:
     error: BaseException | None = None
 
 
+@dataclass
+class PendingServerInteraction:
+    interaction_id: str
+    message_id: Any
+    owner_hash: str
+    method: str
+    request_params: dict[str, Any]
+    fallback_response: dict[str, Any]
+    context: "TurnContext | None"
+    ambiguous: bool
+    event: threading.Event = field(default_factory=threading.Event)
+    response: dict[str, Any] | None = None
+    source: str | None = None
+    completed_in_state: bool = False
+
+
 class TurnContext(Protocol):
     owner_hash: str
     thread_id: str
+    turn_id: str
     codex_thread_id: str | None
     codex_turn_id: str | None
+    product_correlation_id: str | None
 
     def register_thread(self, codex_thread_id: str) -> None: ...
 
@@ -112,6 +131,8 @@ class AppServerClient:
         self._contexts_by_thread: dict[str, TurnContext] = {}
         self._contexts_by_turn: dict[str, TurnContext] = {}
         self._pending_notifications_by_turn: dict[str, list[tuple[str, dict[str, Any], bool]]] = {}
+        self._pending_interactions: dict[str, PendingServerInteraction] = {}
+        self._pending_interactions_lock = threading.RLock()
         self._closed = False
         self._process_record_id: int | None = None
         self._process_record_closed = False
@@ -280,6 +301,7 @@ class AppServerClient:
                 self._process.wait(timeout=2)
         self._close_streams()
         self._record_process_close("closed", self._process.poll())
+        self._cancel_pending_interactions("app_server_closed")
         self._fail_waiters(AppServerError("App Server closed"))
         self._fail_contexts("App Server closed")
         self._stdout_thread.join(timeout=1)
@@ -437,53 +459,161 @@ class AppServerClient:
 
     def _handle_server_request(self, method: str, message_id: Any, params: dict[str, Any]) -> None:
         context, ambiguous = self._context_for_params(params)
-        if context and method in APPROVAL_REQUEST_METHODS:
-            context.record_tool_requested(method, params, ambiguous=ambiguous)
-        if context:
-            context.handle_notification(method, params, ambiguous=ambiguous)
-        if method in DECISION_APPROVAL_REQUEST_METHODS:
-            self.send({"id": message_id, "result": {"decision": "decline"}})
-            if context:
-                context.handle_notification(
-                    "approval/resolved",
-                    {"method": method, "decision": "decline", "params": params},
-                    ambiguous=ambiguous,
-                )
-        elif method in LEGACY_APPROVAL_REQUEST_METHODS:
-            self.send({"id": message_id, "result": {"decision": "denied"}})
-            if context:
-                context.handle_notification(
-                    "approval/resolved",
-                    {"method": method, "decision": "denied", "params": params},
-                    ambiguous=ambiguous,
-                )
-        elif method == PERMISSIONS_APPROVAL_REQUEST_METHOD:
-            self.send({"id": message_id, "result": {"permissions": {}, "scope": "turn", "strictAutoReview": True}})
-            if context:
-                context.handle_notification(
-                    "approval/resolved",
-                    {"method": method, "decision": "decline", "params": params},
-                    ambiguous=ambiguous,
-                )
-        elif method == USER_INPUT_REQUEST_METHOD:
-            answers: dict[str, Any] = {}
-            self.send({"id": message_id, "result": {"answers": answers}})
-            if context:
-                context.handle_notification(
-                    USER_INPUT_RESOLVED_METHOD,
-                    {"method": method, "answers": answers, "params": params},
-                    ambiguous=ambiguous,
-                )
-        elif method == MCP_ELICITATION_REQUEST_METHOD:
-            self.send({"id": message_id, "result": {"action": "decline", "content": None, "_meta": None}})
-            if context:
-                context.handle_notification(
-                    MCP_ELICITATION_RESOLVED_METHOD,
-                    {"method": method, "action": "decline", "params": params},
-                    ambiguous=ambiguous,
-                )
+        if method in INTERACTION_REQUEST_METHODS:
+            self._handle_interaction_request(method, message_id, params, context, ambiguous)
         else:
             self.send({"id": message_id, "error": {"code": -32601, "message": f"Unsupported App Server request: {method}"}})
+
+    def _handle_interaction_request(
+        self,
+        method: str,
+        message_id: Any,
+        params: dict[str, Any],
+        context: TurnContext | None,
+        ambiguous: bool,
+    ) -> None:
+        fallback = safe_response_for_method(method)
+        if not context:
+            self.send({"id": message_id, "result": fallback})
+            return
+        timeout = self._host_response_timeout(method, params)
+        interaction = self._create_pending_interaction(method, message_id, params, fallback, context, ambiguous, timeout)
+        request_params = dict(params)
+        request_params["interactionId"] = interaction.interaction_id
+        if context and method in APPROVAL_REQUEST_METHODS:
+            context.record_tool_requested(method, request_params, ambiguous=ambiguous)
+        context.handle_notification(method, request_params, ambiguous=ambiguous)
+        try:
+            response, source = self._await_interaction_response(interaction, timeout)
+            self._complete_pending_interaction(interaction, response, source)
+            try:
+                self.send({"id": message_id, "result": response})
+            except AppServerError:
+                return
+            context.handle_notification(
+                response_event_method(method),
+                resolved_notification_params(
+                    method,
+                    response,
+                    interaction_id=interaction.interaction_id,
+                    request_params=request_params,
+                    source=source,
+                ),
+                ambiguous=ambiguous,
+            )
+        finally:
+            with self._pending_interactions_lock:
+                self._pending_interactions.pop(interaction.interaction_id, None)
+
+    def _create_pending_interaction(
+        self,
+        method: str,
+        message_id: Any,
+        params: dict[str, Any],
+        fallback: dict[str, Any],
+        context: TurnContext,
+        ambiguous: bool,
+        timeout: float,
+    ) -> PendingServerInteraction:
+        self._ensure_pending_interaction_state()
+        state = getattr(self, "state", None)
+        if state:
+            row = state.create_pending_interaction(
+                context.owner_hash,
+                context.thread_id,
+                context.turn_id,
+                kind=interaction_kind(method),
+                method=method,
+                request=params,
+                fallback_response=fallback,
+                product_correlation_id=context.product_correlation_id,
+                codex_thread_id=context.codex_thread_id,
+                codex_turn_id=context.codex_turn_id,
+                timeout_seconds=timeout,
+            )
+            interaction_id = str(row["interaction_id"])
+        else:
+            interaction_id = random_id("int")
+        interaction = PendingServerInteraction(
+            interaction_id=interaction_id,
+            message_id=message_id,
+            owner_hash=context.owner_hash,
+            method=method,
+            request_params=params,
+            fallback_response=fallback,
+            context=context,
+            ambiguous=ambiguous,
+        )
+        with self._pending_interactions_lock:
+            self._pending_interactions[interaction_id] = interaction
+        return interaction
+
+    def _await_interaction_response(self, interaction: PendingServerInteraction, timeout: float) -> tuple[dict[str, Any], str]:
+        if timeout > 0 and interaction.event.wait(timeout):
+            return interaction.response or interaction.fallback_response, interaction.source or "host"
+        with self._pending_interactions_lock:
+            if interaction.event.is_set():
+                return interaction.response or interaction.fallback_response, interaction.source or "host"
+            interaction.response = interaction.fallback_response
+            interaction.source = "fallback_timeout" if timeout > 0 else "fallback_no_wait"
+            interaction.event.set()
+        return interaction.fallback_response, interaction.source
+
+    def _complete_pending_interaction(
+        self,
+        interaction: PendingServerInteraction,
+        response: dict[str, Any],
+        source: str,
+    ) -> None:
+        if interaction.completed_in_state:
+            return
+        state = getattr(self, "state", None)
+        if state:
+            state.complete_interaction(interaction.owner_hash, interaction.interaction_id, response=response, source=source)
+        interaction.completed_in_state = True
+
+    def resolve_pending_interaction(self, interaction_id: str, response: dict[str, Any], *, source: str = "host") -> dict[str, Any] | None:
+        self._ensure_pending_interaction_state()
+        with self._pending_interactions_lock:
+            interaction = self._pending_interactions.get(interaction_id)
+            if not interaction or interaction.event.is_set():
+                return None
+            interaction.response = response
+            interaction.source = source
+            interaction.event.set()
+        state = getattr(self, "state", None)
+        if state:
+            row = state.complete_interaction(interaction.owner_hash, interaction_id, response=response, source=source)
+            interaction.completed_in_state = True
+            return row
+        return None
+
+    def _cancel_pending_interactions(self, source: str) -> None:
+        self._ensure_pending_interaction_state()
+        with self._pending_interactions_lock:
+            pending = list(self._pending_interactions.values())
+        for interaction in pending:
+            with self._pending_interactions_lock:
+                if interaction.event.is_set():
+                    continue
+                interaction.response = interaction.fallback_response
+                interaction.source = source
+                interaction.event.set()
+            self._complete_pending_interaction(interaction, interaction.fallback_response, source)
+
+    def _ensure_pending_interaction_state(self) -> None:
+        if not hasattr(self, "_pending_interactions_lock"):
+            self._pending_interactions_lock = threading.RLock()
+        if not hasattr(self, "_pending_interactions"):
+            self._pending_interactions = {}
+
+    def _host_response_timeout(self, method: str, params: dict[str, Any]) -> float:
+        timeout = float(getattr(getattr(self, "config", None), "host_response_timeout_seconds", 0) or 0)
+        if method == USER_INPUT_REQUEST_METHOD and isinstance(params.get("autoResolutionMs"), int):
+            prompt_timeout = max(float(params["autoResolutionMs"]) / 1000, 0)
+            if timeout <= 0 or prompt_timeout < timeout:
+                timeout = prompt_timeout
+        return max(timeout, 0)
 
     def _fail_waiters(self, error: BaseException) -> None:
         with self._request_lock:

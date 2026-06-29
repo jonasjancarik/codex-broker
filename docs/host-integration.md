@@ -1,12 +1,38 @@
 # Host Integration
 
-The broker API is intentionally product-facing. Host apps keep product identity, authorization, data models, UI, and app-specific tool semantics. The broker owns the generic Codex work that every integration otherwise has to repeat: Codex process management, credential homes, thread locking, event streaming, and the Codex-facing interface for mounted bundles, MCP servers, or broker-hosted adapters.
+Use this document when a product backend, chat service, or job worker wants to run Codex work through the broker. The host app calls the broker over HTTP; browser clients should keep calling the host app.
+
+The host app keeps product concerns: users, authorization, database records, UI, prompt construction, evidence semantics, job records, artifacts, and business rules. The broker handles reusable Codex plumbing: credentials per owner/profile, app-server process pooling, broker thread and turn state, one-active-turn-at-a-time locking, normalized event streaming, and the temporary per-turn files and config that expose bundles, MCP servers, and broker-hosted adapters to Codex.
+
+A bundle is a named task manifest selected by `bundleId`. It declares the Codex-facing context and capabilities for a class of host work: instructions, mounted skills, prompt files, MCP servers, broker-hosted tool adapters, additional allowed workspace paths, and sandbox defaults. Bundles do not contain host business logic, user state, secrets, queues, artifacts, or authorization rules; those stay in the host app.
 
 For copy-pasteable request flows, client examples, SSE details, and hosted-tool endpoint payloads, see [Integrating With The Broker](integrating-with-broker.md).
 
-## Shared Request Shape
+## Sending JSON Requests
 
-Host apps should send stable product identifiers as `ownerId`, an optional caller-supplied `threadId` when creating a broker thread, `hostApp`, and a product correlation id for tracing:
+For the `POST` examples below, put path values such as `ownerId` and `threadId` in the URL, and send the shown JSON as the raw request body with `Content-Type: application/json`. Do not send these payloads as query parameters, form fields, or multipart data.
+
+In curl, the shape is:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $CODEX_BROKER_INTERNAL_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"threadId":"chat-123","hostApp":"chat-app"}' \
+  "$CODEX_BROKER_BASE_URL/v1/owners/$OWNER_ID/threads"
+```
+
+## Create Or Reuse A Thread
+
+A broker thread is the broker's handle for one host conversation, job, or other long-running work item. Create it before starting turns.
+
+Send the stable host user id or service account id as `ownerId` in the URL path:
+
+```http
+POST /v1/owners/{ownerId}/threads
+```
+
+The JSON body below is the thread creation payload. `threadId` is optional; when supplied, it should be a stable host id such as a chat id or job id.
 
 ```json
 {
@@ -18,9 +44,19 @@ Host apps should send stable product identifiers as `ownerId`, an optional calle
 }
 ```
 
-Repeated thread creates with the same owner and `threadId` return the existing broker thread. Store the returned broker `threadId` for turn submission; the broker keeps broker `threadId` and Codex `codexThreadId` linked after Codex creates or resumes the Codex thread.
+Repeated creates with the same `ownerId` and `threadId` return the existing broker thread. Store the returned broker `threadId` for later turns. If the create request omits `threadId`, the broker generates one. The response also includes `codexThreadId`, which stays `null` until the broker creates or resumes the underlying Codex thread.
 
-Submit turns with the broker `threadId` and a product correlation id for tracing:
+`bundleId` selects the task bundle, `configProfile` selects the broker runtime/policy profile, and `cwd` sets the working directory Codex should use when the turn runs.
+
+## Submit A Turn
+
+After you have a broker `threadId`, submit user or job work to that thread:
+
+```http
+POST /v1/owners/{ownerId}/threads/{threadId}/turns
+```
+
+The JSON body below is the turn creation payload:
 
 ```json
 {
@@ -37,7 +73,7 @@ Submit turns with the broker `threadId` and a product correlation id for tracing
 
 Use `mode=reject` or `mode=steer` for live chat and `mode=queue` for job workers.
 
-Use `idempotencyKey` for host retries. A repeated turn create with the same owner, broker `threadId`, and idempotency key returns the original broker turn without creating a second Codex turn.
+Use `productCorrelationId` to trace one host action through broker events and logs. Use `idempotencyKey` for host retries. A repeated turn create with the same owner, broker `threadId`, and idempotency key returns the original broker turn without creating a second Codex turn.
 
 `configProfile` is the canonical profile field. The broker also accepts the legacy `runtimeProfile` field as an alias for host integrations that were written against earlier broker drafts. `codexOptions` is the canonical per-request Codex options object. The broker also accepts `runtime` as an alias and normalizes common option aliases such as `reasoningEffort` to `effort` and `reasoningSummary` to `summary`.
 
@@ -85,7 +121,13 @@ Approval-gated tool work emits `tool.requested` before `approval.requested`, fol
 
 Codex app-server `0.142.3` exposes `default` and `plan` as collaboration mode kinds. Goal tracking, review, approval, user-input, and MCP elicitation behavior are separate app-server capabilities. The broker normalizes those surfaces as `thread.settings.updated`, `plan.updated`, `plan.delta`, `goal.updated`, `goal.cleared`, `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed`, `user_input.requested`, `user_input.resolved`, `mcp.elicitation.requested`, and `mcp.elicitation.resolved`.
 
-Until host-mediated response APIs exist, the broker answers approval, user-input, and MCP elicitation server requests with safe defaults: command/file approvals are declined, legacy approvals are denied, permission-profile requests receive no extra permissions, user-input requests receive empty answers, and MCP elicitations are declined. These events are still persisted and streamed so host apps can display the attempted interaction or use it for audit/debugging.
+Approval, user-input, and MCP elicitation requests are persisted as broker interactions before they are answered. Request events include `interactionId`; host apps can display the prompt, then answer it with:
+
+```http
+POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve
+```
+
+The resolve body mirrors the app-server response shape. Command/file approvals pass `{"decision":"accept"}` or another generated decision value, permission requests pass `permissions` plus optional `scope` and `strictAutoReview`, user input passes `answers`, and MCP elicitations pass `action`, `content`, and optional `_meta`. If the host does not resolve the interaction before `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`, the broker answers with the same fail-closed defaults used before host-mediated APIs: command/file approvals decline, legacy approvals deny, permission requests grant no extra permissions, user-input answers are empty, and MCP elicitations decline.
 
 Reasoning summary notifications are normalized as `reasoning.summary.started`, `reasoning.summary.delta`, and `reasoning.completed` events. The payload includes `itemId`, `summaryIndex`, and a stable `summaryId` when Codex supplies both item id and summary index.
 
@@ -118,6 +160,10 @@ Recommended worker flow:
 A job worker can support an opt-in broker execution mode with settings such as `CODEX_RUNTIME_MODE=broker`, `CODEX_BROKER_BASE_URL`, `CODEX_BROKER_INTERNAL_KEY`, and `CODEX_BROKER_BUNDLE_ID=document-jobs-v1`. The app keeps job records, queueing, artifacts, review rows, and UI streaming; an existing job id or `codex_thread_id` compatibility field can be sent as the broker `threadId` for follow-up turns.
 
 ## Tool Exposure
+
+Bundles can teach Codex to use an ordinary CLI by declaring instructions or mounted skills, but the bundle does not install the CLI. The command must already be available inside the broker/Codex runtime: installed in the broker image, mounted into the broker container, present in the mounted workspace, or runnable through the workspace's normal package manager such as `npm exec`, `uv run`, or a checked-in script. The turn `cwd`, configured workspace roots, and bundle `allowedPaths` must also let Codex access the files the command needs.
+
+Use a bundle-declared `mcpServers` entry when a CLI should be exposed as a structured tool with named operations and schemas rather than as shell usage. MCP server commands are loaded only when the command name or exact absolute command path is allowlisted by broker configuration, typically with `CODEX_BROKER_ALLOWED_TOOL_COMMANDS`. Secret-looking MCP environment values must use `env:VAR` indirection so secrets come from the broker process environment instead of bundle files.
 
 Bundle-declared `prompts` are mounted from reviewed bundle roots, materialized into a per-turn overlay, and injected as text input before the host's turn input. Prefer skills for reusable workflow behavior; prompts are mainly for legacy host instructions that have not yet become skills.
 

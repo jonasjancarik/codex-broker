@@ -29,6 +29,8 @@ Only `GET /healthz` and `GET /readyz` are intended for unauthenticated orchestra
 
 Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` to define named configuration profiles. API requests refer to one with the `configProfile` field. Profile entries may set app-server defaults such as `model`, `approvalPolicy`, `sandbox`, `personality`, `serviceTier`, `effort`, `summary`, `webSearch`, `modelVerbosity`, and `imageGeneration`, plus policy fields `enabledBundles` and `allowedWorkspaceRoots`. When profiles are configured, unknown `configProfile` values are rejected. The older `runtimeProfile` request field is accepted as an alias for compatibility.
 
+`CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS` controls how long an app-server approval, user-input, or MCP elicitation request waits for a host resolve API call before the broker answers with a fail-closed fallback. The default is 30 seconds.
+
 ## Readiness
 
 `GET /readyz` checks:
@@ -44,7 +46,7 @@ Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` t
 - App-server children are started lazily and keyed by owner, auth profile, owner/profile auth fingerprint, configuration profile, Codex command/version, credential-store mode, mounted MCP config, and hashes of resolved MCP `env:VAR` values. They are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS` idle seconds. TTL cleanup skips children with active turn contexts.
 - Turns using broker-hosted adapters close their per-turn app-server child after finalization because the adapter config includes per-turn overlay context.
 - A crashed child fails its active turns and the pool restarts lazily before later work.
-- A restarted broker marks abandoned `starting`, `queued`, and `running` turns failed on startup and emits a recovered `turn.failed` event.
+- A restarted broker marks abandoned `starting`, `queued`, and `running` turns failed on startup and emits a recovered `turn.failed` event. Pending interactions are marked failed with their fallback response so host UIs do not keep showing stale approval/input prompts.
 - App-server child start/close metadata is recorded in SQLite for operational diagnosis across broker restarts.
 - During process shutdown, `CODEX_BROKER_SHUTDOWN_MODE=interrupt` interrupts active turns and finalizes them as `interrupted`; `drain` rejects new turns and waits up to `CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` for accepted work before interrupting leftovers.
 - `/metrics` includes in-memory broker counters, HTTP request count/duration sums and counts by templated endpoint, SSE disconnects, turn duration sums/counts, aggregate auth start/success/failure counters, and durable audit-derived counters such as turn start, approvals, interrupts, and logout.

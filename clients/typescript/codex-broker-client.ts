@@ -72,6 +72,24 @@ export class CodexBrokerClient {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/turns/${enc(turnId)}/interrupt`, {});
   }
 
+  listInteractions(ownerId: string, threadId: string, query: Record<string, string | number | undefined> = {}): Promise<Record<string, unknown>> {
+    return this.request("GET", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/interactions${queryString(query)}`);
+  }
+
+  resolveInteraction(
+    ownerId: string,
+    threadId: string,
+    turnId: string,
+    interactionId: string,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/turns/${enc(turnId)}/interactions/${enc(interactionId)}/resolve`,
+      body,
+    );
+  }
+
   eventsUrl(ownerId: string, threadId: string, turnId?: string): string {
     const query = new URLSearchParams();
     if (turnId) query.set("turnId", turnId);

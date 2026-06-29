@@ -14,20 +14,10 @@ from .bundles import BundleError, BundleRegistry, ResolvedBundle
 from .config import BrokerConfig
 from .events import normalize_app_server_event
 from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, RuntimeErrorInfo, classify_app_server_error, classify_runtime_error
+from .scheduler_errors import ActiveTurnError, ConflictError, NotFoundError
+from . import scheduler_interactions
 from .state import StateStore
 from .util import json_log, redact_json, utc_now
-
-
-class ActiveTurnError(RuntimeError):
-    pass
-
-
-class NotFoundError(RuntimeError):
-    pass
-
-
-class ConflictError(RuntimeError):
-    pass
 
 
 def metric_key(value: str) -> str:
@@ -387,6 +377,30 @@ class TurnScheduler:
         self.state.append_audit(owner_hash, "turn.interrupt", {}, thread_id=thread_id, turn_id=turn_id)
         self._metric("turns_interrupted", 1)
         return self.get_turn(owner_id, thread_id, turn_id)
+
+    def list_interactions(
+        self,
+        owner_id: str,
+        thread_id: str,
+        *,
+        turn_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return scheduler_interactions.list_interactions(self, owner_id, thread_id, turn_id=turn_id, status=status, limit=limit)
+
+    def get_interaction(self, owner_id: str, thread_id: str, turn_id: str, interaction_id: str) -> dict[str, Any]:
+        return scheduler_interactions.get_interaction(self, owner_id, thread_id, turn_id, interaction_id)
+
+    def resolve_interaction(
+        self,
+        owner_id: str,
+        thread_id: str,
+        turn_id: str,
+        interaction_id: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        return scheduler_interactions.resolve_interaction(self, owner_id, thread_id, turn_id, interaction_id, body)
 
     def metrics(self) -> dict[str, int | float]:
         with self._metrics_lock:

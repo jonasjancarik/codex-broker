@@ -69,6 +69,7 @@ class BrokerConfig:
     allowed_hosted_tool_url_prefixes: tuple[str, ...]
     credential_store: str
     request_timeout_seconds: float
+    host_response_timeout_seconds: float
     turn_timeout_seconds: float
     enable_inline_bundles: bool
     inline_bundle_max_bytes: int
@@ -131,6 +132,7 @@ class BrokerConfig:
             ),
             credential_store=os.environ.get("CODEX_CREDENTIAL_STORE", "file"),
             request_timeout_seconds=float(os.environ.get("CODEX_BROKER_REQUEST_TIMEOUT_SECONDS", "60")),
+            host_response_timeout_seconds=float(os.environ.get("CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS", "30")),
             turn_timeout_seconds=float(os.environ.get("CODEX_BROKER_TURN_TIMEOUT_SECONDS", "0")),
             enable_inline_bundles=_bool_env("CODEX_BROKER_ENABLE_INLINE_BUNDLES", False),
             inline_bundle_max_bytes=_int_env("CODEX_BROKER_INLINE_BUNDLE_MAX_BYTES", 262_144),

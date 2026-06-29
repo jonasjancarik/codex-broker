@@ -379,13 +379,23 @@ Common event types:
 | `message.completed` | Completed Codex agent message item. |
 | `reasoning.summary.started`, `reasoning.summary.delta`, `reasoning.completed` | Reasoning summary lifecycle and deltas. |
 | `tool.started`, `tool.output.delta`, `tool.completed`, `tool.requested` | Tool lifecycle and output. |
-| `approval.requested`, `approval.resolved` | Approval request visibility. Current broker behavior auto-resolves with safe defaults. |
-| `user_input.requested`, `user_input.resolved` | User-input request visibility. Current broker behavior auto-resolves with empty answers. |
-| `mcp.elicitation.requested`, `mcp.elicitation.resolved` | MCP elicitation visibility. Current broker behavior auto-declines. |
+| `approval.requested`, `approval.resolved` | Approval request lifecycle. Request payloads include `interactionId`; resolved payloads include `source` and `response`. |
+| `user_input.requested`, `user_input.resolved` | User-input request lifecycle. Request payloads include `interactionId`; resolved payloads include `source`, `answers`, and `response`. |
+| `mcp.elicitation.requested`, `mcp.elicitation.resolved` | MCP elicitation lifecycle. Request payloads include `interactionId`; resolved payloads include `source`, `action`, and `response`. |
 | `plan.updated`, `plan.delta`, `goal.updated`, `goal.cleared`, `review.entered`, `review.exited` | Plan, goal, and review-mode surfaces normalized from Codex app-server notifications. |
 | `error` | Normalized Codex app-server error payload. |
 
 When `ambiguous` is `true`, the broker attached an early app-server notification to the best known active context before all Codex metadata was available. Host consumers may display these events, but should avoid using the Codex ids in them as authoritative.
+
+## Host-Resolved Interactions
+
+Approval, user-input, and MCP elicitation request events are backed by persisted interaction records. A host can list them with `GET /v1/owners/{ownerId}/threads/{threadId}/interactions`, optionally filtered by `turnId` or `status`. To answer a request, call:
+
+```http
+POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve
+```
+
+Use the app-server response shape for the original method: approval `decision`, permission `permissions`, user-input `answers`, or MCP `action`/`content`/`_meta`. If the host does not resolve before `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`, the broker resolves with fail-closed defaults and marks `resolutionSource` as a fallback source.
 
 ## Turn Concurrency
 

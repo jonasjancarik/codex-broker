@@ -100,6 +100,24 @@ class CodexBrokerClientTests(unittest.TestCase):
         self.assertIn("turnId=turn+1", seen["url"])
         self.assertIn("limit=25", seen["url"])
 
+    def test_resolve_interaction_posts_host_response(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_urlopen(req: Any, timeout: float) -> FakeResponse:
+            seen["url"] = req.full_url
+            seen["method"] = req.get_method()
+            seen["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeResponse(b'{"interactionId":"int_1","status":"resolved"}')
+
+        client = CodexBrokerClient("http://broker.internal")
+        with patch("urllib.request.urlopen", fake_urlopen):
+            response = client.resolve_interaction("owner/a", "thread 1", "turn 1", "int 1", {"decision": "accept"})
+
+        self.assertEqual(response["status"], "resolved")
+        self.assertEqual(seen["method"], "POST")
+        self.assertIn("/v1/owners/owner%2Fa/threads/thread%201/turns/turn%201/interactions/int%201/resolve", seen["url"])
+        self.assertEqual(seen["body"], {"decision": "accept"})
+
     def test_stream_events_parses_sse_payloads(self) -> None:
         body = [
             b"id: 12\n",

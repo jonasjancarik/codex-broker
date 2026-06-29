@@ -217,6 +217,8 @@ class AuthManager:
             except (OSError, subprocess.SubprocessError) as exc:
                 output = redact(str(exc), 1200)
                 state = "missing" if not auth_file_exists else "present_unverified"
+        auth_file_exists = (home / "auth.json").exists()
+        fingerprint = self.auth_fingerprint(owner_hash, profile_key)
         if remembered_state == "refresh_failed" and remembered_fingerprint == fingerprint:
             state = "refresh_failed"
         self.state.update_auth_status(owner_hash, profile_key, state, auth_fingerprint=fingerprint)

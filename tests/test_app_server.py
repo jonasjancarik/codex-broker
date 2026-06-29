@@ -25,6 +25,8 @@ FAKE_CODEX = ROOT / "fake_codex.py"
 
 
 def config_for(tmp: Path) -> BrokerConfig:
+    os.environ.pop("FAKE_CODEX_REQUEST_USER_INPUT", None)
+    os.environ.pop("FAKE_CODEX_REQUEST_MCP_ELICITATION", None)
     workspace = tmp / "workspace"
     bundles = tmp / "bundles"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -45,6 +47,7 @@ def config_for(tmp: Path) -> BrokerConfig:
         allowed_hosted_tool_url_prefixes=("http://127.0.0.1",),
         credential_store="file",
         request_timeout_seconds=5,
+        host_response_timeout_seconds=0.05,
         turn_timeout_seconds=5,
         enable_inline_bundles=False,
         inline_bundle_max_bytes=262_144,
@@ -59,6 +62,8 @@ def config_for(tmp: Path) -> BrokerConfig:
 class FakeContext:
     owner_hash = "owner_hash"
     thread_id = "thread_1"
+    turn_id = "turn_1"
+    product_correlation_id: str | None = None
     codex_turn_id: str | None = None
 
     def __init__(self) -> None:
@@ -468,6 +473,73 @@ class AppServerRoutingTests(unittest.TestCase):
         self.assertEqual(second.notifications, [("item/agentMessage/delta", {"turnId": "codex_turn_1", "delta": "early"}, True)])
         self.assertEqual(client._pending_notifications_by_turn, {})
 
+    def test_host_can_resolve_pending_command_approval(self) -> None:
+        result, notifications = self._host_resolved_request(
+            "item/commandExecution/requestApproval",
+            {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "command": "printf test"},
+            {"decision": "accept"},
+        )
+
+        self.assertEqual(result, {"decision": "accept"})
+        resolved = [item for item in notifications if item[0] == "approval/resolved"][-1]
+        self.assertEqual(resolved[1]["source"], "host")
+        self.assertEqual(resolved[1]["response"], {"decision": "accept"})
+
+    def test_host_can_resolve_pending_user_input_and_mcp_elicitation(self) -> None:
+        user_input_result, user_input_notifications = self._host_resolved_request(
+            "item/tool/requestUserInput",
+            {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "itemId": "input_1"},
+            {"answers": {"color": {"answers": ["blue"]}}},
+        )
+        mcp_result, mcp_notifications = self._host_resolved_request(
+            "mcpServer/elicitation/request",
+            {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "serverName": "host", "mode": "form"},
+            {"action": "accept", "content": {"ok": True}, "_meta": {"source": "test"}},
+        )
+
+        self.assertEqual(user_input_result, {"answers": {"color": {"answers": ["blue"]}}})
+        self.assertEqual(mcp_result, {"action": "accept", "content": {"ok": True}, "_meta": {"source": "test"}})
+        self.assertEqual([item for item in user_input_notifications if item[0] == "item/tool/requestUserInput/resolved"][-1][1]["source"], "host")
+        self.assertEqual([item for item in mcp_notifications if item[0] == "mcpServer/elicitation/resolved"][-1][1]["source"], "host")
+
+    def _host_resolved_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        response: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any], bool]]]:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            client = AppServerClient.__new__(AppServerClient)
+            client.config = replace(config_for(Path(tmp_raw)), host_response_timeout_seconds=1)
+            client.state = None
+            client._contexts_lock = threading.RLock()
+            client._stdin_lock = threading.Lock()
+            client._stdin = io.StringIO()
+            context = FakeContext()
+            client._contexts = {context}
+            client._contexts_by_thread = {"codex_thread_1": context}
+            client._contexts_by_turn = {"codex_turn_1": context}
+            client._pending_notifications_by_turn = {}
+            thread = threading.Thread(target=client._handle_server_request, args=(method, 100, params))
+            thread.start()
+            interaction_id = self._wait_for_interaction_id(context, method)
+            resolved = client.resolve_pending_interaction(interaction_id, response)
+            self.assertIsNone(resolved)
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+            messages = [json.loads(line) for line in client._stdin.getvalue().splitlines()]
+            return messages[-1]["result"], context.notifications
+
+    @staticmethod
+    def _wait_for_interaction_id(context: FakeContext, method: str) -> str:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            for notification_method, params, _ambiguous in context.notifications:
+                if notification_method == method and isinstance(params.get("interactionId"), str):
+                    return params["interactionId"]
+            time.sleep(0.01)
+        raise AssertionError(f"interaction id for {method} was not emitted")
+
     def test_server_requests_use_codex_0_142_3_safe_response_shapes(self) -> None:
         client = AppServerClient.__new__(AppServerClient)
         client._contexts_lock = threading.RLock()
@@ -504,8 +576,8 @@ class AppServerRoutingTests(unittest.TestCase):
         self.assertEqual(responses[1]["result"], {"decision": "denied"})
         self.assertEqual(responses[2]["result"], {"answers": {}})
         self.assertEqual(responses[3]["result"], {"action": "decline", "content": None, "_meta": None})
-        self.assertIn(("item/tool/requestUserInput/resolved", {"method": "item/tool/requestUserInput", "answers": {}, "params": {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "itemId": "input_1"}}, False), context.notifications)
-        self.assertIn(("mcpServer/elicitation/resolved", {"method": "mcpServer/elicitation/request", "action": "decline", "params": {"threadId": "codex_thread_1", "turnId": "codex_turn_1", "serverName": "host", "mode": "form"}}, False), context.notifications)
+        self.assertTrue(any(item[0] == "item/tool/requestUserInput/resolved" and item[1]["answers"] == {} for item in context.notifications))
+        self.assertTrue(any(item[0] == "mcpServer/elicitation/resolved" and item[1]["action"] == "decline" for item in context.notifications))
 
 
 if __name__ == "__main__":

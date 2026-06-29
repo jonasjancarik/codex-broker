@@ -157,6 +157,8 @@ Different broker threads may run concurrently. Different owners may run concurre
 
 Bundles are how host apps expose Codex capabilities without putting product logic in the broker.
 
+They declare what Codex may see or call for a class of work; they do not install binaries or carry host state, secrets, queues, artifacts, or authorization rules.
+
 A bundle can declare:
 
 - mounted skills,
@@ -169,6 +171,8 @@ A bundle can declare:
 For broker-hosted adapters, the broker acts as a transport shim. It validates the adapter declaration, resolves secret headers from environment variables, adds broker context, and forwards the tool call to a host-owned HTTP endpoint.
 
 The host endpoint must still enforce product authorization and implement product semantics.
+
+If a bundle instruction or skill tells Codex to use a CLI, that command must already be available inside the broker/Codex runtime: installed in the broker image, mounted into the broker container, present in the mounted workspace, or runnable through the workspace's package manager. For structured tool use, declare an MCP server and allowlist its command with `CODEX_BROKER_ALLOWED_TOOL_COMMANDS`.
 
 For example, the sample chat bundle declares `host.evidence.search`. The broker exposes it to Codex, but the actual evidence lookup happens in the host app's `POST /internal/codex/tools/evidence-search` endpoint. The host app validates `CODEX_HOST_TOOL_KEY` and decides what evidence results mean.
 
@@ -220,6 +224,7 @@ CODEX_BROKER_PORT=3400
 CODEX_BROKER_DATA_DIR=.data
 CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS=/path/to/workspaces
 CODEX_BROKER_ALLOWED_BUNDLE_ROOTS=/path/to/bundles
+CODEX_BROKER_ALLOWED_TOOL_COMMANDS=python,node
 CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES=http://127.0.0.1,http://localhost,http://host.docker.internal
 CODEX_BROKER_INTERNAL_KEY=dev-only-key
 CODEX_BIN=codex
@@ -291,6 +296,7 @@ Implemented in this repo:
 - owner-scoped audit log API for auth, turn, approval, interrupt, and logout events,
 - durable app-server child process lifecycle records for operational diagnosis,
 - app-server 0.142.3 mode/capability event coverage for plan, goal, review, approvals, user input, and MCP elicitations,
+- host-mediated approval, user-input, and MCP elicitation interaction records with resolve APIs and fail-closed fallback,
 - mounted bundles, inline bundle validation, skills/prompt overlays, mounted MCP, and broker-hosted tool adapters,
 - readiness checks, Prometheus-style metrics, structured JSON logs, and schema-backed `/openapi.json`.
 

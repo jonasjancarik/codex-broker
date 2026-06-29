@@ -58,6 +58,80 @@ class StateStoreTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_pending_interaction_lifecycle_and_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            state = StateStore(config_for(Path(tmp_raw)).state_db_path)
+            try:
+                thread = state.create_thread(
+                    "owner_hash",
+                    thread_id="thread_1",
+                    profile="default",
+                    config_profile="default",
+                    host_app=None,
+                    bundle_id=None,
+                    cwd=None,
+                )
+                turn = state.create_turn(
+                    "owner_hash",
+                    thread["thread_id"],
+                    profile="default",
+                    config_profile="default",
+                    host_app=None,
+                    bundle_id=None,
+                    cwd=None,
+                    mode="reject",
+                    input_items=[{"type": "text", "text": "approval"}],
+                    idempotency_key=None,
+                    product_correlation_id="correlation-1",
+                    status="running",
+                )
+                pending = state.create_pending_interaction(
+                    "owner_hash",
+                    "thread_1",
+                    turn["turn_id"],
+                    kind="approval",
+                    method="item/commandExecution/requestApproval",
+                    request={"command": "printf test"},
+                    fallback_response={"decision": "decline"},
+                    product_correlation_id="correlation-1",
+                    codex_thread_id="codex_thread_1",
+                    codex_turn_id="codex_turn_1",
+                    timeout_seconds=30,
+                )
+
+                listed = state.list_interactions("owner_hash", "thread_1", status="pending")
+                self.assertEqual(listed[0]["interaction_id"], pending["interaction_id"])
+                resolved = state.complete_interaction(
+                    "owner_hash",
+                    pending["interaction_id"],
+                    response={"decision": "accept"},
+                    source="host",
+                )
+                self.assertEqual(resolved["status"], "resolved")
+                self.assertEqual(resolved["response"], {"decision": "accept"})
+                self.assertEqual(resolved["resolution_source"], "host")
+
+                orphan = state.create_pending_interaction(
+                    "owner_hash",
+                    "thread_1",
+                    turn["turn_id"],
+                    kind="mcpElicitation",
+                    method="mcpServer/elicitation/request",
+                    request={"serverName": "host"},
+                    fallback_response={"action": "decline", "content": None, "_meta": None},
+                    product_correlation_id=None,
+                    codex_thread_id=None,
+                    codex_turn_id=None,
+                    timeout_seconds=30,
+                )
+                self.assertEqual(state.recover_pending_interactions(), 1)
+                recovered = state.get_interaction("owner_hash", orphan["interaction_id"])
+                self.assertEqual(recovered["status"], "failed")
+                self.assertEqual(recovered["response"], {"action": "decline", "content": None, "_meta": None})
+                self.assertEqual(recovered["resolution_source"], "broker_restarted")
+            finally:
+                state.close()
+
 
 if __name__ == "__main__":
     unittest.main()

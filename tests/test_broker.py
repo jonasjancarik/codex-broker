@@ -36,6 +36,8 @@ def config_for(tmp: Path, *, turn_delay: float = 0.01) -> BrokerConfig:
     os.environ.pop("FAKE_CODEX_CRASH_ON_TURN_ONCE", None)
     os.environ.pop("FAKE_CODEX_HANG_ON_TURN_START_ONCE", None)
     os.environ.pop("FAKE_CODEX_REQUEST_APPROVAL", None)
+    os.environ.pop("FAKE_CODEX_REQUEST_USER_INPUT", None)
+    os.environ.pop("FAKE_CODEX_REQUEST_MCP_ELICITATION", None)
     os.environ.pop("FAKE_CODEX_DEVICE_AUTH_DELAY", None)
     os.environ.pop("FAKE_CODEX_DEVICE_AUTH_SECRET_OUTPUT", None)
     workspace = tmp / "workspace"
@@ -58,6 +60,7 @@ def config_for(tmp: Path, *, turn_delay: float = 0.01) -> BrokerConfig:
         allowed_hosted_tool_url_prefixes=("http://127.0.0.1", "http://localhost", "http://host.docker.internal"),
         credential_store="file",
         request_timeout_seconds=5,
+        host_response_timeout_seconds=0.05,
         turn_timeout_seconds=5,
         enable_inline_bundles=False,
         inline_bundle_max_bytes=262_144,
@@ -86,6 +89,23 @@ def wait_metric(services: BrokerServices, name: str, value: int, timeout: float 
             return
         time.sleep(0.02)
     raise AssertionError(f"metric {name} did not reach {value}: {services.scheduler.metrics()}")
+
+
+def wait_interaction(
+    services: BrokerServices,
+    owner_hash: str,
+    thread_id: str,
+    *,
+    status: str = "pending",
+    timeout: float = 3,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        interactions = services.state.list_interactions(owner_hash, thread_id, status=status)
+        if interactions:
+            return interactions[0]
+        time.sleep(0.02)
+    raise AssertionError(f"interaction with status {status} did not appear")
 
 
 class BrokerTests(unittest.TestCase):
@@ -1097,6 +1117,46 @@ class BrokerTests(unittest.TestCase):
             self.assertTrue(any(event.get("codex_thread_id") for event in events))
             self.assertTrue(any(event.get("codex_turn_id") for event in events))
             os.environ.pop("FAKE_CODEX_REQUEST_APPROVAL", None)
+
+    def test_host_resolves_pending_approval_through_scheduler(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw), turn_delay=0.01), host_response_timeout_seconds=2)
+            services = BrokerServices.build(config)
+            os.environ["FAKE_CODEX_REQUEST_APPROVAL"] = "1"
+            try:
+                thread = services.scheduler.create_thread("owner-a", {"cwd": str(services.config.allowed_workspace_roots[0])})
+                turn = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "approval"}], "productCorrelationId": "host-correlation-1"},
+                )
+                owner_hash = services.auth.hash_owner("owner-a")
+                pending = wait_interaction(services, owner_hash, thread["threadId"])
+                self.assertEqual(pending["method"], "item/commandExecution/requestApproval")
+
+                resolved = services.scheduler.resolve_interaction(
+                    "owner-a",
+                    thread["threadId"],
+                    turn["turnId"],
+                    pending["interaction_id"],
+                    {"decision": "accept"},
+                )
+
+                self.assertEqual(resolved["status"], "resolved")
+                self.assertEqual(resolved["response"], {"decision": "accept"})
+                self.assertEqual(resolved["resolutionSource"], "host")
+                self.assertEqual(wait_turn(services, "owner-a", thread["threadId"], turn["turnId"])["status"], "completed")
+                events = services.state.list_events(owner_hash, thread["threadId"], turn_id=turn["turnId"], limit=100)
+                requested = [event for event in events if event["event_type"] == "approval.requested"][-1]
+                resolved_event = [event for event in events if event["event_type"] == "approval.resolved"][-1]
+                self.assertEqual(requested["payload"]["interactionId"], pending["interaction_id"])
+                self.assertEqual(resolved_event["payload"]["interactionId"], pending["interaction_id"])
+                self.assertEqual(resolved_event["payload"]["source"], "host")
+                self.assertEqual(resolved_event["payload"]["response"], {"decision": "accept"})
+            finally:
+                os.environ.pop("FAKE_CODEX_REQUEST_APPROVAL", None)
+                services.pool.close_all()
+                services.state.close()
 
 if __name__ == "__main__":
     unittest.main()

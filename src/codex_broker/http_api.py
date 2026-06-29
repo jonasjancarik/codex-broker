@@ -36,6 +36,7 @@ class BrokerServices:
             ensure_dir(path)
         state = StateStore(config.state_db_path)
         recovered_turns = state.recover_incomplete_turns("Broker restarted before the turn completed.")
+        state.recover_pending_interactions()
         pruned_raw_events = 0
         if config.raw_event_retention_seconds > 0:
             cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.raw_event_retention_seconds)
@@ -76,6 +77,8 @@ def metric_path_template(path: str) -> str:
             templated[4] = "threadId"
         if len(templated) >= 7 and templated[5] == "turns":
             templated[6] = "turnId"
+        if len(templated) >= 9 and templated[7] == "interactions":
+            templated[8] = "interactionId"
         return "/".join(templated)
     return "unknown"
 
@@ -247,12 +250,18 @@ class BrokerHandler(BaseHTTPRequestHandler):
         if method == "GET" and tail[1:] == ["events"]:
             self._sse_events(owner_id, thread_id, query)
             return
+        if method == "GET" and tail[1:] == ["interactions"]:
+            status = query.get("status", [None])[0]
+            turn_id_filter = query.get("turnId", [None])[0]
+            limit = int(query.get("limit", ["100"])[0] or "100")
+            self._json(self.broker.scheduler.list_interactions(owner_id, thread_id, turn_id=turn_id_filter, status=status, limit=limit))
+            return
         if len(tail) >= 2 and tail[1] == "turns":
-            self._turn_route(method, tail[2:], owner_id, thread_id)
+            self._turn_route(method, tail[2:], owner_id, thread_id, query)
             return
         self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
-    def _turn_route(self, method: str, tail: list[str], owner_id: str, thread_id: str) -> None:
+    def _turn_route(self, method: str, tail: list[str], owner_id: str, thread_id: str, query: dict[str, list[str]]) -> None:
         if method == "POST" and tail == []:
             self._json(self.broker.scheduler.start_turn(owner_id, thread_id, self._read_json()), HTTPStatus.ACCEPTED)
             return
@@ -268,6 +277,35 @@ class BrokerHandler(BaseHTTPRequestHandler):
             return
         if method == "POST" and tail[1:] == ["interrupt"]:
             self._json(self.broker.scheduler.interrupt_turn(owner_id, thread_id, turn_id))
+            return
+        if len(tail) >= 2 and tail[1] == "interactions":
+            self._interaction_route(method, tail[2:], owner_id, thread_id, turn_id, query)
+            return
+        self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+
+    def _interaction_route(
+        self,
+        method: str,
+        tail: list[str],
+        owner_id: str,
+        thread_id: str,
+        turn_id: str,
+        query: dict[str, list[str]],
+    ) -> None:
+        if method == "GET" and tail == []:
+            status = query.get("status", [None])[0]
+            limit = int(query.get("limit", ["100"])[0] or "100")
+            self._json(self.broker.scheduler.list_interactions(owner_id, thread_id, turn_id=turn_id, status=status, limit=limit))
+            return
+        if len(tail) != 1 and tail[1:] != ["resolve"]:
+            self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        interaction_id = tail[0]
+        if method == "GET" and len(tail) == 1:
+            self._json(self.broker.scheduler.get_interaction(owner_id, thread_id, turn_id, interaction_id))
+            return
+        if method == "POST" and tail[1:] == ["resolve"]:
+            self._json(self.broker.scheduler.resolve_interaction(owner_id, thread_id, turn_id, interaction_id, self._read_json()))
             return
         self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
@@ -572,6 +610,31 @@ def openapi_document() -> dict[str, Any]:
                     },
                 }
             },
+            "/v1/owners/{ownerId}/threads/{threadId}/interactions": {
+                "get": {
+                    "parameters": [owner_param, thread_param, {"$ref": "#/components/parameters/turnIdQuery"}, {"$ref": "#/components/parameters/status"}, {"$ref": "#/components/parameters/limit"}],
+                    "responses": {"200": json_response(ref("InteractionList"), "Thread interactions")},
+                }
+            },
+            "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions": {
+                "get": {
+                    "parameters": [owner_param, thread_param, turn_param, {"$ref": "#/components/parameters/status"}, {"$ref": "#/components/parameters/limit"}],
+                    "responses": {"200": json_response(ref("InteractionList"), "Turn interactions")},
+                }
+            },
+            "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}": {
+                "get": {
+                    "parameters": [owner_param, thread_param, turn_param, {"$ref": "#/components/parameters/interactionId"}],
+                    "responses": {"200": json_response(ref("Interaction"), "Interaction")},
+                }
+            },
+            "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve": {
+                "post": {
+                    "parameters": [owner_param, thread_param, turn_param, {"$ref": "#/components/parameters/interactionId"}],
+                    "requestBody": request_body(ref("InteractionResolveRequest")),
+                    "responses": {"200": json_response(ref("Interaction"), "Interaction resolved")},
+                }
+            },
             "/v1/bundles/inline": {
                 "post": {
                     "requestBody": request_body(ref("TaskBundle")),
@@ -592,11 +655,13 @@ def openapi_document() -> dict[str, Any]:
                 "ownerId": {"name": "ownerId", "in": "path", "required": True, "schema": {"type": "string"}},
                 "threadId": {"name": "threadId", "in": "path", "required": True, "schema": {"type": "string"}},
                 "turnId": {"name": "turnId", "in": "path", "required": True, "schema": {"type": "string"}},
+                "interactionId": {"name": "interactionId", "in": "path", "required": True, "schema": {"type": "string"}},
                 "threadIdQuery": {"name": "threadId", "in": "query", "required": False, "schema": {"type": "string"}},
                 "turnIdQuery": {"name": "turnId", "in": "query", "required": False, "schema": {"type": "string"}},
                 "profile": {"name": "profile", "in": "query", "required": False, "schema": {"type": "string", "default": "default"}},
                 "after": {"name": "after", "in": "query", "required": False, "schema": {"type": "integer", "minimum": 0, "default": 0}},
                 "action": {"name": "action", "in": "query", "required": False, "schema": {"type": "string"}},
+                "status": {"name": "status", "in": "query", "required": False, "schema": {"type": "string"}},
                 "limit": {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
             },
             "schemas": {
@@ -819,6 +884,49 @@ def openapi_document() -> dict[str, Any]:
                         "ambiguous": {"type": "boolean"},
                         "rawMethod": {"type": "string"},
                         "rawParams": {"type": "object", "additionalProperties": True},
+                    },
+                },
+                "Interaction": {
+                    "type": "object",
+                    "required": ["interactionId", "threadId", "turnId", "kind", "method", "status", "request", "fallbackResponse", "createdAt", "updatedAt"],
+                    "properties": {
+                        "interactionId": {"type": "string"},
+                        "threadId": {"type": "string"},
+                        "turnId": {"type": "string"},
+                        "productCorrelationId": {"type": ["string", "null"]},
+                        "codexThreadId": {"type": ["string", "null"]},
+                        "codexTurnId": {"type": ["string", "null"]},
+                        "kind": {"enum": ["approval", "permissions", "userInput", "mcpElicitation", "serverRequest"]},
+                        "method": {"type": "string"},
+                        "status": {"type": "string"},
+                        "request": {"type": "object", "additionalProperties": True},
+                        "response": {"type": ["object", "null"], "additionalProperties": True},
+                        "fallbackResponse": {"type": "object", "additionalProperties": True},
+                        "resolutionSource": {"type": ["string", "null"]},
+                        "createdAt": {"type": "string"},
+                        "expiresAt": {"type": ["string", "null"]},
+                        "resolvedAt": {"type": ["string", "null"]},
+                        "updatedAt": {"type": "string"},
+                    },
+                },
+                "InteractionList": {
+                    "type": "object",
+                    "required": ["interactions"],
+                    "properties": {"interactions": {"type": "array", "items": ref("Interaction")}},
+                },
+                "InteractionResolveRequest": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "response": {"type": "object", "additionalProperties": True},
+                        "decision": {},
+                        "permissions": {"type": "object", "additionalProperties": True},
+                        "scope": {"enum": ["turn", "session"]},
+                        "strictAutoReview": {"type": ["boolean", "null"]},
+                        "answers": {"type": "object", "additionalProperties": True},
+                        "action": {"enum": ["accept", "decline", "cancel"]},
+                        "content": {},
+                        "_meta": {},
                     },
                 },
                 "TaskBundle": {

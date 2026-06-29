@@ -218,6 +218,10 @@ Important event types:
 - `tool.completed`
 - `approval.requested`
 - `approval.resolved`
+- `user_input.requested`
+- `user_input.resolved`
+- `mcp.elicitation.requested`
+- `mcp.elicitation.resolved`
 - `item.started`
 - `item.completed`
 - `error`
@@ -235,6 +239,8 @@ Every event should include:
 - ambiguity flag when routing was inferred.
 
 The dispatcher must tolerate app-server notifications that arrive before all metadata is known. It should attach them to the best active context or buffer them by Codex turn id until the turn is registered.
+
+Approval, user-input, and MCP elicitation requests must also be persisted as host-resolvable interactions. Hosts answer them with `POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve`; if no host answer arrives before the broker timeout, the broker must answer app-server with a fail-closed fallback and persist the fallback source.
 
 ## Bundles
 

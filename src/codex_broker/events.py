@@ -144,17 +144,26 @@ def normalize_app_server_event(
             return "tool.completed", {"item": item}
         return "item.completed", {"item": item}
     if method in APPROVAL_REQUEST_METHODS:
-        return "approval.requested", {"kind": approval_kind(method), "method": method, "params": params}
+        return "approval.requested", {
+            "kind": approval_kind(method),
+            "method": method,
+            "interactionId": params.get("interactionId"),
+            "params": params,
+        }
     if method == "approval/resolved":
         resolved_method = params.get("method")
         return "approval.resolved", {
             "kind": approval_kind(resolved_method if isinstance(resolved_method, str) else None),
             "method": resolved_method,
+            "interactionId": params.get("interactionId"),
             "decision": params.get("decision"),
+            "response": params.get("response") if isinstance(params.get("response"), dict) else None,
+            "source": params.get("source"),
         }
     if method == USER_INPUT_REQUEST_METHOD:
         return "user_input.requested", {
             "method": method,
+            "interactionId": params.get("interactionId"),
             "itemId": params.get("itemId"),
             "questions": params.get("questions") if isinstance(params.get("questions"), list) else [],
             "autoResolutionMs": params.get("autoResolutionMs"),
@@ -163,12 +172,16 @@ def normalize_app_server_event(
     if method == USER_INPUT_RESOLVED_METHOD:
         return "user_input.resolved", {
             "method": params.get("method") or USER_INPUT_REQUEST_METHOD,
+            "interactionId": params.get("interactionId"),
             "answers": params.get("answers") if isinstance(params.get("answers"), dict) else {},
+            "response": params.get("response") if isinstance(params.get("response"), dict) else None,
+            "source": params.get("source"),
             "params": params.get("params"),
         }
     if method == MCP_ELICITATION_REQUEST_METHOD:
         return "mcp.elicitation.requested", {
             "method": method,
+            "interactionId": params.get("interactionId"),
             "serverName": params.get("serverName"),
             "mode": params.get("mode"),
             "message": params.get("message"),
@@ -177,7 +190,10 @@ def normalize_app_server_event(
     if method == MCP_ELICITATION_RESOLVED_METHOD:
         return "mcp.elicitation.resolved", {
             "method": params.get("method") or MCP_ELICITATION_REQUEST_METHOD,
+            "interactionId": params.get("interactionId"),
             "action": params.get("action"),
+            "response": params.get("response") if isinstance(params.get("response"), dict) else None,
+            "source": params.get("source"),
             "request": params.get("params"),
         }
     if method == "serverRequest/resolved":

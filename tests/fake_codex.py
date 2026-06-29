@@ -10,6 +10,8 @@ from typing import Any
 
 
 stdout_lock = threading.Lock()
+response_condition = threading.Condition()
+server_responses: dict[int, dict[str, Any]] = {}
 next_thread = 1
 next_turn = 1
 
@@ -18,6 +20,18 @@ def send(message: dict[str, Any]) -> None:
     with stdout_lock:
         sys.stdout.write(json.dumps(message) + "\n")
         sys.stdout.flush()
+
+
+def request_server(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    send({"id": request_id, "method": method, "params": params})
+    deadline = time.monotonic() + float(os.environ.get("FAKE_CODEX_SERVER_REQUEST_TIMEOUT", "5"))
+    with response_condition:
+        while request_id not in server_responses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"server request {method} timed out")
+            response_condition.wait(timeout=remaining)
+        return server_responses.pop(request_id)
 
 
 def auth_home() -> Path:
@@ -64,12 +78,28 @@ def complete_turn(thread_id: str, turn_id: str) -> None:
     delay = float(os.environ.get("FAKE_CODEX_TURN_DELAY", "0.01"))
     send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id}}})
     if os.environ.get("FAKE_CODEX_REQUEST_APPROVAL") == "1":
-        send(
+        request_server(
+            "item/commandExecution/requestApproval",
+            9000,
+            {"threadId": thread_id, "turnId": turn_id, "command": "printf test"},
+        )
+    if os.environ.get("FAKE_CODEX_REQUEST_USER_INPUT") == "1":
+        request_server(
+            "item/tool/requestUserInput",
+            9001,
             {
-                "id": 9000,
-                "method": "item/commandExecution/requestApproval",
-                "params": {"threadId": thread_id, "turnId": turn_id, "command": "printf test"},
-            }
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": "input_1",
+                "questions": [{"id": "color", "question": "Color?"}],
+                "autoResolutionMs": 5000,
+            },
+        )
+    if os.environ.get("FAKE_CODEX_REQUEST_MCP_ELICITATION") == "1":
+        request_server(
+            "mcpServer/elicitation/request",
+            9002,
+            {"threadId": thread_id, "turnId": turn_id, "serverName": "host", "mode": "form", "message": "Continue?"},
         )
     send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg1", "delta": "hello"}})
     time.sleep(delay)
@@ -91,6 +121,11 @@ def handle_app_server() -> int:
         method = message.get("method")
         request_id = message.get("id")
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        if request_id is not None and ("result" in message or "error" in message):
+            with response_condition:
+                server_responses[int(request_id)] = message
+                response_condition.notify_all()
+            continue
         if method is None:
             continue
         if method == "initialized":
