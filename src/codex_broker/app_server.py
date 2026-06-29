@@ -139,7 +139,7 @@ class AppServerClient:
         self._stderr_lines: list[str] = []
         command = self._build_command()
         env = env_with(
-            clean_process_env(),
+            clean_process_env(config.codex_passthrough_env),
             {
                 "CODEX_HOME": str(codex_home),
                 "CODEX_CREDENTIAL_STORE": config.credential_store,

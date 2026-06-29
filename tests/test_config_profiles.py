@@ -30,6 +30,19 @@ class ConfigProfileTests(unittest.TestCase):
         self.assertEqual(config.config_profiles["review"]["model"], "gpt-5")
         self.assertEqual(config.config_profiles["review"]["enabledBundles"], ["review-bundle"])
 
+    def test_passthrough_env_loads_from_env_csv(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"CODEX_BROKER_PASSTHROUGH_ENV": "ESTF_ARCHIVER_API_URL, ESTF_ARCHIVER_API_KEY"},
+            clear=True,
+        ):
+            config = BrokerConfig.from_env()
+
+        self.assertEqual(
+            config.codex_passthrough_env,
+            ("ESTF_ARCHIVER_API_URL", "ESTF_ARCHIVER_API_KEY"),
+        )
+
     def test_config_profile_defaults_and_request_overrides_feed_app_server_params(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             config = replace(

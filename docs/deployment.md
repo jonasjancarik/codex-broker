@@ -23,6 +23,13 @@ When enabling the example chat bundle, the broker container must share a Docker 
 
 Set `CODEX_BROKER_INTERNAL_KEY_FILE` to a Docker secret path. The broker reports not-ready without an internal key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true` is set for local development. Do not pass auth files, API keys, or access tokens as bundle content. Owner Codex credentials are stored under hashed owner/profile paths in `/data/auth`.
 
+Codex app-server children start with a scrubbed process environment. Secret-looking
+variables such as keys and tokens are not passed through by default. If a
+reviewed deployment needs a job helper inside Codex to read specific environment
+variables, set `CODEX_BROKER_PASSTHROUGH_ENV` to a comma-separated allowlist of
+exact variable names, for example
+`CODEX_BROKER_PASSTHROUGH_ENV=ESTF_ARCHIVER_API_URL,ESTF_ARCHIVER_API_KEY`.
+
 Only `GET /healthz` and `GET /readyz` are intended for unauthenticated orchestrator probes. All product API routes, `/metrics`, `/openapi.json`, and bundle endpoints require the broker key unless the explicit development override is enabled.
 
 ## Configuration Profiles

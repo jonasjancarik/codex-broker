@@ -78,6 +78,7 @@ class BrokerConfig:
     json_logs: bool
     shutdown_mode: str
     shutdown_drain_timeout_seconds: float
+    codex_passthrough_env: tuple[str, ...] = ()
     config_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     client_name: str = "codex_broker"
     client_title: str = "Codex Broker"
@@ -130,6 +131,7 @@ class BrokerConfig:
                 os.environ.get("CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES"),
                 "http://127.0.0.1,http://localhost,http://host.docker.internal",
             ),
+            codex_passthrough_env=_csv(os.environ.get("CODEX_BROKER_PASSTHROUGH_ENV")),
             credential_store=os.environ.get("CODEX_CREDENTIAL_STORE", "file"),
             request_timeout_seconds=float(os.environ.get("CODEX_BROKER_REQUEST_TIMEOUT_SECONDS", "60")),
             host_response_timeout_seconds=float(os.environ.get("CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS", "30")),

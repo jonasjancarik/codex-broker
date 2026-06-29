@@ -107,9 +107,10 @@ def env_with(base: dict[str, str], updates: dict[str, str | None]) -> dict[str, 
     return merged
 
 
-def clean_process_env() -> dict[str, str]:
+def clean_process_env(extra_allowed: tuple[str, ...] = ()) -> dict[str, str]:
     blocked_terms = ("TOKEN", "SECRET", "KEY", "PASSWORD")
     allowed = {"PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "SSL_CERT_FILE", "CODEX_CA_CERTIFICATE"}
+    allowed.update(extra_allowed)
     result: dict[str, str] = {}
     for key, value in os.environ.items():
         if key in allowed or key.startswith("FAKE_CODEX"):
