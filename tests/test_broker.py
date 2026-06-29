@@ -20,7 +20,12 @@ from codex_broker.app_server import AppServerClient, AppServerError, AppServerPo
 from codex_broker.bundles import BundleError, BundleRegistry
 from codex_broker.config import BrokerConfig
 from codex_broker.http_api import BrokerHandler, BrokerServices, is_unauthenticated_path, metric_path_template
-from codex_broker.runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE
+from codex_broker.runtime_errors import (
+    CODEX_AUTH_REQUIRES_ADMIN,
+    CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE,
+    SESSION_NOT_RESUMABLE,
+    SESSION_NOT_RESUMABLE_PUBLIC_MESSAGE,
+)
 from codex_broker.scheduler import ActiveTurnError, BrokerTurnContext, ConflictError, TurnScheduler
 from codex_broker.state import StateStore
 from codex_broker.util import json_log
@@ -1069,6 +1074,23 @@ class BrokerTests(unittest.TestCase):
                 self.assertNotEqual(rotated["state"], "refresh_failed")
             finally:
                 os.environ.pop("FAKE_CODEX_AUTH_REFRESH_FAILURE", None)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_missing_rollout_failure_has_session_not_resumable_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))
+            try:
+                os.environ["FAKE_CODEX_TURN_COMPLETED_ERROR"] = "no rollout found for thread id thread_123"
+                thread = services.scheduler.create_thread("owner-a", {"cwd": str(services.config.allowed_workspace_roots[0])})
+                turn = services.scheduler.start_turn("owner-a", thread["threadId"], {"input": [{"type": "text", "text": "resume"}]})
+                failed = wait_turn(services, "owner-a", thread["threadId"], turn["turnId"])
+
+                self.assertEqual(failed["status"], "failed")
+                self.assertEqual(failed["error"], SESSION_NOT_RESUMABLE_PUBLIC_MESSAGE)
+                self.assertEqual(failed["errorCode"], SESSION_NOT_RESUMABLE)
+            finally:
+                os.environ.pop("FAKE_CODEX_TURN_COMPLETED_ERROR", None)
                 services.pool.close_all()
                 services.state.close()
 

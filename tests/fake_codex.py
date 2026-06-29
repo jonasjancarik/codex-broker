@@ -109,6 +109,21 @@ def complete_turn(thread_id: str, turn_id: str) -> None:
             "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": "msg1", "type": "agentMessage", "text": "hello"}},
         }
     )
+    if os.environ.get("FAKE_CODEX_TURN_COMPLETED_ERROR"):
+        send(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": thread_id,
+                    "turn": {
+                        "id": turn_id,
+                        "status": "failed",
+                        "error": {"message": os.environ["FAKE_CODEX_TURN_COMPLETED_ERROR"]},
+                    },
+                },
+            }
+        )
+        return
     send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
 
 

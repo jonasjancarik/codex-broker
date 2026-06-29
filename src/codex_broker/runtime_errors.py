@@ -11,6 +11,10 @@ CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE = (
     "Codex authentication needs administrator attention. Please wait until an "
     "administrator refreshes the shared Codex session."
 )
+SESSION_NOT_RESUMABLE = "session_not_resumable"
+SESSION_NOT_RESUMABLE_PUBLIC_MESSAGE = (
+    "The previous Codex session could not be resumed. Start a new session from the current workspace state."
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,12 @@ def render_app_server_error(error: Any) -> str | None:
 
 def classify_runtime_error(message: str) -> RuntimeErrorInfo:
     normalized = " ".join(message.lower().split())
+    if "no rollout found for thread id" in normalized:
+        return RuntimeErrorInfo(
+            code=SESSION_NOT_RESUMABLE,
+            public_message=SESSION_NOT_RESUMABLE_PUBLIC_MESSAGE,
+            admin_message=message,
+        )
     if (
         "access token could not be refreshed" in normalized
         and "refresh token was already used" in normalized

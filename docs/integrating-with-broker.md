@@ -179,7 +179,7 @@ curl -sS \
 
 Terminal turn statuses are `completed`, `failed`, `timed_out`, and `interrupted`. Nonterminal statuses are `starting`, `queued`, and `running`.
 
-On failed turns, `error` remains the legacy display field. New integrations should prefer `publicMessage` for end-user UI, use `errorCode` for programmatic handling, and keep `adminMessage` for admin-only logs. For shared Codex auth refresh failures, `errorCode` is `codex_auth_requires_admin` and `publicMessage` tells the user to wait for administrator attention instead of asking them to log out.
+On failed turns, `error` remains the legacy display field. New integrations should prefer `publicMessage` for end-user UI, use `errorCode` for programmatic handling, and keep `adminMessage` for admin-only logs. For shared Codex auth refresh failures, `errorCode` is `codex_auth_requires_admin` and `publicMessage` tells the user to wait for administrator attention instead of asking them to log out. For missing Codex rollout/session failures, `errorCode` is `session_not_resumable`; host apps should start a new broker thread and reconstruct context from persisted workspace files.
 
 ## Python Client
 
