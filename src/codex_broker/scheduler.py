@@ -805,6 +805,9 @@ class TurnScheduler:
             value = self._codex_option(codex_options, profile_config, request_key, *aliases)
             if value is not None:
                 params[app_server_key] = value
+        output_schema = self._codex_option(codex_options, profile_config, "outputSchema", "output_schema")
+        if output_schema is not None:
+            params["outputSchema"] = output_schema
         return params
 
     def _build_input(self, input_items: list[dict[str, Any]], bundle: ResolvedBundle | None) -> list[dict[str, Any]]:

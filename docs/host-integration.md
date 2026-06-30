@@ -75,7 +75,7 @@ Use `mode=reject` or `mode=steer` for live chat and `mode=queue` for job workers
 
 Use `productCorrelationId` to trace one host action through broker events and logs. Use `idempotencyKey` for host retries. A repeated turn create with the same owner, broker `threadId`, and idempotency key returns the original broker turn without creating a second Codex turn.
 
-`configProfile` is the canonical profile field. The broker also accepts the legacy `runtimeProfile` field as an alias for host integrations that were written against earlier broker drafts. `codexOptions` is the canonical per-request Codex options object. The broker also accepts `runtime` as an alias and normalizes common option aliases such as `reasoningEffort` to `effort` and `reasoningSummary` to `summary`.
+`configProfile` is the canonical profile field. The broker also accepts the legacy `runtimeProfile` field as an alias for host integrations that were written against earlier broker drafts. `codexOptions` is the canonical per-request Codex options object. The broker also accepts `runtime` as an alias and normalizes common option aliases such as `reasoningEffort` to `effort` and `reasoningSummary` to `summary`. Use `codexOptions.outputSchema` when a job worker needs Codex to return a final assistant message constrained by a JSON Schema.
 
 Some Codex options affect the app-server child process rather than a single `turn/start` request. The broker launches and pools app-server children separately when `webSearch`, `modelVerbosity`, `imageGeneration`, or reasoning-effort process config differs, so one host turn cannot accidentally reuse a child started with incompatible runtime settings.
 

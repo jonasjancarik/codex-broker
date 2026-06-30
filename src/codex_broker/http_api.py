@@ -811,6 +811,11 @@ def openapi_document() -> dict[str, Any]:
                         "personality": {"type": "string"},
                         "summary": {"type": "string"},
                         "reasoningSummary": {"type": "string"},
+                        "outputSchema": {
+                            "type": "object",
+                            "description": "JSON Schema used to constrain the final assistant message for the turn.",
+                            "additionalProperties": True,
+                        },
                         "webSearch": {"type": "string"},
                         "modelVerbosity": {"type": "string"},
                         "imageGeneration": {"type": "boolean"},

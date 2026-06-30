@@ -56,6 +56,10 @@ class ConfigProfileTests(unittest.TestCase):
                         "serviceTier": "flex",
                         "effort": "high",
                         "summary": "auto",
+                        "outputSchema": {
+                            "type": "object",
+                            "properties": {"ok": {"type": "boolean"}},
+                        },
                         "webSearch": "live",
                         "modelVerbosity": "medium",
                         "imageGeneration": True,
@@ -91,6 +95,7 @@ class ConfigProfileTests(unittest.TestCase):
                 self.assertEqual(turn_params["effort"], "medium")
                 self.assertEqual(turn_params["personality"], "concise")
                 self.assertEqual(turn_params["summary"], "concise")
+                self.assertEqual(turn_params["outputSchema"], profile["outputSchema"])
 
                 process_args = services.scheduler._codex_process_config_args(
                     {

@@ -130,6 +130,8 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/turns"
 ```
 
+Use `codexOptions.outputSchema` in the turn body when the host needs the final assistant message constrained by a JSON Schema, such as a background job that expects a machine-readable result object.
+
 Response shape:
 
 ```json
