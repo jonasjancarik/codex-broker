@@ -4,11 +4,11 @@ Codex Broker is an internal service you run next to your product app when that a
 
 Think of the broker as your app's local Codex service. Your app sends it chat messages or job requests, and the broker starts and manages the Codex work behind the scenes.
 
-A host app still owns its product behavior: users, permissions, database records, UI, prompts, evidence semantics, job queues, and business rules. The broker owns the reusable Codex operations for that app deployment: Codex auth homes, long-lived app-server processes, thread and turn lifecycle, same-thread locking, event streaming, and bundle mounting.
+A host app still owns its product behavior: users, permissions, database records, UI, prompts, evidence behavior, job queues, and business rules. The broker owns the reusable Codex operations for that app deployment: Codex auth homes, long-lived app-server processes, thread and turn lifecycle, same-thread locking, event streaming, and bundle mounting.
 
 You can run one broker for more than one app if you deliberately want a shared internal service, but that is not the main mental model. Start with one broker container for one product app.
 
-The project spec lives in [codex-broker-spec.md](codex-broker-spec.md).
+The project spec lives in [codex-broker-spec.md](codex-broker-spec.md). For implementation-level documentation, start with [docs/architecture.md](docs/architecture.md) and [docs/configuration.md](docs/configuration.md).
 
 ## Why This Exists
 
@@ -32,7 +32,7 @@ Use this broker when a product app needs to run Codex, but the app should not ow
 
 Example: a product support or research chat.
 
-The product app owns the logged-in user, chat records, chat memory, UI streaming, and evidence semantics. The broker runs Codex for each chat thread, serializes turns for the same chat, streams normalized events, and exposes declared host tools to Codex through a mounted bundle.
+The product app owns the logged-in user, chat records, chat memory, UI streaming, and evidence behavior. The broker runs Codex for each chat thread, serializes turns for the same chat, streams normalized events, and exposes declared host tools to Codex through a mounted bundle.
 
 ### Background Jobs
 
@@ -69,14 +69,14 @@ The broker owns generic Codex infrastructure:
 
 ## What Host Apps Own
 
-Host apps own product-specific behavior:
+Host apps own app-specific behavior:
 
 - product identity and session auth,
 - deciding whether a user may call the broker,
 - product database records and data models,
 - UI and user-facing streaming behavior,
-- prompts and product-specific assistant behavior,
-- app-specific tool semantics,
+- prompts and app-specific assistant behavior,
+- app-specific tool behavior,
 - evidence search, report generation, file formats, artifacts, and job queues,
 - final authorization checks inside host-owned tool endpoints.
 
@@ -170,7 +170,7 @@ A bundle can declare:
 
 For broker-hosted adapters, the broker acts as a transport shim. It validates the adapter declaration, resolves secret headers from environment variables, adds broker context, and forwards the tool call to a host-owned HTTP endpoint.
 
-The host endpoint must still enforce product authorization and implement product semantics.
+The host endpoint must still enforce product authorization and implement app-specific behavior.
 
 If a bundle instruction or skill tells Codex to use a CLI, that command must already be available inside the broker/Codex runtime: installed in the broker image, mounted into the broker container, present in the mounted workspace, or runnable through the workspace's package manager. For structured tool use, declare an MCP server and allowlist its command with `CODEX_BROKER_ALLOWED_TOOL_COMMANDS`.
 
@@ -214,7 +214,7 @@ From the repository root, run the broker through `uv`:
 uv run codex-broker
 ```
 
-`uv` reads [pyproject.toml](pyproject.toml), builds the local package, and runs the `codex-broker` console script. Set environment variables before starting the process.
+`uv` reads [pyproject.toml](pyproject.toml), builds the local package, and runs the `codex-broker` console script. Set environment variables before starting the process. The complete configuration reference is in [docs/configuration.md](docs/configuration.md).
 
 Useful local environment:
 
@@ -267,7 +267,7 @@ See [docs/deployment.md](docs/deployment.md) and [examples/docker-compose.yml](e
 
 Implemented integration examples:
 
-- A chat app can keep product prompt construction, chat state, UI streaming, and evidence semantics while the broker receives Codex turns and exposes the declared `host.evidence.search` adapter.
+- A chat app can keep product prompt construction, chat state, UI streaming, and evidence behavior while the broker receives Codex turns and exposes the declared `host.evidence.search` adapter.
 - A job worker can keep job records, queueing, artifacts, review rows, and UI streaming while the broker receives job turns and manages Codex thread and turn state.
 - Example mounted bundles live under [examples/bundles](examples/bundles).
 - Host clients are available in Python and TypeScript.
@@ -315,6 +315,8 @@ PYTHONDONTWRITEBYTECODE=1 uv run python -W always::ResourceWarning -m unittest d
 
 ## More Reading
 
+- [docs/architecture.md](docs/architecture.md): process boundaries, modules, storage layout, request flow, pooling, recovery, and security model.
+- [docs/configuration.md](docs/configuration.md): environment variables, configuration profiles, request options, bundle manifests, and Docker build args.
 - [docs/host-integration.md](docs/host-integration.md): how host apps should call the broker.
 - [docs/integrating-with-broker.md](docs/integrating-with-broker.md): copy-pasteable integration flow, client examples, SSE events, and hosted-tool endpoint contract.
 - [docs/app-server-modes.md](docs/app-server-modes.md): version-pinned Codex app-server mode and capability coverage.

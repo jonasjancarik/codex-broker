@@ -2,6 +2,8 @@
 
 The broker is designed as one internal Docker image that a host app can run next to its own backend or worker services.
 
+For the complete environment-variable and profile reference, see [Configuration](configuration.md). For process, storage, pooling, and recovery details, see [Architecture](architecture.md).
+
 ## Image
 
 The Dockerfile installs the official Codex CLI Linux musl release from `openai/codex` and then installs the broker Python package. Build-time args:
@@ -11,11 +13,46 @@ The Dockerfile installs the official Codex CLI Linux musl release from `openai/c
 
 GitHub Actions publishes multi-architecture images to `ghcr.io/jonasjancarik/codex-broker`. Pushes to `main` publish `edge`, and `v*` tags publish both `latest` and the matching version tag. Pull requests build the image without pushing it.
 
+## Extending The Broker Image
+
+Use a derived image when Codex needs extra OS packages, language runtimes, native libraries, OCR data, or common CLI tools inside the broker container. Derived images are the supported way to add runtime dependencies to the broker container. Keep app-specific behavior in the host app or in broker-hosted HTTP tools.
+
+Example `.codex-broker/Dockerfile`:
+
+```dockerfile
+ARG CODEX_BROKER_IMAGE=ghcr.io/jonasjancarik/codex-broker:edge
+FROM ${CODEX_BROKER_IMAGE}
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+USER broker
+```
+
+Example Compose service:
+
+```yaml
+services:
+  codex-broker:
+    build:
+      context: .
+      dockerfile: .codex-broker/Dockerfile
+      args:
+        CODEX_BROKER_IMAGE: ghcr.io/jonasjancarik/codex-broker:edge
+    image: my-app-codex-broker:local
+```
+
+Prefer build-time installs over startup install scripts. Startup scripts make broker startup slower, network-dependent, and harder to reproduce; keep them for local development only. For production, publish the derived image and pull it from the target host instead of rebuilding it during every deploy.
+
+Keep secrets out of the image, and switch back to `USER broker` after installing packages. Use broker-hosted HTTP tools instead of image dependencies when a capability depends on host app data, authorization, business rules, or result interpretation. `CODEX_BROKER_ALLOWED_TOOL_COMMANDS` only allowlists bundle-declared MCP server commands; it does not install tools and does not generally allow shell commands.
+
 ## Docker Mounts
 
 Use one persistent `/data` volume for broker SQLite state, auth homes, inline bundles, and overlays. The image creates `/data` for the non-root `broker` user before startup. Mount host workspaces under `/workspaces`, stable reviewed bundles under `/bundles`, and host-owned job data under a separate path such as `/host-data`.
 
-The example Compose file mounts one generic app workspace into the broker container and exposes port `3400` only to the Compose network by default. It also shows a `/host-data/jobs` mount for host-owned job workspaces. Host apps remain responsible for their own databases, queues, UI, authorization, and app-specific tool semantics. Add a local override with `ports: ["3400:3400"]` only when you intentionally want host-machine access.
+The example Compose file mounts one generic app workspace into the broker container and exposes port `3400` only to the Compose network by default. It also shows a `/host-data/jobs` mount for host-owned job workspaces. Host apps remain responsible for their own databases, queues, UI, authorization, and app-specific tool behavior. Add a local override with `ports: ["3400:3400"]` only when you intentionally want host-machine access.
 
 When enabling the example chat bundle, the broker container must share a Docker network or route with the host app service named by the bundle endpoint, currently `http://app:3000/internal/codex/tools/evidence-search`. Set `CODEX_HOST_TOOL_KEY` in both the broker container and host app so the hosted adapter can authenticate to the host-owned evidence endpoint.
 

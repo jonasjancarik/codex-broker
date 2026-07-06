@@ -2,7 +2,7 @@
 
 Use this document when a product backend, chat service, or job worker wants to run Codex work through the broker. The host app calls the broker over HTTP; browser clients should keep calling the host app.
 
-The host app keeps product concerns: users, authorization, database records, UI, prompt construction, evidence semantics, job records, artifacts, and business rules. The broker handles reusable Codex plumbing: credentials per owner/profile, app-server process pooling, broker thread and turn state, one-active-turn-at-a-time locking, normalized event streaming, and the temporary per-turn files and config that expose bundles, MCP servers, and broker-hosted adapters to Codex.
+The host app keeps product concerns: users, authorization, database records, UI, prompt construction, evidence behavior, job records, artifacts, and business rules. The broker handles reusable Codex plumbing: credentials per owner/profile, app-server process pooling, broker thread and turn state, one-active-turn-at-a-time locking, normalized event streaming, and the temporary per-turn files and config that expose bundles, MCP servers, and broker-hosted adapters to Codex.
 
 A bundle is a named task manifest selected by `bundleId`. It declares the Codex-facing context and capabilities for a class of host work: instructions, mounted skills, prompt files, MCP servers, broker-hosted tool adapters, additional allowed workspace paths, and sandbox defaults. Bundles do not contain host business logic, user state, secrets, queues, artifacts, or authorization rules; those stay in the host app.
 
@@ -96,7 +96,7 @@ Keep in the host chat app:
 - chat/session authorization,
 - chat and evidence records,
 - UI streaming and rendering,
-- evidence or tool semantics.
+- evidence or tool behavior.
 
 Move to the broker:
 
@@ -115,7 +115,7 @@ Recommended chat flow:
 
 An existing chat service can switch from calling Codex directly to calling the broker. Configure the service with `CODEX_BROKER_BASE_URL`, `CODEX_BROKER_INTERNAL_KEY`, and a bundle id such as `example-chat-v1`. The chat service can keep product prompt construction, chat authorization, chat state, and UI stream mapping, while the broker owns Codex auth homes, app-server pooling, thread locks, bundle materialization, and hosted adapter exposure.
 
-The sample chat bundle exposes `host.evidence.search` through a broker-hosted adapter targeting the host-owned `POST /internal/codex/tools/evidence-search` endpoint. Set the same `CODEX_HOST_TOOL_KEY` in the broker environment and the host app. The broker forwards tool calls and opaque broker context; the host app validates the tool key and owns the evidence search semantics.
+The sample chat bundle exposes `host.evidence.search` through a broker-hosted adapter targeting the host-owned `POST /internal/codex/tools/evidence-search` endpoint. Set the same `CODEX_HOST_TOOL_KEY` in the broker environment and the host app. The broker forwards tool calls and opaque broker context; the host app validates the tool key and owns the evidence search behavior.
 
 Approval-gated tool work emits `tool.requested` before `approval.requested`, followed by `approval.resolved` after the broker answers the app-server approval request. Host UIs can use `tool.requested` for generic tool lifecycle display and approval events for approval-specific state.
 
@@ -171,7 +171,7 @@ When a bundle turn omits `cwd`, the broker runs Codex from the broker-owned per-
 
 When inline bundles are enabled, `POST /v1/bundles/inline` stores the bundle by content digest and records its `bundleId` for later turn requests. Re-sending the same payload is idempotent; reusing an accepted inline `bundleId` with different content is rejected. Inline bundle ids also cannot shadow mounted bundle ids.
 
-Bundle-declared `tools` with `type: "broker-hosted"` become a broker-hosted MCP adapter that forwards tool calls to host-owned HTTP endpoints. The broker validates the declaration and transports calls; it does not implement product-specific evidence or business logic. Hosted tool URLs must match `CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES` by parsed scheme and host, with optional explicit port and path-prefix restrictions. Broker-hosted HTTP tools support the `host-allowlist` network policy in v1; unsupported policy modes are rejected.
+Bundle-declared `tools` with `type: "broker-hosted"` become a broker-hosted MCP adapter that forwards tool calls to host-owned HTTP endpoints. The broker validates the declaration and transports calls; it does not implement app-specific evidence behavior or business logic. Hosted tool URLs must match `CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES` by parsed scheme and host, with optional explicit port and path-prefix restrictions. Broker-hosted HTTP tools support the `host-allowlist` network policy in v1; unsupported policy modes are rejected.
 
 Hosted tool endpoints may return ordinary JSON, which the adapter exposes to Codex as formatted text. If an endpoint returns a valid MCP tool result shape with `content`, optional `isError`, optional `structuredContent`, and optional `_meta`, the adapter passes that result through directly. Use this for host-owned tools that need to expose artifact metadata, resource content, or file paths without the broker flattening them into a JSON text blob.
 

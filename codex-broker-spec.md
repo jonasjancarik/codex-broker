@@ -14,14 +14,14 @@ The broker should support:
 - task bundles that mount skills, prompts, MCP servers, or broker-hosted adapters,
 - future host apps that need Codex threads, turns, streaming events, and Codex execution policy without copying app-server process code.
 
-The host app owns product identity, authorization, data models, UI, and app-specific tool semantics. The broker owns the generic Codex-facing interface for exposing those tools to Codex, either through mounted bundles, MCP servers, or broker-hosted adapters.
+The host app owns product identity, authorization, data models, UI, and app-specific tool behavior. The broker owns the generic Codex-facing interface for exposing those tools to Codex, either through mounted bundles, MCP servers, or broker-hosted adapters.
 
 The broker also owns Codex process management, Codex auth homes, app-server JSON-RPC dispatch, event multiplexing, and bundle resolution.
 
 ## Design Principles
 
 - Keep the broker product-facing, not a raw JSON-RPC passthrough.
-- Keep product authorization and product data semantics in the host app.
+- Keep product authorization and app-specific data behavior in the host app.
 - Run long-lived `codex app-server` processes instead of spawning one process per turn.
 - Isolate Codex credentials by owner and profile.
 - Enforce one active turn at a time per broker thread.
@@ -125,6 +125,8 @@ Broker-managed auth layout:
 
 ```text
 /data/
+  state/
+    broker.sqlite
   auth/
     owners/
       <owner-hash>/
@@ -133,7 +135,6 @@ Broker-managed auth layout:
             codex-home/
           work/
             codex-home/
-  broker.sqlite
 ```
 
 The broker should hash or HMAC product owner ids before using them in paths. Raw product ids should not appear in filesystem paths by default.
@@ -315,7 +316,7 @@ The broker supports three tool categories:
 
 App-specific bridges should live in bundles or app-specific MCP servers, not in the generic broker core.
 
-Broker-hosted adapters are transport shims. They forward declared headers, input arguments, and opaque broker context to host-owned HTTP endpoints. Host endpoints remain responsible for final authorization and product semantics.
+Broker-hosted adapters are transport shims. They forward declared headers, input arguments, and opaque broker context to host-owned HTTP endpoints. Host endpoints remain responsible for final authorization and app-specific behavior.
 
 ## Durable State
 
@@ -372,7 +373,7 @@ Keep in the host app:
 - chat records,
 - UI streaming,
 - prompt construction,
-- evidence/tool semantics.
+- evidence/tool behavior.
 
 Move to the broker:
 
@@ -386,7 +387,7 @@ Move to the broker:
 
 Keep in the host app:
 
-- queue semantics,
+- queue behavior,
 - job records,
 - generated artifacts,
 - review state.
@@ -423,7 +424,7 @@ Move to the broker:
 5. Host integrations
    - Add chat-app integration.
    - Add job-worker integration.
-   - Preserve host-owned UI and data semantics.
+   - Preserve host-owned UI and data behavior.
 
 6. Operational hardening
    - Add metrics and structured logs.

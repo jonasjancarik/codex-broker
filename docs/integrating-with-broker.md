@@ -6,7 +6,7 @@ This guide is the practical contract for code that interacts with Codex Broker. 
 
 ## Mental Model
 
-The host app owns users, product authorization, database records, UI state, prompts, and product-specific tools. The broker owns Codex process management, Codex credentials, broker thread state, one-active-turn locking, normalized events, and bundle mounting.
+The host app owns users, product authorization, database records, UI state, prompts, and app-specific tools. The broker owns Codex process management, Codex credentials, broker thread state, one-active-turn locking, normalized events, and bundle mounting.
 
 Use stable product IDs:
 
