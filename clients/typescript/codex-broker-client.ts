@@ -19,6 +19,10 @@ export class CodexBrokerClient {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/status?profile=${enc(profile)}`);
   }
 
+  probeAuth(ownerId: string, profile = "default"): Promise<Record<string, unknown>> {
+    return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/probe`, { profile });
+  }
+
   startDeviceAuth(ownerId: string, profile = "default"): Promise<Record<string, unknown>> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/device/start`, { profile });
   }

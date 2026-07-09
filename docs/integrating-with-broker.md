@@ -51,6 +51,19 @@ curl -sS \
 
 The `state` field is one of `missing`, `present_unverified`, `authenticated`, `invalid`, `refresh_failed`, `failed`, or `unknown`. `authFingerprint` changes when the owner/profile auth file changes, and pooled app-server children are keyed by that fingerprint so refreshed auth starts fresh runtime processes.
 
+Run an explicit active probe when an administrator needs to verify the credentials against the real Codex backend:
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"profile":"default"}' \
+  "$BROKER/v1/owners/$OWNER/auth/probe"
+```
+
+The probe spends one tiny Codex request. It is intended for manual checks or low-frequency health workflows, not frequent polling. If Codex reports token invalidation, the broker stores `refresh_failed` for that owner/profile and closes stale pooled app-server children.
+
 For service-account style deployments, store an API key in the owner profile:
 
 ```bash

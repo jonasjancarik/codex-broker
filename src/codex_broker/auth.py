@@ -5,12 +5,14 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .config import BrokerConfig
+from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, classify_runtime_error
 from .state import StateStore
 from .util import clean_process_env, ensure_dir, env_with, owner_digest, redact, utc_now
 
@@ -21,6 +23,7 @@ STRICT_CODE_RE = re.compile(r"\b([A-Z0-9]{4,8}-[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})?)
 CONTEXT_CODE_RE = re.compile(r"\b([A-Z0-9]{6,12})\b")
 EXPIRES_IN_RE = re.compile(r"\bexpires?\s+in\s+(\d+)\s+(seconds?|minutes?|hours?)\b", re.I)
 PROFILE_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]")
+AUTH_PROBE_PROMPT = "Reply exactly: OK"
 
 
 def strip_ansi(text: str) -> str:
@@ -233,6 +236,125 @@ class AuthManager:
             "loginStatusOutput": output,
         }
 
+    def probe(self, owner_id: str, profile: str = "default") -> dict[str, Any]:
+        profile_key = self.profile_key(profile)
+        owner_hash = self.hash_owner(owner_id)
+        home = self.profile_home(owner_hash, profile_key)
+        auth_file = home / "auth.json"
+        auth_file_exists = auth_file.exists()
+        previous_fingerprint = self.auth_fingerprint(owner_hash, profile_key)
+        started_at = utc_now()
+        started_monotonic = time.monotonic()
+        command = self._probe_command(home)
+        self.state.append_audit(
+            owner_hash,
+            "auth.probe.start",
+            {"authFingerprint": previous_fingerprint},
+            profile=profile_key,
+        )
+
+        output = ""
+        exit_code: int | None = None
+        error_code: str | None = None
+        public_message: str | None = None
+        admin_message: str | None = None
+        if not auth_file_exists:
+            state = "missing"
+            self.state.update_auth_status(owner_hash, profile_key, state, auth_fingerprint=previous_fingerprint)
+        else:
+            try:
+                timeout = max(5.0, min(float(self.config.request_timeout_seconds), 120.0))
+                result = subprocess.run(
+                    command,
+                    cwd=str(home),
+                    env=self.codex_env(owner_hash, profile_key),
+                    input=f"{AUTH_PROBE_PROMPT}\n",
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                    check=False,
+                )
+                exit_code = result.returncode
+                output = redact(f"{result.stdout}\n{result.stderr}".strip(), 2000)
+            except (OSError, subprocess.SubprocessError) as exc:
+                exit_code = -1
+                output = redact(str(exc), 2000)
+
+            normalized = strip_ansi(output).lower()
+            error_info = classify_runtime_error(output) if output else None
+            if error_info and error_info.code == CODEX_AUTH_REQUIRES_ADMIN:
+                state = "refresh_failed"
+                error_code = error_info.code
+                public_message = error_info.public_message
+                admin_message = error_info.admin_message
+                self.mark_runtime_auth_failure(
+                    owner_hash,
+                    profile_key,
+                    code=error_info.code,
+                    admin_message=error_info.admin_message,
+                )
+            elif exit_code == 0:
+                state = "authenticated"
+                self.state.update_auth_status(
+                    owner_hash,
+                    profile_key,
+                    state,
+                    auth_fingerprint=self.auth_fingerprint(owner_hash, profile_key),
+                )
+            elif "not logged in" in normalized or "not authenticated" in normalized:
+                state = "invalid" if auth_file.exists() else "missing"
+                self.state.update_auth_status(
+                    owner_hash,
+                    profile_key,
+                    state,
+                    auth_fingerprint=self.auth_fingerprint(owner_hash, profile_key),
+                )
+            else:
+                state = "failed"
+                if error_info:
+                    error_code = error_info.code
+                    public_message = error_info.public_message
+                    admin_message = error_info.admin_message
+                self.state.update_auth_status(
+                    owner_hash,
+                    profile_key,
+                    state,
+                    auth_fingerprint=self.auth_fingerprint(owner_hash, profile_key),
+                )
+
+        completed_at = utc_now()
+        fingerprint = self.auth_fingerprint(owner_hash, profile_key)
+        audit_payload = {
+            "state": state,
+            "exitCode": exit_code,
+            "errorCode": error_code,
+            "previousAuthFingerprint": previous_fingerprint,
+            "authFingerprint": fingerprint,
+        }
+        self.state.append_audit(
+            owner_hash,
+            "auth.probe.success" if state == "authenticated" else "auth.probe.failure",
+            audit_payload,
+            profile=profile_key,
+        )
+        return {
+            "ownerHash": owner_hash,
+            "profile": profile_key,
+            "state": state,
+            "authFilePresent": auth_file.exists(),
+            "authFingerprint": fingerprint,
+            "previousAuthFingerprint": previous_fingerprint,
+            "command": command,
+            "startedAt": started_at,
+            "completedAt": completed_at,
+            "durationMs": round((time.monotonic() - started_monotonic) * 1000, 3),
+            "exitCode": exit_code,
+            "output": output,
+            "errorCode": error_code,
+            "publicMessage": public_message,
+            "adminMessage": admin_message,
+        }
+
     def start_device_auth(self, owner_id: str, profile: str = "default") -> dict[str, Any]:
         profile_key = self.profile_key(profile)
         owner_hash = self.hash_owner(owner_id)
@@ -380,6 +502,24 @@ class AuthManager:
         desired = f'cli_auth_credentials_store = "{self.config.credential_store}"\n'
         if not config_path.exists() or config_path.read_text(encoding="utf-8") != desired:
             config_path.write_text(desired, encoding="utf-8")
+
+    def _probe_command(self, home: Path) -> list[str]:
+        return [
+            *self.config.codex_command,
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "-c",
+            'model_reasoning_effort="low"',
+            "--cd",
+            str(home),
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "-s",
+            "read-only",
+            "--json",
+            "-",
+        ]
 
     def _spawn_device_auth(self, session: DeviceAuthSession) -> None:
         home = self.profile_home(session.owner_hash, session.profile)

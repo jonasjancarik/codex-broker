@@ -58,7 +58,7 @@ The broker owns generic Codex infrastructure:
 
 - `codex app-server` child processes and pooling,
 - per-owner and per-profile `CODEX_HOME` directories,
-- Codex login status, device auth, API-key auth, and logout,
+- Codex login status, active auth probe, device auth, API-key auth, and logout,
 - broker-thread to Codex-thread mappings,
 - turn creation, turn status, interruption, steering, and archive behavior,
 - one active turn at a time per broker thread,
@@ -185,6 +185,7 @@ Core endpoints:
 - `GET /metrics`
 - `GET /openapi.json`
 - `GET /v1/owners/{ownerId}/auth/status?profile=default`
+- `POST /v1/owners/{ownerId}/auth/probe`
 - `POST /v1/owners/{ownerId}/auth/device/start`
 - `POST /v1/owners/{ownerId}/auth/device/submit`
 - `POST /v1/owners/{ownerId}/auth/api-key`
@@ -202,7 +203,7 @@ Core endpoints:
 
 Requests other than health and readiness require `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`. This includes `/metrics` and `/openapi.json`.
 
-Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the owner/profile auth file. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled app-server children that were started with the old auth.
+Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the owner/profile auth file. `GET /auth/status` is a cheap local check. `POST /auth/probe` runs a tiny real Codex request for the owner/profile and persists `refresh_failed` when token refresh is invalidated. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled app-server children that were started with the old auth.
 
 Set `CODEX_BROKER_INTERNAL_KEY` or `CODEX_BROKER_INTERNAL_KEY_FILE`. Unauthenticated mode is only for local development and requires `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
 
@@ -283,7 +284,7 @@ Still outside this repo:
 Implemented in this repo:
 
 - owner/profile auth homes with hashed owner paths,
-- API-key, device-auth, status, logout, and explicit profile deletion flows,
+- API-key, device-auth, status, active probe, logout, and explicit profile deletion flows,
 - app-server stdio pooling with lazy restart after child failure,
 - profile defaults and policy checks for model, approval, sandbox, enabled bundles, and workspace roots,
 - startup recovery that marks abandoned `starting`, `queued`, and `running` turns failed after a broker restart,

@@ -21,6 +21,9 @@ class CodexBrokerClient:
     def auth_status(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
         return self._request("GET", f"/v1/owners/{quote(owner_id)}/auth/status", query={"profile": profile})
 
+    def probe_auth(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
+        return self._request("POST", f"/v1/owners/{quote(owner_id)}/auth/probe", {"profile": profile})
+
     def start_device_auth(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
         return self._request("POST", f"/v1/owners/{quote(owner_id)}/auth/device/start", {"profile": profile})
 

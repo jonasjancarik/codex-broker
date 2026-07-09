@@ -55,16 +55,26 @@ def classify_runtime_error(message: str) -> RuntimeErrorInfo:
             public_message=SESSION_NOT_RESUMABLE_PUBLIC_MESSAGE,
             admin_message=message,
         )
-    if (
-        "access token could not be refreshed" in normalized
-        and "refresh token was already used" in normalized
-    ):
+    if is_auth_refresh_failure(normalized):
         return RuntimeErrorInfo(
             code=CODEX_AUTH_REQUIRES_ADMIN,
             public_message=CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE,
             admin_message=message,
         )
     return RuntimeErrorInfo(code="codex_runtime_error", public_message=message, admin_message=message)
+
+
+def is_auth_refresh_failure(message: str) -> bool:
+    normalized = " ".join(message.lower().split())
+    if "access token could not be refreshed" in normalized and "refresh token was already used" in normalized:
+        return True
+    if "token_invalidated" in normalized or "refresh_token_invalidated" in normalized:
+        return True
+    if "authentication token has been invalidated" in normalized:
+        return True
+    if "refresh token" in normalized and "please log out and sign in again" in normalized:
+        return True
+    return False
 
 
 def classify_app_server_error(error: Any) -> RuntimeErrorInfo | None:

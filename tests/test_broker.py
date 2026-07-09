@@ -687,6 +687,43 @@ class BrokerTests(unittest.TestCase):
                 services.pool.close_all()
                 services.state.close()
 
+    def test_auth_probe_api_closes_owner_profile_pool_on_refresh_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            try:
+                services.auth.login_api_key("owner/a", "sk-test", "work")
+                owner_hash = services.auth.hash_owner("owner/a")
+                codex_home = services.auth.profile_home(owner_hash, "work")
+                client = services.pool.get(
+                    owner_hash=owner_hash,
+                    profile="work",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=(),
+                    auth_fingerprint=services.auth.auth_fingerprint(owner_hash, "work"),
+                )
+                captured: dict[str, Any] = {}
+
+                def capture_json(payload: dict[str, Any], status: Any = None) -> None:
+                    captured["payload"] = payload
+                    captured["status"] = status
+
+                handler = BrokerHandler.__new__(BrokerHandler)
+                handler.broker = services
+                handler._read_json = lambda allow_empty=False: {"profile": "work"}  # type: ignore[method-assign]
+                handler._json = capture_json
+
+                os.environ["FAKE_CODEX_AUTH_REFRESH_FAILURE"] = "1"
+                handler._auth_route("POST", ["probe"], "owner/a", {})
+
+                self.assertTrue(client.closed)
+                self.assertEqual(captured["payload"]["state"], "refresh_failed")
+                self.assertEqual(captured["payload"]["errorCode"], CODEX_AUTH_REQUIRES_ADMIN)
+            finally:
+                os.environ.pop("FAKE_CODEX_AUTH_REFRESH_FAILURE", None)
+                services.pool.close_all()
+                services.state.close()
+
     def test_internal_api_key_is_required_unless_explicitly_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             base = replace(config_for(Path(tmp_raw)), internal_key=None, allow_unauthenticated=False)

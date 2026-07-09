@@ -410,14 +410,17 @@ class TurnScheduler:
         metrics["auth_starts"] = (
             audit_counts.get("auth.device.start", 0)
             + audit_counts.get("auth.api_key.start", 0)
+            + audit_counts.get("auth.probe.start", 0)
         )
         metrics["auth_successes"] = (
             audit_counts.get("auth.device.success", 0)
             + audit_counts.get("auth.api_key.success", 0)
+            + audit_counts.get("auth.probe.success", 0)
         )
         metrics["auth_failures"] = (
             audit_counts.get("auth.device.failure", 0)
             + audit_counts.get("auth.api_key.failure", 0)
+            + audit_counts.get("auth.probe.failure", 0)
         )
         for action, count in audit_counts.items():
             metrics[f"audit_{metric_key(action)}"] = count

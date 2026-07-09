@@ -144,7 +144,7 @@ Codex login commands run with:
 - `HOME` set to the profile parent directory,
 - a scrubbed environment that keeps only safe base variables.
 
-The broker supports status checks, device auth start/submit, API-key login, runtime invalidation, logout, and explicit profile deletion. Updating auth closes that owner/profile's pooled app-server children so the next turn starts with the new auth fingerprint.
+The broker supports cheap status checks, explicit active auth probes, device auth start/submit, API-key login, runtime invalidation, logout, and explicit profile deletion. Updating auth closes that owner/profile's pooled app-server children so the next turn starts with the new auth fingerprint.
 
 ## Thread And Turn Flow
 

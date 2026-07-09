@@ -142,6 +142,7 @@ The broker should hash or HMAC product owner ids before using them in paths. Raw
 Auth features:
 
 - status checks,
+- explicit active auth probe,
 - device auth start/submit,
 - API-key login,
 - logout,
@@ -158,6 +159,7 @@ Core endpoints:
 - `GET /metrics`
 - `GET /openapi.json`
 - `GET /v1/owners/{ownerId}/auth/status?profile=default`
+- `POST /v1/owners/{ownerId}/auth/probe`
 - `POST /v1/owners/{ownerId}/auth/device/start`
 - `POST /v1/owners/{ownerId}/auth/device/submit`
 - `POST /v1/owners/{ownerId}/auth/api-key`
@@ -413,7 +415,7 @@ Move to the broker:
 
 3. Auth homes
    - Implement per-owner `CODEX_HOME`.
-   - Implement device auth and API-key auth.
+   - Implement device auth, API-key auth, and active auth probes.
    - Implement logout.
 
 4. Bundles

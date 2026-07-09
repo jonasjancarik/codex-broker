@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -7,11 +8,21 @@ from pathlib import Path
 
 from codex_broker.auth import AuthManager, normalize_profile
 from codex_broker.http_api import BrokerServices
+from codex_broker.runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, classify_runtime_error
 from codex_broker.state import StateStore
 from test_broker import config_for, wait_turn
 
 
 class AuthProfileTests(unittest.TestCase):
+    def test_token_invalidated_messages_are_codex_auth_failures(self) -> None:
+        message = (
+            "failed to refresh available models: unexpected status 401 Unauthorized: "
+            "Your authentication token has been invalidated. Please try signing in again., "
+            "auth error code: token_invalidated refresh_token_invalidated"
+        )
+
+        self.assertEqual(classify_runtime_error(message).code, CODEX_AUTH_REQUIRES_ADMIN)
+
     def test_profile_ids_are_canonicalized_for_auth_state_and_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             config = config_for(Path(tmp_raw))
@@ -59,6 +70,53 @@ class AuthProfileTests(unittest.TestCase):
                 owner_hash = services.auth.hash_owner("owner-a")
                 self.assertEqual([row["profile"] for row in services.state.list_profiles(owner_hash)], ["ops_team", "work_team"])
             finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_active_probe_success_marks_profile_authenticated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            try:
+                services.auth.login_api_key("owner-a", "sk-test", "default")
+
+                result = services.auth.probe("owner-a", "default")
+
+                self.assertEqual(result["state"], "authenticated")
+                self.assertEqual(result["exitCode"], 0)
+                self.assertTrue(result["authFilePresent"])
+                self.assertIn("exec", result["command"])
+                status = services.auth.status("owner-a", "default")
+                self.assertEqual(status["state"], "authenticated")
+
+                owner_hash = services.auth.hash_owner("owner-a")
+                actions = [entry["action"] for entry in services.state.list_audit_logs(owner_hash)]
+                self.assertIn("auth.probe.start", actions)
+                self.assertIn("auth.probe.success", actions)
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_active_probe_token_invalidated_marks_refresh_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            try:
+                services.auth.login_api_key("owner-a", "sk-test", "default")
+                os.environ["FAKE_CODEX_AUTH_REFRESH_FAILURE"] = "1"
+
+                result = services.auth.probe("owner-a", "default")
+
+                self.assertEqual(result["state"], "refresh_failed")
+                self.assertEqual(result["errorCode"], CODEX_AUTH_REQUIRES_ADMIN)
+                self.assertIn("token_invalidated", result["output"])
+                status = services.auth.status("owner-a", "default")
+                self.assertEqual(status["state"], "refresh_failed")
+
+                owner_hash = services.auth.hash_owner("owner-a")
+                actions = [entry["action"] for entry in services.state.list_audit_logs(owner_hash)]
+                self.assertIn("auth.probe.failure", actions)
+                self.assertIn("auth.runtime.failure", actions)
+            finally:
+                os.environ.pop("FAKE_CODEX_AUTH_REFRESH_FAILURE", None)
                 services.pool.close_all()
                 services.state.close()
 

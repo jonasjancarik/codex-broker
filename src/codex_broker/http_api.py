@@ -192,6 +192,13 @@ class BrokerHandler(BaseHTTPRequestHandler):
         if method == "GET" and tail == ["status"]:
             self._json(self.broker.auth.status(owner_id, profile))
             return
+        if method == "POST" and tail == ["probe"]:
+            body = self._read_json(allow_empty=True)
+            result = self.broker.auth.probe(owner_id, str(body.get("profile") or profile))
+            if result["state"] == "refresh_failed" or result.get("previousAuthFingerprint") != result.get("authFingerprint"):
+                self.broker.pool.close_profile(result["ownerHash"], result["profile"])
+            self._json(result)
+            return
         if method == "POST" and tail == ["device", "start"]:
             body = self._read_json(allow_empty=True)
             self._json(self.broker.auth.start_device_auth(owner_id, str(body.get("profile") or profile)), HTTPStatus.ACCEPTED)
@@ -509,6 +516,13 @@ def openapi_document() -> dict[str, Any]:
                     "responses": {"200": json_response(ref("AuthStatus")), "401": json_response(ref("Error"), "Unauthorized")},
                 }
             },
+            "/v1/owners/{ownerId}/auth/probe": {
+                "post": {
+                    "parameters": [owner_param],
+                    "requestBody": request_body(ref("ProfileRequest"), required=False),
+                    "responses": {"200": json_response(ref("AuthProbeResult"), "Active auth probe result")},
+                }
+            },
             "/v1/owners/{ownerId}/auth/device/start": {
                 "post": {
                     "parameters": [owner_param],
@@ -736,6 +750,39 @@ def openapi_document() -> dict[str, Any]:
                         "authFingerprint": {"type": "string"},
                         "exitCode": {"type": "integer"},
                         "output": {"type": "string"},
+                    },
+                },
+                "AuthProbeResult": {
+                    "type": "object",
+                    "required": [
+                        "ownerHash",
+                        "profile",
+                        "state",
+                        "authFilePresent",
+                        "authFingerprint",
+                        "previousAuthFingerprint",
+                        "command",
+                        "startedAt",
+                        "completedAt",
+                        "durationMs",
+                        "output",
+                    ],
+                    "properties": {
+                        "ownerHash": {"type": "string"},
+                        "profile": {"type": "string"},
+                        "state": {"enum": ["missing", "authenticated", "refresh_failed", "invalid", "failed"]},
+                        "authFilePresent": {"type": "boolean"},
+                        "authFingerprint": {"type": "string"},
+                        "previousAuthFingerprint": {"type": "string"},
+                        "command": {"type": "array", "items": {"type": "string"}},
+                        "startedAt": {"type": "string"},
+                        "completedAt": {"type": "string"},
+                        "durationMs": {"type": "number"},
+                        "exitCode": {"type": ["integer", "null"]},
+                        "output": {"type": "string"},
+                        "errorCode": {"type": ["string", "null"]},
+                        "publicMessage": {"type": ["string", "null"]},
+                        "adminMessage": {"type": ["string", "null"]},
                     },
                 },
                 "RuntimeInvalidationResult": {

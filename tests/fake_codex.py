@@ -74,6 +74,32 @@ def handle_logout() -> int:
     return 0
 
 
+def handle_exec(args: list[str]) -> int:
+    _ = args
+    _ = sys.stdin.read()
+    auth_file = auth_home() / "auth.json"
+    if not auth_file.exists():
+        print("Not logged in", file=sys.stderr)
+        return 1
+    if os.environ.get("FAKE_CODEX_AUTH_REFRESH_FAILURE") == "1":
+        print(
+            (
+                "failed to refresh available models: unexpected status 401 Unauthorized: "
+                "Your authentication token has been invalidated. Please try signing in again., "
+                "auth error code: token_invalidated"
+            ),
+            file=sys.stderr,
+        )
+        print("refresh_token_invalidated", file=sys.stderr)
+        return 1
+    if os.environ.get("FAKE_CODEX_EXEC_FAILURE") == "1":
+        print("Codex exec failed", file=sys.stderr)
+        return 2
+    print(json.dumps({"type": "thread.started", "thread_id": "probe_thread"}))
+    print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "OK"}}))
+    return 0
+
+
 def complete_turn(thread_id: str, turn_id: str) -> None:
     delay = float(os.environ.get("FAKE_CODEX_TURN_DELAY", "0.01"))
     send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id}}})
@@ -213,6 +239,8 @@ def main() -> int:
         return handle_login(args[1:])
     if args[:1] == ["logout"]:
         return handle_logout()
+    if "exec" in args:
+        return handle_exec(args)
     if "app-server" in args:
         return handle_app_server()
     return 0

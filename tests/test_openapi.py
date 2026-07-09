@@ -11,6 +11,7 @@ class OpenApiTests(unittest.TestCase):
         paths = document["paths"]
         for path in [
             "/v1/owners/{ownerId}/auth/status",
+            "/v1/owners/{ownerId}/auth/probe",
             "/v1/owners/{ownerId}/auth/device/start",
             "/v1/owners/{ownerId}/auth/device/submit",
             "/v1/owners/{ownerId}/auth/api-key",
@@ -36,6 +37,7 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("brokerKey", components["securitySchemes"])
         for schema in [
             "AuthStatus",
+            "AuthProbeResult",
             "DeviceAuthSession",
             "AuditLog",
             "AuditLogList",
@@ -74,6 +76,7 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("hostApp", components["schemas"]["Turn"]["properties"])
         self.assertIn("deleteProfile", components["schemas"]["ProfileRequest"]["properties"])
         self.assertIn("deleted", components["schemas"]["AuthCommandResult"]["properties"])
+        self.assertIn("errorCode", components["schemas"]["AuthProbeResult"]["properties"])
         self.assertIn("authFingerprint", components["schemas"]["AuthStatus"]["properties"])
         self.assertIn("errorCode", components["schemas"]["Turn"]["properties"])
         self.assertIn("publicMessage", components["schemas"]["Turn"]["properties"])
