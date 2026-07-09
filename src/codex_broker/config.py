@@ -82,7 +82,7 @@ class BrokerConfig:
     config_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     client_name: str = "codex_broker"
     client_title: str = "Codex Broker"
-    client_version: str = "0.5.4"
+    client_version: str = "0.5.5"
 
     @property
     def state_db_path(self) -> Path:

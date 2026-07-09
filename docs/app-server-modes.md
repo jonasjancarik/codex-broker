@@ -2,16 +2,16 @@
 
 read_when: Changing Codex app-server protocol handling, normalized events, approvals, plan mode, goal tracking, review flows, user input, or MCP elicitation support.
 
-This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.143.0`:
+This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.144.0`:
 
 ```bash
-codex app-server generate-ts --out /private/tmp/codex-app-server-ts-0.143.0
-codex app-server generate-json-schema --out /private/tmp/codex-app-server-json-schema-0.143.0
+codex app-server generate-ts --out /private/tmp/codex-app-server-ts-0.144.0
+codex app-server generate-json-schema --out /private/tmp/codex-app-server-json-schema-0.144.0
 ```
 
 The app-server protocol only exposes two collaboration mode kinds in `ModeKind`: `default` and `plan`. Goal tracking, review, approvals, user-input prompts, and MCP elicitations are separate app-server capabilities, not additional `ModeKind` values.
 
-| Capability | 0.143.0 app-server surface | Broker support | Host-facing surface |
+| Capability | 0.144.0 app-server surface | Broker support | Host-facing surface |
 | --- | --- | --- | --- |
 | Default chat/work turns | `thread/start`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt` | Implemented | Thread and turn HTTP APIs, `message.*`, `reasoning.*`, `tool.*`, `turn.*` events |
 | Plan collaboration mode | `ModeKind = "default" \| "plan"`, `ThreadSettings.collaborationMode`, `turn/plan/updated`, `item/plan/delta` | Event normalization implemented | `thread.settings.updated`, `plan.updated`, `plan.delta` events |
@@ -23,7 +23,7 @@ The app-server protocol only exposes two collaboration mode kinds in `ModeKind`:
 
 ## API Direction
 
-The broker currently treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. This keeps host integrations compatible with the generated 0.143.0 protocol without inventing app-server methods that are not exposed.
+The broker currently treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. This keeps host integrations compatible with the generated 0.144.0 protocol without inventing app-server methods that are not exposed.
 
 Future product APIs should follow these boundaries:
 

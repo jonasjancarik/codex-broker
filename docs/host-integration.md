@@ -119,7 +119,7 @@ The sample chat bundle exposes `host.evidence.search` through a broker-hosted ad
 
 Approval-gated tool work emits `tool.requested` before `approval.requested`, followed by `approval.resolved` after the broker answers the app-server approval request. Host UIs can use `tool.requested` for generic tool lifecycle display and approval events for approval-specific state.
 
-Codex app-server `0.143.0` exposes `default` and `plan` as collaboration mode kinds. Goal tracking, review, approval, user-input, and MCP elicitation behavior are separate app-server capabilities. The broker normalizes those surfaces as `thread.settings.updated`, `plan.updated`, `plan.delta`, `goal.updated`, `goal.cleared`, `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed`, `user_input.requested`, `user_input.resolved`, `mcp.elicitation.requested`, and `mcp.elicitation.resolved`.
+Codex app-server `0.144.0` exposes `default` and `plan` as collaboration mode kinds. Goal tracking, review, approval, user-input, and MCP elicitation behavior are separate app-server capabilities. The broker normalizes those surfaces as `thread.settings.updated`, `plan.updated`, `plan.delta`, `goal.updated`, `goal.cleared`, `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed`, `user_input.requested`, `user_input.resolved`, `mcp.elicitation.requested`, and `mcp.elicitation.resolved`.
 
 Approval, user-input, and MCP elicitation requests are persisted as broker interactions before they are answered. Request events include `interactionId`; host apps can display the prompt, then answer it with:
 
