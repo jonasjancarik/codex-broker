@@ -482,7 +482,7 @@ def openapi_document() -> dict[str, Any]:
     turn_param = {"$ref": "#/components/parameters/turnId"}
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Codex Broker", "version": "0.4.0"},
+        "info": {"title": "Codex Broker", "version": "0.5.4"},
         "security": [{"brokerKey": []}],
         "paths": {
             "/healthz": {

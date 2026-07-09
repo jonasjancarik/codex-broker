@@ -363,7 +363,7 @@ Host endpoints may return ordinary JSON or text. Ordinary JSON is formatted as t
 
 | Build arg | Default | Description |
 | --- | --- | --- |
-| `CODEX_VERSION` | `0.142.3` | Codex CLI release version without the `rust-v` prefix. |
+| `CODEX_VERSION` | `0.143.0` | Codex CLI release version without the `rust-v` prefix. |
 | `TARGETARCH` | supplied by BuildKit | `amd64` maps to `x86_64`; `arm64` maps to `aarch64`. Other values fail the build. |
 
 The Docker image installs the official Codex CLI Linux musl archive, installs the broker package, runs as the non-root `broker` user, exposes port `3400`, and declares `/data` as a volume.
