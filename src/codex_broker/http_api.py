@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, account_api
+from . import __version__, account_api, auth_api
 from .app_server import AppServerError
 from .bundles import BundleError
 from .config import BrokerConfig
+from .identity import AuthPrincipalPolicyError
 from .scheduler import ActiveTurnError, ConflictError, NotFoundError, TurnScheduler
 from .services import BrokerServices, serve
 from .util import ensure_dir, json_dumps, json_log
@@ -93,6 +94,8 @@ class BrokerHandler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except NotFoundError as exc:
             self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        except AuthPrincipalPolicyError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.FORBIDDEN)
         except (ValueError, BundleError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except AppServerError as exc:
@@ -143,60 +146,9 @@ class BrokerHandler(BaseHTTPRequestHandler):
         self._json({"ownerHash": owner_hash, "auditLogs": [self._public_audit(entry) for entry in logs]})
 
     def _auth_route(self, method: str, tail: list[str], owner_id: str, query: dict[str, list[str]]) -> None:
-        profile = query.get("profile", ["default"])[0]
         if account_api.handle_account_route(self, method, tail, owner_id, query):
             return
-        if method == "GET" and tail == ["status"]:
-            self._json(self.broker.auth.status(owner_id, profile))
-            return
-        if method == "POST" and tail == ["probe"]:
-            body = self._read_json(allow_empty=True)
-            result = self.broker.auth.probe(owner_id, str(body.get("profile") or profile))
-            if result["state"] == "refresh_failed" or result.get("previousAuthFingerprint") != result.get("authFingerprint"):
-                self.broker.pool.close_profile(result["ownerHash"], result["profile"])
-            self._json(result)
-            return
-        if method == "POST" and tail == ["device", "start"]:
-            body = self._read_json(allow_empty=True)
-            self._json(self.broker.auth.start_device_auth(owner_id, str(body.get("profile") or profile)), HTTPStatus.ACCEPTED)
-            return
-        if method == "POST" and tail == ["device", "submit"]:
-            body = self._read_json()
-            self._json(
-                self.broker.auth.submit_device_code(
-                    owner_id,
-                    str(body.get("code") or ""),
-                    profile=str(body.get("profile") or profile),
-                    session_id=body.get("sessionId") if isinstance(body.get("sessionId"), str) else None,
-                )
-            )
-            return
-        if method == "POST" and tail == ["api-key"]:
-            body = self._read_json()
-            result = self.broker.auth.login_api_key(owner_id, str(body.get("apiKey") or ""), str(body.get("profile") or profile))
-            self.broker.pool.close_profile(result["ownerHash"], result["profile"])
-            self._json(result)
-            return
-        if method == "POST" and tail == ["runtime", "invalidate"]:
-            body = self._read_json(allow_empty=True)
-            profile_key = self.broker.auth.profile_key(str(body.get("profile") or profile))
-            owner_hash = self.broker.auth.hash_owner(owner_id)
-            self.broker.pool.close_profile(owner_hash, profile_key)
-            self.broker.state.append_audit(owner_hash, "auth.runtime.invalidate", {}, profile=profile_key)
-            self._json({"ownerHash": owner_hash, "profile": profile_key, "invalidated": True})
-            return
-        if method == "POST" and tail == ["logout"]:
-            body = self._read_json(allow_empty=True)
-            delete_profile = body.get("deleteProfile", False)
-            if not isinstance(delete_profile, bool):
-                raise ValueError("deleteProfile must be a boolean.")
-            result = self.broker.auth.logout(
-                owner_id,
-                str(body.get("profile") or profile),
-                delete_profile=delete_profile,
-            )
-            self.broker.pool.close_profile(result["ownerHash"], result["profile"])
-            self._json(result)
+        if auth_api.handle_auth_route(self, method, tail, owner_id, query):
             return
         self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
@@ -280,6 +232,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
         return {
             "id": entry["id"],
             "ownerHash": entry["owner_hash"],
+            "authPrincipalHash": entry.get("auth_principal_hash"),
             "profile": entry.get("profile"),
             "threadId": entry.get("thread_id"),
             "turnId": entry.get("turn_id"),
@@ -471,54 +424,7 @@ def openapi_document() -> dict[str, Any]:
                 "get": {"responses": {"200": json_response({"type": "object"}, "OpenAPI document")}}
             },
             **account_api.openapi_paths(owner_param, ref, json_response, request_body),
-            "/v1/owners/{ownerId}/auth/status": {
-                "get": {
-                    "parameters": [owner_param, {"$ref": "#/components/parameters/profile"}],
-                    "responses": {"200": json_response(ref("AuthStatus")), "401": json_response(ref("Error"), "Unauthorized")},
-                }
-            },
-            "/v1/owners/{ownerId}/auth/probe": {
-                "post": {
-                    "parameters": [owner_param],
-                    "requestBody": request_body(ref("ProfileRequest"), required=False),
-                    "responses": {"200": json_response(ref("AuthProbeResult"), "Active auth probe result")},
-                }
-            },
-            "/v1/owners/{ownerId}/auth/device/start": {
-                "post": {
-                    "parameters": [owner_param],
-                    "requestBody": request_body(ref("ProfileRequest"), required=False),
-                    "responses": {"202": json_response(ref("DeviceAuthSession"), "Device auth started")},
-                }
-            },
-            "/v1/owners/{ownerId}/auth/device/submit": {
-                "post": {
-                    "parameters": [owner_param],
-                    "requestBody": request_body(ref("DeviceCodeSubmitRequest")),
-                    "responses": {"200": json_response(ref("DeviceAuthSession"), "Device code submitted")},
-                }
-            },
-            "/v1/owners/{ownerId}/auth/api-key": {
-                "post": {
-                    "parameters": [owner_param],
-                    "requestBody": request_body(ref("ApiKeyLoginRequest")),
-                    "responses": {"200": json_response(ref("AuthCommandResult"), "API key stored in owner auth home")},
-                }
-            },
-            "/v1/owners/{ownerId}/auth/runtime/invalidate": {
-                "post": {
-                    "parameters": [owner_param],
-                    "requestBody": request_body(ref("ProfileRequest"), required=False),
-                    "responses": {"200": json_response(ref("RuntimeInvalidationResult"), "Owner profile runtime invalidated")},
-                }
-            },
-            "/v1/owners/{ownerId}/auth/logout": {
-                "post": {
-                    "parameters": [owner_param],
-                    "requestBody": request_body(ref("ProfileRequest"), required=False),
-                    "responses": {"200": json_response(ref("AuthCommandResult"), "Owner profile logged out")},
-                }
-            },
+            **auth_api.openapi_paths(owner_param, ref, json_response, request_body),
             "/v1/owners/{ownerId}/audit-logs": {
                 "get": {
                     "parameters": [
@@ -537,7 +443,11 @@ def openapi_document() -> dict[str, Any]:
                 "post": {
                     "parameters": [owner_param],
                     "requestBody": request_body(ref("ThreadCreateRequest"), required=False),
-                    "responses": {"201": json_response(ref("Thread"), "Thread created")},
+                    "responses": {
+                        "201": json_response(ref("Thread"), "Thread created"),
+                        "403": json_response(ref("Error"), "Auth principal not permitted"),
+                        "409": json_response(ref("Error"), "Thread auth binding conflict"),
+                    },
                 }
             },
             "/v1/owners/{ownerId}/threads/{threadId}": {
@@ -553,7 +463,11 @@ def openapi_document() -> dict[str, Any]:
                 "post": {
                     "parameters": [owner_param, thread_param],
                     "requestBody": request_body(ref("TurnStartRequest")),
-                    "responses": {"202": json_response(ref("Turn"), "Turn accepted")},
+                    "responses": {
+                        "202": json_response(ref("Turn"), "Turn accepted"),
+                        "403": json_response(ref("Error"), "Auth principal not permitted"),
+                        "409": json_response(ref("Error"), "Thread auth binding conflict"),
+                    },
                 }
             },
             "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}": {
@@ -639,6 +553,13 @@ def openapi_document() -> dict[str, Any]:
                 "threadIdQuery": {"name": "threadId", "in": "query", "required": False, "schema": {"type": "string"}},
                 "turnIdQuery": {"name": "turnId", "in": "query", "required": False, "schema": {"type": "string"}},
                 "profile": {"name": "profile", "in": "query", "required": False, "schema": {"type": "string", "default": "default"}},
+                "authPrincipalId": {
+                    "name": "authPrincipalId",
+                    "in": "query",
+                    "required": False,
+                    "schema": {"type": "string"},
+                    "description": "Optional assertion of the trusted host's configured auth principal for this owner.",
+                },
                 "after": {"name": "after", "in": "query", "required": False, "schema": {"type": "integer", "minimum": 0, "default": 0}},
                 "action": {"name": "action", "in": "query", "required": False, "schema": {"type": "string"}},
                 "status": {"name": "status", "in": "query", "required": False, "schema": {"type": "string"}},
@@ -646,6 +567,7 @@ def openapi_document() -> dict[str, Any]:
             },
             "schemas": {
                 **account_api.openapi_schemas(),
+                **auth_api.openapi_schemas(ref),
                 "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
                 "Health": {"type": "object", "required": ["status"], "properties": {"status": {"const": "ok"}}},
                 "Readiness": {
@@ -656,117 +578,13 @@ def openapi_document() -> dict[str, Any]:
                         "errors": {"type": "array", "items": {"type": "string"}},
                     },
                 },
-                "ProfileRequest": {
-                    "type": "object",
-                    "properties": {
-                        "profile": {"type": "string", "default": "default"},
-                        "deleteProfile": {"type": "boolean", "default": False},
-                    },
-                },
-                "DeviceCodeSubmitRequest": {
-                    "type": "object",
-                    "required": ["code"],
-                    "properties": {"code": {"type": "string"}, "profile": {"type": "string"}, "sessionId": {"type": "string"}},
-                },
-                "ApiKeyLoginRequest": {
-                    "type": "object",
-                    "required": ["apiKey"],
-                    "properties": {"apiKey": {"type": "string", "writeOnly": True}, "profile": {"type": "string"}},
-                },
-                "DeviceAuthSession": {
-                    "type": "object",
-                    "required": ["sessionId", "state", "profile", "expiresAt"],
-                    "properties": {
-                        "sessionId": {"type": "string"},
-                        "state": {"type": "string"},
-                        "profile": {"type": "string"},
-                        "command": {"type": "array", "items": {"type": "string"}},
-                        "startedAt": {"type": "string"},
-                        "updatedAt": {"type": "string"},
-                        "completedAt": {"type": ["string", "null"]},
-                        "loginUrl": {"type": ["string", "null"]},
-                        "userCode": {"type": ["string", "null"]},
-                        "expiresAt": {"type": ["string", "null"]},
-                        "output": {"type": "array", "items": {"type": "string"}},
-                        "exitCode": {"type": ["integer", "null"]},
-                        "error": {"type": ["string", "null"]},
-                    },
-                },
-                "AuthStatus": {
-                    "type": "object",
-                    "required": ["ownerHash", "profile", "state", "authFilePresent"],
-                    "properties": {
-                        "ownerHash": {"type": "string"},
-                        "profile": {"type": "string"},
-                        "state": {"enum": ["missing", "present_unverified", "authenticated", "refresh_failed", "invalid", "failed", "unknown"]},
-                        "deviceAuth": {"anyOf": [ref("DeviceAuthSession"), {"type": "null"}]},
-                        "authFilePresent": {"type": "boolean"},
-                        "authFingerprint": {"type": "string"},
-                        "loginStatusExitCode": {"type": ["integer", "null"]},
-                        "loginStatusOutput": {"type": "string"},
-                    },
-                },
-                "AuthCommandResult": {
-                    "type": "object",
-                    "required": ["ownerHash", "profile", "state", "exitCode", "output"],
-                    "properties": {
-                        "ownerHash": {"type": "string"},
-                        "profile": {"type": "string"},
-                        "state": {"type": "string"},
-                        "deleted": {"type": "boolean"},
-                        "authFingerprint": {"type": "string"},
-                        "exitCode": {"type": "integer"},
-                        "output": {"type": "string"},
-                    },
-                },
-                "AuthProbeResult": {
-                    "type": "object",
-                    "required": [
-                        "ownerHash",
-                        "profile",
-                        "state",
-                        "authFilePresent",
-                        "authFingerprint",
-                        "previousAuthFingerprint",
-                        "command",
-                        "startedAt",
-                        "completedAt",
-                        "durationMs",
-                        "output",
-                    ],
-                    "properties": {
-                        "ownerHash": {"type": "string"},
-                        "profile": {"type": "string"},
-                        "state": {"enum": ["missing", "authenticated", "refresh_failed", "invalid", "failed"]},
-                        "authFilePresent": {"type": "boolean"},
-                        "authFingerprint": {"type": "string"},
-                        "previousAuthFingerprint": {"type": "string"},
-                        "command": {"type": "array", "items": {"type": "string"}},
-                        "startedAt": {"type": "string"},
-                        "completedAt": {"type": "string"},
-                        "durationMs": {"type": "number"},
-                        "exitCode": {"type": ["integer", "null"]},
-                        "output": {"type": "string"},
-                        "errorCode": {"type": ["string", "null"]},
-                        "publicMessage": {"type": ["string", "null"]},
-                        "adminMessage": {"type": ["string", "null"]},
-                    },
-                },
-                "RuntimeInvalidationResult": {
-                    "type": "object",
-                    "required": ["ownerHash", "profile", "invalidated"],
-                    "properties": {
-                        "ownerHash": {"type": "string"},
-                        "profile": {"type": "string"},
-                        "invalidated": {"type": "boolean"},
-                    },
-                },
                 "AuditLog": {
                     "type": "object",
-                    "required": ["id", "ownerHash", "action", "payload", "createdAt"],
+                    "required": ["id", "ownerHash", "authPrincipalHash", "action", "payload", "createdAt"],
                     "properties": {
                         "id": {"type": "integer"},
                         "ownerHash": {"type": "string"},
+                        "authPrincipalHash": {"type": "string"},
                         "profile": {"type": ["string", "null"]},
                         "threadId": {"type": ["string", "null"]},
                         "turnId": {"type": ["string", "null"]},
@@ -787,7 +605,15 @@ def openapi_document() -> dict[str, Any]:
                     "type": "object",
                     "properties": {
                         "threadId": {"type": "string"},
-                        "profile": {"type": "string", "default": "default"},
+                        "authPrincipalId": {
+                            "type": "string",
+                            "description": "Optional assertion of the trusted owner-to-principal mapping configured by the host.",
+                        },
+                        "profile": {
+                            "type": "string",
+                            "default": "default",
+                            "description": "Immutable Codex auth profile for the lifetime of this broker thread.",
+                        },
                         "configProfile": {"type": "string", "default": "default"},
                         "runtimeProfile": {"type": "string", "deprecated": True},
                         "hostApp": {"type": "string"},
@@ -797,10 +623,11 @@ def openapi_document() -> dict[str, Any]:
                 },
                 "Thread": {
                     "type": "object",
-                    "required": ["threadId", "profile", "configProfile", "status", "createdAt", "updatedAt"],
+                    "required": ["threadId", "authPrincipalHash", "profile", "configProfile", "status", "createdAt", "updatedAt"],
                     "properties": {
                         "threadId": {"type": "string"},
                         "codexThreadId": {"type": ["string", "null"]},
+                        "authPrincipalHash": {"type": "string"},
                         "profile": {"type": "string"},
                         "configProfile": {"type": "string"},
                         "hostApp": {"type": ["string", "null"]},
@@ -850,7 +677,14 @@ def openapi_document() -> dict[str, Any]:
                     "properties": {
                         "input": {"type": "array", "minItems": 1, "items": ref("InputItem")},
                         "mode": {"enum": ["reject", "queue", "steer"], "default": "reject"},
-                        "profile": {"type": "string"},
+                        "authPrincipalId": {
+                            "type": "string",
+                            "description": "Optional consistency assertion; it must resolve to the thread's immutable auth principal.",
+                        },
+                        "profile": {
+                            "type": "string",
+                            "description": "Optional consistency assertion; it must equal the thread's immutable auth profile.",
+                        },
                         "configProfile": {"type": "string"},
                         "runtimeProfile": {"type": "string", "deprecated": True},
                         "hostApp": {"type": "string"},
@@ -874,11 +708,12 @@ def openapi_document() -> dict[str, Any]:
                 },
                 "Turn": {
                     "type": "object",
-                    "required": ["threadId", "turnId", "profile", "configProfile", "mode", "status", "createdAt", "updatedAt"],
+                    "required": ["threadId", "turnId", "authPrincipalHash", "profile", "configProfile", "mode", "status", "createdAt", "updatedAt"],
                     "properties": {
                         "threadId": {"type": "string"},
                         "turnId": {"type": "string"},
                         "codexTurnId": {"type": ["string", "null"]},
+                        "authPrincipalHash": {"type": "string"},
                         "profile": {"type": "string"},
                         "configProfile": {"type": "string"},
                         "hostApp": {"type": ["string", "null"]},

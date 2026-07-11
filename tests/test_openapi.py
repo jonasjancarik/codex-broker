@@ -11,6 +11,7 @@ class OpenApiTests(unittest.TestCase):
         paths = document["paths"]
         for path in [
             "/v1/owners/{ownerId}/auth/status",
+            "/v1/owners/{ownerId}/auth/profiles",
             "/v1/owners/{ownerId}/auth/usage",
             "/v1/owners/{ownerId}/auth/rate-limits",
             "/v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume",
@@ -40,6 +41,8 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("brokerKey", components["securitySchemes"])
         for schema in [
             "AuthStatus",
+            "AuthProfile",
+            "AuthProfileList",
             "AccountUsageResponse",
             "AccountRateLimitsResponse",
             "RateLimitResetCreditConsumeRequest",
@@ -81,7 +84,12 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("hostApp", components["schemas"]["TurnStartRequest"]["properties"])
         self.assertIn("hostApp", components["schemas"]["Thread"]["properties"])
         self.assertIn("hostApp", components["schemas"]["Turn"]["properties"])
-        self.assertIn("deleteProfile", components["schemas"]["ProfileRequest"]["properties"])
+        self.assertIn("deleteProfile", components["schemas"]["LogoutRequest"]["properties"])
+        self.assertNotIn("deleteProfile", components["schemas"]["AuthSelectorRequest"]["properties"])
+        self.assertIn("authPrincipalId", components["schemas"]["ThreadCreateRequest"]["properties"])
+        self.assertIn("authPrincipalId", components["schemas"]["TurnStartRequest"]["properties"])
+        self.assertIn("authPrincipalHash", components["schemas"]["Thread"]["properties"])
+        self.assertIn("authPrincipalHash", components["schemas"]["Turn"]["properties"])
         self.assertIn("deleted", components["schemas"]["AuthCommandResult"]["properties"])
         self.assertIn("errorCode", components["schemas"]["AuthProbeResult"]["properties"])
         self.assertIn("authFingerprint", components["schemas"]["AuthStatus"]["properties"])

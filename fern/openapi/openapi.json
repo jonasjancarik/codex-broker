@@ -19,6 +19,15 @@
           "type": "integer"
         }
       },
+      "authPrincipalId": {
+        "description": "Optional assertion of the trusted host's configured auth principal for this owner.",
+        "in": "query",
+        "name": "authPrincipalId",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
       "interactionId": {
         "in": "path",
         "name": "interactionId",
@@ -98,7 +107,11 @@
     },
     "schemas": {
       "AccountRateLimitsResponse": {
+        "description": "Upstream limits for authPrincipalHash + profile; limits may be shared by several owners.",
         "properties": {
+          "authPrincipalHash": {
+            "type": "string"
+          },
           "ownerHash": {
             "type": "string"
           },
@@ -108,22 +121,34 @@
           "rateLimits": {
             "additionalProperties": true,
             "type": "object"
+          },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
           }
         },
         "required": [
           "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
           "profile",
           "rateLimits"
         ],
         "type": "object"
       },
       "AccountUsageResponse": {
+        "description": "Upstream totals for authPrincipalHash + profile; totals may be shared by several owners.",
         "properties": {
+          "authPrincipalHash": {
+            "type": "string"
+          },
           "ownerHash": {
             "type": "string"
           },
           "profile": {
             "type": "string"
+          },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
           },
           "usage": {
             "additionalProperties": true,
@@ -132,6 +157,8 @@
         },
         "required": [
           "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
           "profile",
           "usage"
         ],
@@ -143,7 +170,12 @@
             "type": "string",
             "writeOnly": true
           },
+          "authPrincipalId": {
+            "description": "Optional assertion of the trusted host's configured auth principal for this owner.",
+            "type": "string"
+          },
           "profile": {
+            "default": "default",
             "type": "string"
           }
         },
@@ -155,6 +187,9 @@
       "AuditLog": {
         "properties": {
           "action": {
+            "type": "string"
+          },
+          "authPrincipalHash": {
             "type": "string"
           },
           "createdAt": {
@@ -192,6 +227,7 @@
         "required": [
           "id",
           "ownerHash",
+          "authPrincipalHash",
           "action",
           "payload",
           "createdAt"
@@ -221,6 +257,9 @@
           "authFingerprint": {
             "type": "string"
           },
+          "authPrincipalHash": {
+            "type": "string"
+          },
           "deleted": {
             "type": "boolean"
           },
@@ -236,12 +275,17 @@
           "profile": {
             "type": "string"
           },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
+          },
           "state": {
             "type": "string"
           }
         },
         "required": [
           "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
           "profile",
           "state",
           "exitCode",
@@ -261,6 +305,9 @@
             "type": "boolean"
           },
           "authFingerprint": {
+            "type": "string"
+          },
+          "authPrincipalHash": {
             "type": "string"
           },
           "command": {
@@ -305,6 +352,9 @@
               "null"
             ]
           },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
+          },
           "startedAt": {
             "type": "string"
           },
@@ -320,6 +370,8 @@
         },
         "required": [
           "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
           "profile",
           "state",
           "authFilePresent",
@@ -333,12 +385,90 @@
         ],
         "type": "object"
       },
+      "AuthProfile": {
+        "properties": {
+          "authFingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "state": {
+            "description": "Last recorded auth state; listing does not run an active probe.",
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "state",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "AuthProfileList": {
+        "properties": {
+          "authPrincipalHash": {
+            "type": "string"
+          },
+          "ownerHash": {
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/AuthProfile"
+            },
+            "type": "array"
+          },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
+          "profiles"
+        ],
+        "type": "object"
+      },
+      "AuthSelectorRequest": {
+        "properties": {
+          "authPrincipalId": {
+            "description": "Optional assertion of the trusted host's configured auth principal for this owner.",
+            "type": "string"
+          },
+          "profile": {
+            "default": "default",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "AuthStatus": {
         "properties": {
           "authFilePresent": {
             "type": "boolean"
           },
           "authFingerprint": {
+            "type": "string"
+          },
+          "authPrincipalHash": {
             "type": "string"
           },
           "deviceAuth": {
@@ -366,6 +496,9 @@
           "profile": {
             "type": "string"
           },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
+          },
           "state": {
             "enum": [
               "missing",
@@ -380,6 +513,8 @@
         },
         "required": [
           "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
           "profile",
           "state",
           "authFilePresent"
@@ -523,6 +658,9 @@
       },
       "DeviceAuthSession": {
         "properties": {
+          "authPrincipalHash": {
+            "type": "string"
+          },
           "command": {
             "items": {
               "type": "string"
@@ -565,11 +703,17 @@
             },
             "type": "array"
           },
+          "ownerHash": {
+            "type": "string"
+          },
           "profile": {
             "type": "string"
           },
           "sessionId": {
             "type": "string"
+          },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
           },
           "startedAt": {
             "type": "string"
@@ -588,6 +732,9 @@
           }
         },
         "required": [
+          "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
           "sessionId",
           "state",
           "profile",
@@ -597,10 +744,15 @@
       },
       "DeviceCodeSubmitRequest": {
         "properties": {
+          "authPrincipalId": {
+            "description": "Optional assertion of the trusted host's configured auth principal for this owner.",
+            "type": "string"
+          },
           "code": {
             "type": "string"
           },
           "profile": {
+            "default": "default",
             "type": "string"
           },
           "sessionId": {
@@ -790,8 +942,12 @@
         },
         "type": "object"
       },
-      "ProfileRequest": {
+      "LogoutRequest": {
         "properties": {
+          "authPrincipalId": {
+            "description": "Optional assertion of the trusted host's configured auth principal for this owner.",
+            "type": "string"
+          },
           "deleteProfile": {
             "default": false,
             "type": "boolean"
@@ -805,6 +961,9 @@
       },
       "RateLimitResetCreditConsumeRequest": {
         "properties": {
+          "authPrincipalId": {
+            "type": "string"
+          },
           "idempotencyKey": {
             "maxLength": 256,
             "minLength": 1,
@@ -822,6 +981,9 @@
       },
       "RateLimitResetCreditConsumeResponse": {
         "properties": {
+          "authPrincipalHash": {
+            "type": "string"
+          },
           "ownerHash": {
             "type": "string"
           },
@@ -831,10 +993,15 @@
           "resetCredit": {
             "additionalProperties": true,
             "type": "object"
+          },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
           }
         },
         "required": [
           "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
           "profile",
           "resetCredit"
         ],
@@ -863,6 +1030,9 @@
       },
       "RuntimeInvalidationResult": {
         "properties": {
+          "authPrincipalHash": {
+            "type": "string"
+          },
           "invalidated": {
             "type": "boolean"
           },
@@ -871,10 +1041,15 @@
           },
           "profile": {
             "type": "string"
+          },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
           }
         },
         "required": [
           "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
           "profile",
           "invalidated"
         ],
@@ -941,6 +1116,9 @@
       },
       "Thread": {
         "properties": {
+          "authPrincipalHash": {
+            "type": "string"
+          },
           "bundleId": {
             "type": [
               "string",
@@ -986,6 +1164,7 @@
         },
         "required": [
           "threadId",
+          "authPrincipalHash",
           "profile",
           "configProfile",
           "status",
@@ -996,6 +1175,10 @@
       },
       "ThreadCreateRequest": {
         "properties": {
+          "authPrincipalId": {
+            "description": "Optional assertion of the trusted owner-to-principal mapping configured by the host.",
+            "type": "string"
+          },
           "bundleId": {
             "type": "string"
           },
@@ -1011,6 +1194,7 @@
           },
           "profile": {
             "default": "default",
+            "description": "Immutable Codex auth profile for the lifetime of this broker thread.",
             "type": "string"
           },
           "runtimeProfile": {
@@ -1030,6 +1214,9 @@
               "string",
               "null"
             ]
+          },
+          "authPrincipalHash": {
+            "type": "string"
           },
           "bundleId": {
             "type": [
@@ -1158,6 +1345,7 @@
         "required": [
           "threadId",
           "turnId",
+          "authPrincipalHash",
           "profile",
           "configProfile",
           "mode",
@@ -1169,6 +1357,10 @@
       },
       "TurnStartRequest": {
         "properties": {
+          "authPrincipalId": {
+            "description": "Optional consistency assertion; it must resolve to the thread's immutable auth principal.",
+            "type": "string"
+          },
           "bundleId": {
             "type": "string"
           },
@@ -1210,6 +1402,7 @@
             "type": "string"
           },
           "profile": {
+            "description": "Optional consistency assertion; it must equal the thread's immutable auth profile.",
             "type": "string"
           },
           "runtime": {
@@ -1431,7 +1624,17 @@
                 }
               }
             },
-            "description": "API key stored in owner auth home"
+            "description": "API key stored"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1447,7 +1650,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProfileRequest"
+                "$ref": "#/components/schemas/AuthSelectorRequest"
               }
             }
           },
@@ -1463,6 +1666,16 @@
               }
             },
             "description": "Device auth started"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1494,6 +1707,16 @@
               }
             },
             "description": "Device code submitted"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1509,7 +1732,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProfileRequest"
+                "$ref": "#/components/schemas/LogoutRequest"
               }
             }
           },
@@ -1524,7 +1747,17 @@
                 }
               }
             },
-            "description": "Owner profile logged out"
+            "description": "Profile logged out"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1540,7 +1773,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProfileRequest"
+                "$ref": "#/components/schemas/AuthSelectorRequest"
               }
             }
           },
@@ -1556,6 +1789,50 @@
               }
             },
             "description": "Active auth probe result"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/profiles": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/authPrincipalId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthProfileList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1587,6 +1864,16 @@
               }
             },
             "description": "Rate-limit reset credit consumed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1599,6 +1886,9 @@
           },
           {
             "$ref": "#/components/parameters/profile"
+          },
+          {
+            "$ref": "#/components/parameters/authPrincipalId"
           }
         ],
         "responses": {
@@ -1611,6 +1901,16 @@
               }
             },
             "description": "Account rate limits"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1626,7 +1926,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProfileRequest"
+                "$ref": "#/components/schemas/AuthSelectorRequest"
               }
             }
           },
@@ -1641,7 +1941,17 @@
                 }
               }
             },
-            "description": "Owner profile runtime invalidated"
+            "description": "Profile runtime invalidated"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1654,6 +1964,9 @@
           },
           {
             "$ref": "#/components/parameters/profile"
+          },
+          {
+            "$ref": "#/components/parameters/authPrincipalId"
           }
         ],
         "responses": {
@@ -1667,7 +1980,7 @@
             },
             "description": "OK"
           },
-          "401": {
+          "403": {
             "content": {
               "application/json": {
                 "schema": {
@@ -1675,7 +1988,7 @@
                 }
               }
             },
-            "description": "Unauthorized"
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1688,6 +2001,9 @@
           },
           {
             "$ref": "#/components/parameters/profile"
+          },
+          {
+            "$ref": "#/components/parameters/authPrincipalId"
           }
         ],
         "responses": {
@@ -1700,6 +2016,16 @@
               }
             },
             "description": "Account usage"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
           }
         }
       }
@@ -1731,6 +2057,26 @@
               }
             },
             "description": "Thread created"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Thread auth binding conflict"
           }
         }
       }
@@ -1876,6 +2222,26 @@
               }
             },
             "description": "Turn accepted"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Thread auth binding conflict"
           }
         }
       }

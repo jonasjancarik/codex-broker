@@ -681,7 +681,11 @@ class BrokerTests(unittest.TestCase):
                 handler._auth_route("POST", ["runtime", "invalidate"], "owner/a", {})
 
                 self.assertTrue(client.closed)
-                self.assertEqual(captured["payload"], {"ownerHash": owner_hash, "profile": "work", "invalidated": True})
+                self.assertEqual(captured["payload"]["ownerHash"], owner_hash)
+                self.assertEqual(captured["payload"]["authPrincipalHash"], owner_hash)
+                self.assertFalse(captured["payload"]["sharedAuthPrincipal"])
+                self.assertEqual(captured["payload"]["profile"], "work")
+                self.assertTrue(captured["payload"]["invalidated"])
                 audit = services.state.list_audit_logs(owner_hash, action="auth.runtime.invalidate", profile="work")
                 self.assertEqual(len(audit), 1)
             finally:

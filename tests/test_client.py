@@ -53,6 +53,45 @@ class CodexBrokerClientTests(unittest.TestCase):
         self.assertIn("/v1/owners/owner%2Fa/auth/rate-limit-reset-credit/consume", seen[2]["url"])
         self.assertEqual(seen[2]["body"], {"profile": "work", "idempotencyKey": "reset-123"})
 
+    def test_auth_principal_selection_is_explicit_across_auth_and_thread_methods(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def fake_urlopen(req: Any, timeout: float) -> FakeResponse:
+            seen.append(
+                {
+                    "url": req.full_url,
+                    "body": json.loads(req.data.decode("utf-8")) if req.data else None,
+                }
+            )
+            return FakeResponse(b'{"ok":true}')
+
+        client = CodexBrokerClient("http://broker.internal")
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.list_auth_profiles("owner/a", auth_principal_id="shared/account")
+            client.auth_status("owner/a", profile="work", auth_principal_id="shared/account")
+            client.probe_auth("owner/a", profile="work", auth_principal_id="shared/account")
+            client.invalidate_auth_runtime("owner/a", profile="work", auth_principal_id="shared/account")
+            client.create_thread(
+                "owner/a",
+                {"threadId": "thread-1"},
+                profile="work",
+                auth_principal_id="shared/account",
+            )
+            client.start_turn(
+                "owner/a",
+                "thread-1",
+                {"input": [{"type": "text", "text": "hello"}]},
+                profile="work",
+                auth_principal_id="shared/account",
+            )
+
+        self.assertIn("authPrincipalId=shared%2Faccount", seen[0]["url"])
+        self.assertIn("profile=work", seen[1]["url"])
+        self.assertIn("authPrincipalId=shared%2Faccount", seen[1]["url"])
+        for request in seen[2:]:
+            self.assertEqual(request["body"]["authPrincipalId"], "shared/account")
+            self.assertEqual(request["body"]["profile"], "work")
+
     def test_start_turn_posts_authorized_json(self) -> None:
         seen: dict[str, Any] = {}
 

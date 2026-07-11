@@ -18,14 +18,56 @@ class CodexBrokerClient:
     internal_key: str | None = None
     timeout_seconds: float = 60
 
-    def auth_status(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
-        return self._request("GET", f"/v1/owners/{quote(owner_id)}/auth/status", query={"profile": profile})
+    def list_auth_profiles(
+        self,
+        owner_id: str,
+        *,
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v1/owners/{quote(owner_id)}/auth/profiles",
+            query=auth_query(auth_principal_id=auth_principal_id),
+        )
 
-    def account_usage(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
-        return self._request("GET", f"/v1/owners/{quote(owner_id)}/auth/usage", query={"profile": profile})
+    def auth_status(
+        self,
+        owner_id: str,
+        *,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v1/owners/{quote(owner_id)}/auth/status",
+            query=auth_query(profile, auth_principal_id),
+        )
 
-    def account_rate_limits(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
-        return self._request("GET", f"/v1/owners/{quote(owner_id)}/auth/rate-limits", query={"profile": profile})
+    def account_usage(
+        self,
+        owner_id: str,
+        *,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v1/owners/{quote(owner_id)}/auth/usage",
+            query=auth_query(profile, auth_principal_id),
+        )
+
+    def account_rate_limits(
+        self,
+        owner_id: str,
+        *,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v1/owners/{quote(owner_id)}/auth/rate-limits",
+            query=auth_query(profile, auth_principal_id),
+        )
 
     def consume_rate_limit_reset_credit(
         self,
@@ -33,18 +75,43 @@ class CodexBrokerClient:
         idempotency_key: str,
         *,
         profile: str = "default",
+        auth_principal_id: str | None = None,
     ) -> dict[str, Any]:
         return self._request(
             "POST",
             f"/v1/owners/{quote(owner_id)}/auth/rate-limit-reset-credit/consume",
-            {"profile": profile, "idempotencyKey": idempotency_key},
+            with_auth_selection(
+                {"idempotencyKey": idempotency_key},
+                profile=profile,
+                auth_principal_id=auth_principal_id,
+            ),
         )
 
-    def probe_auth(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
-        return self._request("POST", f"/v1/owners/{quote(owner_id)}/auth/probe", {"profile": profile})
+    def probe_auth(
+        self,
+        owner_id: str,
+        *,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/v1/owners/{quote(owner_id)}/auth/probe",
+            with_auth_selection({}, profile=profile, auth_principal_id=auth_principal_id),
+        )
 
-    def start_device_auth(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
-        return self._request("POST", f"/v1/owners/{quote(owner_id)}/auth/device/start", {"profile": profile})
+    def start_device_auth(
+        self,
+        owner_id: str,
+        *,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/v1/owners/{quote(owner_id)}/auth/device/start",
+            with_auth_selection({}, profile=profile, auth_principal_id=auth_principal_id),
+        )
 
     def submit_device_code(
         self,
@@ -53,20 +120,56 @@ class CodexBrokerClient:
         *,
         profile: str = "default",
         session_id: str | None = None,
+        auth_principal_id: str | None = None,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"profile": profile, "code": code}
+        body = with_auth_selection({"code": code}, profile=profile, auth_principal_id=auth_principal_id)
         if session_id:
             body["sessionId"] = session_id
         return self._request("POST", f"/v1/owners/{quote(owner_id)}/auth/device/submit", body)
 
-    def login_api_key(self, owner_id: str, api_key: str, *, profile: str = "default") -> dict[str, Any]:
-        return self._request("POST", f"/v1/owners/{quote(owner_id)}/auth/api-key", {"profile": profile, "apiKey": api_key})
+    def login_api_key(
+        self,
+        owner_id: str,
+        api_key: str,
+        *,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/v1/owners/{quote(owner_id)}/auth/api-key",
+            with_auth_selection({"apiKey": api_key}, profile=profile, auth_principal_id=auth_principal_id),
+        )
 
-    def logout(self, owner_id: str, *, profile: str = "default", delete_profile: bool = False) -> dict[str, Any]:
+    def invalidate_auth_runtime(
+        self,
+        owner_id: str,
+        *,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/v1/owners/{quote(owner_id)}/auth/runtime/invalidate",
+            with_auth_selection({}, profile=profile, auth_principal_id=auth_principal_id),
+        )
+
+    def logout(
+        self,
+        owner_id: str,
+        *,
+        profile: str = "default",
+        delete_profile: bool = False,
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
         return self._request(
             "POST",
             f"/v1/owners/{quote(owner_id)}/auth/logout",
-            {"profile": profile, "deleteProfile": delete_profile},
+            with_auth_selection(
+                {"deleteProfile": delete_profile},
+                profile=profile,
+                auth_principal_id=auth_principal_id,
+            ),
         )
 
     def list_audit_logs(
@@ -95,8 +198,20 @@ class CodexBrokerClient:
             query["limit"] = str(limit)
         return self._request("GET", f"/v1/owners/{quote(owner_id)}/audit-logs", query=query)
 
-    def create_thread(self, owner_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self._request("POST", f"/v1/owners/{quote(owner_id)}/threads", body or {})
+    def create_thread(
+        self,
+        owner_id: str,
+        body: dict[str, Any] | None = None,
+        *,
+        profile: str | None = None,
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload = with_auth_selection(
+            body or {},
+            profile=profile,
+            auth_principal_id=auth_principal_id,
+        )
+        return self._request("POST", f"/v1/owners/{quote(owner_id)}/threads", payload)
 
     def get_thread(self, owner_id: str, thread_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/owners/{quote(owner_id)}/threads/{quote(thread_id)}")
@@ -104,8 +219,21 @@ class CodexBrokerClient:
     def archive_thread(self, owner_id: str, thread_id: str) -> dict[str, Any]:
         return self._request("POST", f"/v1/owners/{quote(owner_id)}/threads/{quote(thread_id)}/archive", {})
 
-    def start_turn(self, owner_id: str, thread_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", f"/v1/owners/{quote(owner_id)}/threads/{quote(thread_id)}/turns", body)
+    def start_turn(
+        self,
+        owner_id: str,
+        thread_id: str,
+        body: dict[str, Any],
+        *,
+        profile: str | None = None,
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload = with_auth_selection(
+            body,
+            profile=profile,
+            auth_principal_id=auth_principal_id,
+        )
+        return self._request("POST", f"/v1/owners/{quote(owner_id)}/threads/{quote(thread_id)}/turns", payload)
 
     def get_turn(self, owner_id: str, thread_id: str, turn_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/owners/{quote(owner_id)}/threads/{quote(thread_id)}/turns/{quote(turn_id)}")
@@ -241,3 +369,31 @@ class CodexBrokerClient:
 
 def quote(value: str) -> str:
     return urllib.parse.quote(value, safe="")
+
+
+def auth_query(
+    profile: str | None = None,
+    auth_principal_id: str | None = None,
+) -> dict[str, str]:
+    query: dict[str, str] = {}
+    if profile is not None:
+        query["profile"] = profile
+    if auth_principal_id is not None:
+        query["authPrincipalId"] = auth_principal_id
+    return query
+
+
+def with_auth_selection(
+    body: dict[str, Any],
+    *,
+    profile: str | None,
+    auth_principal_id: str | None,
+) -> dict[str, Any]:
+    payload = dict(body)
+    for key, value in (("profile", profile), ("authPrincipalId", auth_principal_id)):
+        if value is None:
+            continue
+        if key in payload and payload[key] != value:
+            raise ValueError(f"Conflicting {key} values.")
+        payload[key] = value
+    return payload

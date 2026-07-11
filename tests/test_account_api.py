@@ -51,6 +51,16 @@ class AccountApiTests(unittest.TestCase):
         self.assertEqual(limits["rateLimits"]["primary"]["usedPercent"], 25)
         self.assertEqual(limits["rateLimits"]["resetCredits"], 1)
 
+    def test_lists_persisted_auth_profiles_without_running_a_probe(self) -> None:
+        result = self._request("GET", "/v1/owners/owner%2Fa/auth/profiles")
+
+        owner_hash = self.services.auth.hash_owner("owner/a")
+        self.assertEqual(result["ownerHash"], owner_hash)
+        self.assertEqual(result["authPrincipalHash"], owner_hash)
+        self.assertFalse(result["sharedAuthPrincipal"])
+        self.assertEqual([profile["profile"] for profile in result["profiles"]], ["work"])
+        self.assertEqual(result["profiles"][0]["state"], "authenticated")
+
     def test_consumes_reset_credit_with_idempotency_and_audit(self) -> None:
         result = self._request(
             "POST",
