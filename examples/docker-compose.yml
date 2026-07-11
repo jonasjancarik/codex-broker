@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       args:
-        CODEX_VERSION: "0.142.3"
+        CODEX_VERSION: "0.144.0"
     image: codex-broker:local
     expose:
       - "3400"

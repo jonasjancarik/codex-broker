@@ -20,12 +20,16 @@ RUN set -eux; \
       arm64) codex_arch="aarch64" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    archive="codex-${codex_arch}-unknown-linux-musl.tar.gz"; \
-    binary="codex-${codex_arch}-unknown-linux-musl"; \
+    archive="codex-package-${codex_arch}-unknown-linux-musl.tar.gz"; \
     curl -fsSL -o "/tmp/${archive}" "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/${archive}"; \
-    tar -xzf "/tmp/${archive}" -C /tmp; \
-    install -m 0755 "/tmp/${binary}" /usr/local/bin/codex; \
-    rm -f "/tmp/${archive}" "/tmp/${binary}"; \
+    curl -fsSL -o /tmp/codex-package_SHA256SUMS "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-package_SHA256SUMS"; \
+    expected="$(awk -v asset="${archive}" '$2 == asset { print $1; exit }' /tmp/codex-package_SHA256SUMS)"; \
+    test "${#expected}" -eq 64; \
+    printf '%s  %s\n' "${expected}" "/tmp/${archive}" | sha256sum -c -; \
+    mkdir -p /opt/codex; \
+    tar -xzf "/tmp/${archive}" -C /opt/codex; \
+    ln -s /opt/codex/bin/codex /usr/local/bin/codex; \
+    rm -f "/tmp/${archive}" /tmp/codex-package_SHA256SUMS; \
     codex --version
 
 RUN useradd --create-home --shell /usr/sbin/nologin broker \

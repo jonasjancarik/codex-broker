@@ -23,8 +23,22 @@ env:
 
 
 jobs:
-  build:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Run tests with resource warnings enabled
+        run: PYTHONDONTWRITEBYTECODE=1 uv run python -W error::ResourceWarning -m unittest discover -s tests
+      - name: Verify generated OpenAPI is current
+        run: |
+          uv run python scripts/export_openapi.py
+          git diff --exit-code -- fern/openapi/openapi.json
 
+  build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
