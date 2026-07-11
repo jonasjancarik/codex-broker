@@ -185,6 +185,9 @@ Core endpoints:
 - `GET /metrics`
 - `GET /openapi.json`
 - `GET /v1/owners/{ownerId}/auth/status`
+- `GET /v1/owners/{ownerId}/auth/usage`
+- `GET /v1/owners/{ownerId}/auth/rate-limits`
+- `POST /v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume`
 - `POST /v1/owners/{ownerId}/auth/probe`
 - `POST /v1/owners/{ownerId}/auth/device/start`
 - `POST /v1/owners/{ownerId}/auth/device/submit`
@@ -204,6 +207,8 @@ Core endpoints:
 Requests other than health and readiness require `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`. This includes `/metrics` and `/openapi.json`.
 
 Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the user/Codex-profile auth file. `GET /auth/status` is a cheap local check. `POST /auth/probe` runs a tiny real Codex request for the user/Codex-profile pair and persists `refresh_failed` when token refresh is invalidated. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the Codex auth profile to close pooled app-server children that were started with the old auth.
+
+Account usage and rate-limit routes query Codex for the selected owner/profile and return the current App Server payload under `usage` or `rateLimits`. These payloads are intentionally passed through because their nested fields can evolve with Codex. Consuming a rate-limit reset credit is a mutating account action: send a stable, non-empty `idempotencyKey`; successful requests are recorded in the owner audit log.
 
 Set `CODEX_BROKER_INTERNAL_KEY` or `CODEX_BROKER_INTERNAL_KEY_FILE`. Unauthenticated mode is only for local development and requires `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
 

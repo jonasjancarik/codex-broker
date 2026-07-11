@@ -64,6 +64,33 @@ curl -sS \
 
 The probe spends one tiny Codex request. It is intended for manual checks or low-frequency health workflows, not frequent polling. If Codex reports token invalidation, the broker stores `refresh_failed` for that owner/profile and closes stale pooled app-server children.
 
+Read the account's current usage and rate-limit windows without starting a turn:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/usage?profile=default"
+
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/rate-limits?profile=default"
+```
+
+The broker returns Codex's current account payload under `usage` or `rateLimits`. The nested fields are passed through so host integrations remain compatible as Codex adds usage periods or limit types.
+
+Consuming a rate-limit reset credit changes account state and should only be offered after an explicit user or administrator action. Reuse the same idempotency key when retrying one action:
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"profile":"default","idempotencyKey":"incident-123-reset"}' \
+  "$BROKER/v1/owners/$OWNER/auth/rate-limit-reset-credit/consume"
+```
+
+Successful reset-credit requests are written to the owner-scoped audit log.
+
 For service-account style deployments, store an API key in the owner profile:
 
 ```bash

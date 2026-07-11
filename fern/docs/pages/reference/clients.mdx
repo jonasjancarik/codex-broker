@@ -22,6 +22,9 @@ broker = CodexBrokerClient(
 
 owner_id = "service-account-1"
 
+usage = broker.account_usage(owner_id)
+rate_limits = broker.account_rate_limits(owner_id)
+
 thread = broker.create_thread(
     owner_id,
     {
@@ -79,6 +82,9 @@ const broker = new CodexBrokerClient({
 });
 
 const ownerId = "service-account-1";
+
+const usage = await broker.accountUsage(ownerId);
+const rateLimits = await broker.accountRateLimits(ownerId);
 
 const thread = await broker.createThread(ownerId, {
   threadId: "chat-123",

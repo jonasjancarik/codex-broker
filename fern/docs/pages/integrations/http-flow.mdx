@@ -44,6 +44,37 @@ curl -sS \
 
 If Codex reports token invalidation, the broker stores `refresh_failed` and closes stale pooled app-server children for that user/Codex-profile pair.
 
+## Check usage and rate limits
+
+These reads query the selected owner/profile without starting a turn:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/usage"
+
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/rate-limits"
+```
+
+The evolving Codex payload is returned under `usage` or `rateLimits`.
+
+## Consume a rate-limit reset credit
+
+This changes account state. Only call it after an explicit user or administrator action, and reuse the same idempotency key when retrying that action:
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"idempotencyKey":"incident-123-reset"}' \
+  "$BROKER/v1/owners/$OWNER/auth/rate-limit-reset-credit/consume"
+```
+
+The broker records successful consumption in the owner audit log.
+
 ## Store an API key
 
 ```bash
