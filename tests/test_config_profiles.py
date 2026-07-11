@@ -81,6 +81,33 @@ class ConfigProfileTests(unittest.TestCase):
             ("ESTF_ARCHIVER_API_URL", "ESTF_ARCHIVER_API_KEY"),
         )
 
+    def test_auth_principal_mappings_load_from_trusted_host_config(self) -> None:
+        mapping = {"owner-a": "shared", "owner-b": "shared"}
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {
+                "CODEX_BROKER_DATA_DIR": tmp_raw,
+                "CODEX_BROKER_INTERNAL_KEY": "trusted-host-key",
+                "CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON": json.dumps(mapping),
+            },
+            clear=True,
+        ):
+            config = BrokerConfig.from_env()
+
+        self.assertEqual(config.auth_principal_mappings, mapping)
+
+    def test_auth_principal_mapping_rejects_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {
+                "CODEX_BROKER_DATA_DIR": tmp_raw,
+                "CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON": '{"owner-a":""}',
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "non-empty string"):
+                BrokerConfig.from_env()
+
     def test_config_profile_defaults_and_request_overrides_feed_app_server_params(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             config = replace(

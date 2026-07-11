@@ -100,6 +100,37 @@ class FakeProcess:
 
 
 class AppServerRoutingTests(unittest.TestCase):
+    def test_unknown_explicit_ids_never_fall_back_across_shared_principal_contexts(self) -> None:
+        client = AppServerClient.__new__(AppServerClient)
+        client._contexts_lock = threading.RLock()
+        client._contexts = set()
+        client._contexts_by_thread = {}
+        client._contexts_by_turn = {}
+        client._pending_notifications_by_turn = {}
+        owner_a = RecordingContext()
+        owner_a.owner_hash = "owner-a"
+        owner_a.codex_thread_id = "thread-a"
+        owner_b = RecordingContext()
+        owner_b.owner_hash = "owner-b"
+        owner_b.codex_thread_id = "thread-b"
+        client.register_context(owner_a)
+        client.register_context(owner_b)
+
+        context, ambiguous = client._context_for_params({"threadId": "thread-a"})
+        self.assertIs(context, owner_a)
+        self.assertFalse(ambiguous)
+        context, ambiguous = client._context_for_params({"threadId": "late-unknown-thread"})
+        self.assertIsNone(context)
+        self.assertTrue(ambiguous)
+
+        client.unregister_context(owner_b)
+        context, ambiguous = client._context_for_params({"turnId": "late-owner-b-turn"})
+        self.assertIsNone(context)
+        self.assertTrue(ambiguous)
+        context, ambiguous = client._context_for_params({})
+        self.assertIs(context, owner_a)
+        self.assertTrue(ambiguous)
+
     def test_pool_creation_lock_survives_failed_start_with_multiple_waiters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             config = replace(config_for(Path(tmp_raw)), pool_idle_ttl_seconds=0)
@@ -379,6 +410,41 @@ class AppServerRoutingTests(unittest.TestCase):
                 pool.close_all()
                 state.close()
 
+    def test_shared_principal_mcp_children_remain_owner_isolated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = config_for(tmp)
+            state = StateStore(config.state_db_path)
+            pool = AppServerPool(config, state)
+            mcp_servers = (
+                McpServerRef(name="tenant_mcp", command="python", args=(), env={}, cwd=None),
+            )
+            try:
+                codex_home = config.auth_root / "principal_hash" / "profiles" / "default" / "codex-home"
+                codex_home.mkdir(parents=True)
+                owner_a = pool.get(
+                    auth_principal_hash="principal_hash",
+                    tenant_scope_hash="owner-a",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=mcp_servers,
+                )
+                owner_b = pool.get(
+                    auth_principal_hash="principal_hash",
+                    tenant_scope_hash="owner-b",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=mcp_servers,
+                )
+
+                self.assertIsNot(owner_a, owner_b)
+                self.assertNotEqual(owner_a.pool_key_hash, owner_b.pool_key_hash)
+            finally:
+                pool.close_all()
+                state.close()
+
     def test_request_timeout_closes_child_and_fails_active_contexts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             tmp = Path(tmp_raw)
@@ -465,7 +531,8 @@ class AppServerRoutingTests(unittest.TestCase):
             self.assertNotIn("sk-live_secret", clean)
             payload = json.loads(stream.getvalue())
             self.assertEqual(payload["event"], "app_server.stderr")
-            self.assertEqual(payload["ownerHash"], "owner_hash")
+            self.assertEqual(payload["authPrincipalHash"], "owner_hash")
+            self.assertNotIn("ownerHash", payload)
             self.assertEqual(payload["pid"], 4242)
             self.assertEqual(payload["poolKeyHash"], "pool_hash")
             self.assertIn("Authorization=<redacted>", payload["line"])

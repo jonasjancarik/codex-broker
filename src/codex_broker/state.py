@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import state_transactions
+from . import state_schema, state_transactions
 from .util import ensure_dir, json_dumps, json_loads, random_id, utc_now
 
 
@@ -47,197 +47,7 @@ class StateStore:
 
     def _init_schema(self) -> None:
         with self._lock, self._conn:
-            version = int(self._conn.execute("pragma user_version").fetchone()[0])
-            if version > 2:
-                raise RuntimeError(f"State database schema version {version} is newer than this broker supports (2).")
-            self._conn.executescript(
-                """
-                pragma journal_mode = wal;
-                create table if not exists owner_profiles (
-                  owner_hash text not null,
-                  profile text not null,
-                  auth_type text,
-                  auth_status text not null default 'unknown',
-                  auth_fingerprint text,
-                  created_at text not null,
-                  updated_at text not null,
-                  primary key (owner_hash, profile)
-                );
-                create table if not exists threads (
-                  owner_hash text not null,
-                  thread_id text not null,
-                  profile text not null,
-                  codex_thread_id text,
-                  config_profile text not null default 'default',
-                  host_app text,
-                  bundle_id text,
-                  cwd text,
-                  status text not null,
-                  created_at text not null,
-                  updated_at text not null,
-                  primary key (owner_hash, thread_id)
-                );
-                create table if not exists turns (
-                  owner_hash text not null,
-                  thread_id text not null,
-                  turn_id text not null,
-                  codex_turn_id text,
-                  profile text not null,
-                  config_profile text not null,
-                  host_app text,
-                  bundle_id text,
-                  cwd text,
-                  mode text not null,
-                  idempotency_key text,
-                  product_correlation_id text,
-                  status text not null,
-                  input_json text not null,
-                  error text,
-                  error_code text,
-                  public_message text,
-                  admin_message text,
-                  created_at text not null,
-                  started_at text,
-                  completed_at text,
-                  updated_at text not null,
-                  primary key (owner_hash, thread_id, turn_id)
-                );
-                create unique index if not exists idx_turn_idempotency
-                  on turns(owner_hash, thread_id, idempotency_key)
-                  where idempotency_key is not null;
-                create table if not exists events (
-                  id integer primary key autoincrement,
-                  owner_hash text not null,
-                  thread_id text not null,
-                  turn_id text,
-                  product_correlation_id text,
-                  codex_thread_id text,
-                  codex_turn_id text,
-                  event_type text not null,
-                  payload_json text not null,
-                  raw_method text,
-                  raw_params_json text,
-                  ambiguous integer not null default 0,
-                  created_at text not null
-                );
-                create table if not exists bundle_digests (
-                  bundle_id text primary key,
-                  digest text not null,
-                  source text not null,
-                  path text not null,
-                  created_at text not null,
-                  updated_at text not null
-                );
-                create table if not exists app_server_processes (
-                  id integer primary key autoincrement,
-                  pool_key_hash text not null,
-                  owner_hash text not null,
-                  profile text not null,
-                  config_profile text not null,
-                  pid integer,
-                  status text not null,
-                  started_at text not null,
-                  last_seen_at text not null,
-                  closed_at text,
-                  exit_code integer
-                );
-                create table if not exists audit_logs (
-                  id integer primary key autoincrement,
-                  owner_hash text not null,
-                  profile text,
-                  thread_id text,
-                  turn_id text,
-                  action text not null,
-                  payload_json text not null,
-                  created_at text not null
-                );
-                create table if not exists pending_interactions (
-                  owner_hash text not null,
-                  interaction_id text not null,
-                  thread_id text not null,
-                  turn_id text not null,
-                  product_correlation_id text,
-                  codex_thread_id text,
-                  codex_turn_id text,
-                  kind text not null,
-                  method text not null,
-                  status text not null,
-                  request_json text not null,
-                  response_json text,
-                  fallback_json text not null,
-                  resolution_source text,
-                  created_at text not null,
-                  expires_at text,
-                  resolved_at text,
-                  updated_at text not null,
-                  primary key (owner_hash, interaction_id)
-                );
-                create index if not exists idx_pending_interactions_thread
-                  on pending_interactions(owner_hash, thread_id, turn_id, status, created_at);
-                create index if not exists idx_events_stream
-                  on events(owner_hash, thread_id, turn_id, id);
-                create index if not exists idx_audit_owner_cursor
-                  on audit_logs(owner_hash, id);
-                create table if not exists audit_action_counts (
-                  action text primary key,
-                  count integer not null
-                );
-                """
-            )
-            self._ensure_columns(
-                "threads",
-                {
-                    "host_app": "text",
-                    "config_profile": "text not null default 'default'",
-                },
-            )
-            self._ensure_columns("owner_profiles", {"auth_fingerprint": "text"})
-            self._copy_column_if_present("threads", "runtime_profile", "config_profile")
-            self._ensure_columns(
-                "turns",
-                {
-                    "product_correlation_id": "text",
-                    "config_profile": "text not null default 'default'",
-                },
-            )
-            self._ensure_columns(
-                "turns",
-                {
-                    "request_fingerprint": "text",
-                    "bundle_digest": "text",
-                    "resolved_options_json": "text",
-                    "broker_version": "text",
-                },
-            )
-            self._copy_column_if_present("turns", "runtime_profile", "config_profile")
-            self._ensure_columns("turns", {"host_app": "text"})
-            self._ensure_columns(
-                "turns",
-                {
-                    "error_code": "text",
-                    "public_message": "text",
-                    "admin_message": "text",
-                },
-            )
-            self._conn.execute("delete from audit_action_counts")
-            self._conn.execute(
-                "insert into audit_action_counts(action, count) select action, count(*) from audit_logs group by action"
-            )
-            self._conn.execute(
-                "update app_server_processes set status = 'orphaned', closed_at = coalesce(closed_at, ?), last_seen_at = ? where status = 'running'",
-                (utc_now(), utc_now()),
-            )
-            self._conn.execute("pragma user_version = 2")
-            self._ensure_columns("app_server_processes", {"config_profile": "text not null default 'default'"})
-            self._copy_column_if_present("app_server_processes", "runtime_profile", "config_profile")
-            self._ensure_columns(
-                "events",
-                {
-                    "product_correlation_id": "text",
-                    "codex_thread_id": "text",
-                    "codex_turn_id": "text",
-                },
-            )
+            state_schema.initialize_schema(self._conn)
 
     @staticmethod
     def _future_timestamp(seconds: float | None) -> str | None:
@@ -246,79 +56,71 @@ class StateStore:
         expires = datetime.now(timezone.utc) + timedelta(seconds=seconds)
         return expires.isoformat().replace("+00:00", "Z")
 
-    def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
-        existing = {
-            str(row["name"])
-            for row in self._conn.execute(f"pragma table_info({table})").fetchall()
-        }
-        for name, declaration in columns.items():
-            if name not in existing:
-                self._conn.execute(f"alter table {table} add column {name} {declaration}")
-
-    def _copy_column_if_present(self, table: str, source: str, target: str) -> None:
-        existing = {
-            str(row["name"])
-            for row in self._conn.execute(f"pragma table_info({table})").fetchall()
-        }
-        if source in existing and target in existing:
-            self._conn.execute(f"update {table} set {target} = {source} where {source} is not null")
-
-    def ensure_profile(self, owner_hash: str, profile: str, auth_type: str | None = None) -> None:
+    def ensure_profile(
+        self,
+        auth_principal_hash: str,
+        profile: str,
+        auth_type: str | None = None,
+    ) -> dict[str, Any]:
         now = utc_now()
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                insert into owner_profiles(owner_hash, profile, auth_type, auth_status, created_at, updated_at)
-                values (?, ?, ?, 'unknown', ?, ?)
-                on conflict(owner_hash, profile) do update set
-                  auth_type = coalesce(excluded.auth_type, owner_profiles.auth_type),
+                insert into auth_profiles(
+                  auth_principal_hash, profile, instance_id, auth_type,
+                  auth_status, created_at, updated_at
+                )
+                values (?, ?, ?, ?, 'unknown', ?, ?)
+                on conflict(auth_principal_hash, profile) do update set
+                  auth_type = coalesce(excluded.auth_type, auth_profiles.auth_type),
                   updated_at = excluded.updated_at
                 """,
-                (owner_hash, profile, auth_type, now, now),
+                (auth_principal_hash, profile, random_id("ap"), auth_type, now, now),
             )
+        return self.get_profile(auth_principal_hash, profile) or {}
 
     def update_auth_status(
         self,
-        owner_hash: str,
+        auth_principal_hash: str,
         profile: str,
         status: str,
         auth_type: str | None = None,
         auth_fingerprint: str | None = None,
     ) -> None:
-        self.ensure_profile(owner_hash, profile, auth_type)
+        self.ensure_profile(auth_principal_hash, profile, auth_type)
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                update owner_profiles
+                update auth_profiles
                 set auth_status = ?,
                     auth_type = coalesce(?, auth_type),
                     auth_fingerprint = coalesce(?, auth_fingerprint),
                     updated_at = ?
-                where owner_hash = ? and profile = ?
+                where auth_principal_hash = ? and profile = ?
                 """,
-                (status, auth_type, auth_fingerprint, utc_now(), owner_hash, profile),
+                (status, auth_type, auth_fingerprint, utc_now(), auth_principal_hash, profile),
             )
 
-    def get_profile(self, owner_hash: str, profile: str) -> dict[str, Any] | None:
+    def get_profile(self, auth_principal_hash: str, profile: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
-                "select * from owner_profiles where owner_hash = ? and profile = ?",
-                (owner_hash, profile),
+                "select * from auth_profiles where auth_principal_hash = ? and profile = ?",
+                (auth_principal_hash, profile),
             ).fetchone()
         return dict(row) if row else None
 
-    def delete_profile(self, owner_hash: str, profile: str) -> None:
+    def delete_profile(self, auth_principal_hash: str, profile: str) -> None:
         with self._lock, self._conn:
             self._conn.execute(
-                "delete from owner_profiles where owner_hash = ? and profile = ?",
-                (owner_hash, profile),
+                "delete from auth_profiles where auth_principal_hash = ? and profile = ?",
+                (auth_principal_hash, profile),
             )
 
-    def list_profiles(self, owner_hash: str) -> list[dict[str, Any]]:
+    def list_profiles(self, auth_principal_hash: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
-                "select * from owner_profiles where owner_hash = ? order by profile asc",
-                (owner_hash,),
+                "select * from auth_profiles where auth_principal_hash = ? order by profile asc",
+                (auth_principal_hash,),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -327,12 +129,19 @@ class StateStore:
         owner_hash: str,
         *,
         thread_id: str | None = None,
+        auth_principal_hash: str | None = None,
+        auth_profile_instance_id: str | None = None,
         profile: str,
         config_profile: str,
         host_app: str | None,
         bundle_id: str | None,
         cwd: str | None,
     ) -> dict[str, Any]:
+        auth_principal_hash = auth_principal_hash or owner_hash
+        profile_row = self.ensure_profile(auth_principal_hash, profile)
+        auth_profile_instance_id = auth_profile_instance_id or str(profile_row["instance_id"])
+        if profile_row.get("instance_id") != auth_profile_instance_id:
+            raise ValueError("Auth profile instance changed while creating the broker thread.")
         now = utc_now()
         caller_supplied_thread_id = thread_id is not None
         thread_id = thread_id or random_id("thr")
@@ -341,12 +150,25 @@ class StateStore:
                 self._conn.execute(
                     """
                     insert into threads(
-                      owner_hash, thread_id, profile, config_profile,
+                      owner_hash, thread_id, auth_principal_hash, auth_profile_instance_id,
+                      profile, config_profile,
                       host_app, bundle_id, cwd, status, created_at, updated_at
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
                     """,
-                    (owner_hash, thread_id, profile, config_profile, host_app, bundle_id, cwd, now, now),
+                    (
+                        owner_hash,
+                        thread_id,
+                        auth_principal_hash,
+                        auth_profile_instance_id,
+                        profile,
+                        config_profile,
+                        host_app,
+                        bundle_id,
+                        cwd,
+                        now,
+                        now,
+                    ),
                 )
             except sqlite3.IntegrityError:
                 if caller_supplied_thread_id:
@@ -392,6 +214,8 @@ class StateStore:
         owner_hash: str,
         thread_id: str,
         *,
+        auth_principal_hash: str | None = None,
+        auth_profile_instance_id: str | None = None,
         profile: str,
         config_profile: str,
         host_app: str | None,
@@ -407,6 +231,17 @@ class StateStore:
         resolved_options: dict[str, Any] | None = None,
         broker_version: str | None = None,
     ) -> dict[str, Any]:
+        thread = self.get_thread(owner_hash, thread_id)
+        if not thread:
+            raise ValueError("Thread not found while creating turn.")
+        auth_principal_hash = auth_principal_hash or str(thread["auth_principal_hash"])
+        auth_profile_instance_id = auth_profile_instance_id or str(thread["auth_profile_instance_id"])
+        if (
+            profile != thread["profile"]
+            or auth_principal_hash != thread["auth_principal_hash"]
+            or auth_profile_instance_id != thread["auth_profile_instance_id"]
+        ):
+            raise ValueError("Turn authentication binding must match its broker thread.")
         now = utc_now()
         turn_id = random_id("turn")
         with self._lock, self._conn:
@@ -422,17 +257,20 @@ class StateStore:
             self._conn.execute(
                 """
                 insert into turns(
-                  owner_hash, thread_id, turn_id, profile, config_profile, bundle_id, cwd,
+                  owner_hash, thread_id, turn_id, auth_principal_hash, auth_profile_instance_id,
+                  profile, config_profile, bundle_id, cwd,
                   host_app, mode, idempotency_key, product_correlation_id, status, input_json,
                   request_fingerprint, bundle_digest, resolved_options_json, broker_version,
                   created_at, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     owner_hash,
                     thread_id,
                     turn_id,
+                    auth_principal_hash,
+                    auth_profile_instance_id,
                     profile,
                     config_profile,
                     bundle_id,
@@ -817,22 +655,26 @@ class StateStore:
         self,
         *,
         pool_key_hash: str,
-        owner_hash: str,
+        auth_principal_hash: str | None = None,
+        owner_hash: str | None = None,
         profile: str,
         config_profile: str,
         pid: int | None,
     ) -> int:
+        principal_hash = auth_principal_hash or owner_hash
+        if not principal_hash:
+            raise ValueError("auth_principal_hash is required.")
         now = utc_now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 """
                 insert into app_server_processes(
-                  pool_key_hash, owner_hash, profile, config_profile, pid, status,
+                  pool_key_hash, owner_hash, auth_principal_hash, profile, config_profile, pid, status,
                   started_at, last_seen_at
                 )
-                values (?, ?, ?, ?, ?, 'running', ?, ?)
+                values (?, ?, ?, ?, ?, ?, 'running', ?, ?)
                 """,
-                (pool_key_hash, owner_hash, profile, config_profile, pid, now, now),
+                (pool_key_hash, principal_hash, principal_hash, profile, config_profile, pid, now, now),
             )
             return int(cursor.lastrowid)
 
@@ -862,6 +704,7 @@ class StateStore:
         action: str,
         payload: dict[str, Any] | None = None,
         *,
+        auth_principal_hash: str | None = None,
         profile: str | None = None,
         thread_id: str | None = None,
         turn_id: str | None = None,
@@ -871,6 +714,7 @@ class StateStore:
                 owner_hash,
                 action,
                 payload or {},
+                auth_principal_hash=auth_principal_hash or owner_hash,
                 profile=profile,
                 thread_id=thread_id,
                 turn_id=turn_id,
@@ -883,6 +727,7 @@ class StateStore:
         action: str,
         payload: dict[str, Any],
         *,
+        auth_principal_hash: str | None = None,
         profile: str | None = None,
         thread_id: str | None = None,
         turn_id: str | None = None,
@@ -890,10 +735,22 @@ class StateStore:
     ) -> int:
         cursor = self._conn.execute(
             """
-            insert into audit_logs(owner_hash, profile, thread_id, turn_id, action, payload_json, created_at)
-            values (?, ?, ?, ?, ?, ?, ?)
+            insert into audit_logs(
+              owner_hash, auth_principal_hash, profile, thread_id, turn_id,
+              action, payload_json, created_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (owner_hash, profile, thread_id, turn_id, action, json_dumps(payload), created_at),
+            (
+                owner_hash,
+                auth_principal_hash or owner_hash,
+                profile,
+                thread_id,
+                turn_id,
+                action,
+                json_dumps(payload),
+                created_at,
+            ),
         )
         self._conn.execute(
             """

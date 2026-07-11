@@ -16,10 +16,86 @@ class StateStoreTests(unittest.TestCase):
             state = StateStore(path)
             state.close()
             with sqlite3.connect(path) as connection:
-                self.assertEqual(connection.execute("pragma user_version").fetchone()[0], 2)
-                connection.execute("pragma user_version = 3")
+                self.assertEqual(connection.execute("pragma user_version").fetchone()[0], 3)
+                connection.execute("pragma user_version = 4")
             with self.assertRaisesRegex(RuntimeError, "newer than this broker supports"):
                 StateStore(path)
+
+    def test_v2_owner_auth_state_migrates_to_default_principal_and_flags_mixed_threads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = config_for(Path(tmp_raw)).state_db_path
+            path.parent.mkdir(parents=True)
+            with sqlite3.connect(path) as connection:
+                connection.executescript(
+                    """
+                    create table owner_profiles (
+                      owner_hash text not null,
+                      profile text not null,
+                      auth_type text,
+                      auth_status text not null,
+                      auth_fingerprint text,
+                      created_at text not null,
+                      updated_at text not null,
+                      primary key (owner_hash, profile)
+                    );
+                    create table threads (
+                      owner_hash text not null,
+                      thread_id text not null,
+                      profile text not null,
+                      codex_thread_id text,
+                      status text not null,
+                      created_at text not null,
+                      updated_at text not null,
+                      primary key (owner_hash, thread_id)
+                    );
+                    create table turns (
+                      owner_hash text not null,
+                      thread_id text not null,
+                      turn_id text not null,
+                      profile text not null,
+                      idempotency_key text,
+                      status text not null,
+                      input_json text not null,
+                      created_at text not null,
+                      updated_at text not null,
+                      primary key (owner_hash, thread_id, turn_id)
+                    );
+                    insert into owner_profiles values (
+                      'owner_hash', 'work', 'api-key', 'authenticated', 'sha256:old',
+                      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                    );
+                    insert into threads values (
+                      'owner_hash', 'legacy-thread', 'work', 'codex-thread', 'active',
+                      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                    );
+                    insert into turns values (
+                      'owner_hash', 'legacy-thread', 'legacy-turn', 'other', null, 'completed', '[]',
+                      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                    );
+                    pragma user_version = 2;
+                    """
+                )
+
+            state = StateStore(path)
+            try:
+                profile = state.get_profile("owner_hash", "work")
+                thread = state.get_thread("owner_hash", "legacy-thread")
+                turn = state.get_turn("owner_hash", "legacy-thread", "legacy-turn")
+                assert profile is not None and thread is not None and turn is not None
+                self.assertEqual(profile["auth_principal_hash"], "owner_hash")
+                self.assertEqual(thread["auth_principal_hash"], "owner_hash")
+                self.assertEqual(turn["auth_principal_hash"], "owner_hash")
+                self.assertEqual(thread["auth_binding_error"], "legacy_mixed_auth_profiles")
+                self.assertEqual(thread["auth_profile_instance_id"], profile["instance_id"])
+                self.assertNotEqual(turn["auth_profile_instance_id"], profile["instance_id"])
+                self.assertEqual(state._conn.execute("pragma user_version").fetchone()[0], 3)
+                self.assertIsNone(
+                    state._conn.execute(
+                        "select 1 from sqlite_master where type = 'table' and name = 'owner_profiles'"
+                    ).fetchone()
+                )
+            finally:
+                state.close()
 
     def test_create_turn_returns_existing_turn_for_duplicate_idempotency_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:

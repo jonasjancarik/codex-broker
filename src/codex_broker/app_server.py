@@ -109,7 +109,8 @@ class AppServerClient:
         self,
         config: BrokerConfig,
         *,
-        owner_hash: str,
+        owner_hash: str | None = None,
+        auth_principal_hash: str | None = None,
         profile: str,
         codex_home: Path,
         config_profile: str,
@@ -118,9 +119,13 @@ class AppServerClient:
         mcp_servers: tuple[McpServerRef, ...] = (),
         codex_config_args: tuple[tuple[str, str], ...] = (),
     ) -> None:
+        principal_hash = auth_principal_hash or owner_hash
+        if not principal_hash:
+            raise ValueError("auth_principal_hash is required.")
         self.config = config
         self.state = state
-        self.owner_hash = owner_hash
+        self.auth_principal_hash = principal_hash
+        self.owner_hash = principal_hash  # Backward-compatible alias for embedders.
         self.profile = profile
         self.config_profile = config_profile
         self.pool_key_hash = pool_key_hash
@@ -173,7 +178,7 @@ class AppServerClient:
         if self.state:
             self._process_record_id = self.state.record_app_server_start(
                 pool_key_hash=pool_key_hash,
-                owner_hash=owner_hash,
+                auth_principal_hash=principal_hash,
                 profile=profile,
                 config_profile=config_profile,
                 pid=self._process.pid,
@@ -185,7 +190,7 @@ class AppServerClient:
         json_log(
             config.json_logs,
             "app_server.start",
-            ownerHash=owner_hash,
+            authPrincipalHash=principal_hash,
             profile=profile,
             configProfile=config_profile,
             pid=self._process.pid,
@@ -316,7 +321,7 @@ class AppServerClient:
         json_log(
             self.config.json_logs,
             "app_server.close",
-            ownerHash=self.owner_hash,
+            authPrincipalHash=getattr(self, "auth_principal_hash", self.owner_hash),
             profile=self.profile,
             configProfile=self.config_profile,
             pid=self._process.pid,
@@ -397,7 +402,7 @@ class AppServerClient:
             json_log(
                 self.config.json_logs,
                 f"app_server.{stream}",
-                ownerHash=self.owner_hash,
+                authPrincipalHash=getattr(self, "auth_principal_hash", self.owner_hash),
                 profile=self.profile,
                 configProfile=self.config_profile,
                 pid=getattr(self._process, "pid", None),
@@ -437,7 +442,12 @@ class AppServerClient:
         else:
             self._handle_notification(method, params)
 
-    def _context_for_params(self, params: dict[str, Any]) -> tuple[TurnContext | None, bool]:
+    def _context_for_params(
+        self,
+        params: dict[str, Any],
+        *,
+        allow_unbound_thread: bool = False,
+    ) -> tuple[TurnContext | None, bool]:
         turn_id = notification_turn_id(params)
         thread_id = notification_thread_id(params)
         with self._contexts_lock:
@@ -445,12 +455,21 @@ class AppServerClient:
                 return self._contexts_by_turn[turn_id], False
             if thread_id and thread_id in self._contexts_by_thread:
                 return self._contexts_by_thread[thread_id], False
+            if turn_id or thread_id:
+                if allow_unbound_thread and thread_id and not turn_id and len(self._contexts) == 1:
+                    context = next(iter(self._contexts))
+                    if context.codex_thread_id is None:
+                        return context, True
+                return None, True
             if len(self._contexts) == 1:
                 return next(iter(self._contexts)), True
-        return None, bool(turn_id or thread_id)
+        return None, False
 
     def _handle_notification(self, method: str, params: dict[str, Any]) -> None:
-        context, ambiguous = self._context_for_params(params)
+        context, ambiguous = self._context_for_params(
+            params,
+            allow_unbound_thread=method in {"thread/started", "thread/resumed"},
+        )
         if method in {"thread/started", "thread/resumed"} and context:
             thread_id = notification_thread_id(params)
             if thread_id:
@@ -659,18 +678,24 @@ class AppServerPool:
     def get(
         self,
         *,
-        owner_hash: str,
+        owner_hash: str | None = None,
+        auth_principal_hash: str | None = None,
         profile: str,
         codex_home: Path,
         config_profile: str,
         mcp_servers: tuple[McpServerRef, ...],
+        tenant_scope_hash: str | None = None,
         codex_config_args: tuple[tuple[str, str], ...] = (),
         auth_fingerprint: str | None = None,
     ) -> AppServerClient:
+        principal_hash = auth_principal_hash or owner_hash
+        if not principal_hash:
+            raise ValueError("auth_principal_hash is required.")
         key = (
-            owner_hash,
+            principal_hash,
             profile,
             auth_fingerprint or "unknown-auth",
+            tenant_scope_hash if mcp_servers else None,
             config_profile,
             tuple(self.config.codex_command),
             self._codex_version(),
@@ -687,7 +712,7 @@ class AppServerPool:
             raise AppServerError("App Server pool is closed")
         self._sweep()
         if auth_fingerprint is not None:
-            self._close_idle_stale_auth(owner_hash, profile, key[2])
+            self._close_idle_stale_auth(principal_hash, profile, key[2])
         with self._lock:
             client = self._clients.get(key)
             if client and not client.closed:
@@ -705,14 +730,14 @@ class AppServerPool:
                 json_log(
                     self.config.json_logs,
                     "app_server.restart",
-                    ownerHash=owner_hash,
+                    authPrincipalHash=principal_hash,
                     profile=profile,
                     configProfile=config_profile,
                     poolKeyHash=key_hash,
                 )
             client = AppServerClient(
                 self.config,
-                owner_hash=owner_hash,
+                auth_principal_hash=principal_hash,
                 profile=profile,
                 codex_home=codex_home,
                 config_profile=config_profile,
@@ -747,11 +772,14 @@ class AppServerPool:
     def close_owner(self, owner_hash: str) -> None:
         self.close_profile(owner_hash, None)
 
-    def close_profile(self, owner_hash: str, profile: str | None) -> None:
+    def close_auth_principal(self, auth_principal_hash: str) -> None:
+        self.close_profile(auth_principal_hash, None)
+
+    def close_profile(self, auth_principal_hash: str, profile: str | None) -> None:
         with self._lock:
             clients: list[AppServerClient] = []
             for key, client in list(self._clients.items()):
-                if key[0] == owner_hash and (profile is None or key[1] == profile):
+                if key[0] == auth_principal_hash and (profile is None or key[1] == profile):
                     self._clients.pop(key, None)
                     clients.append(client)
         for client in clients:
@@ -804,11 +832,21 @@ class AppServerPool:
         for client in stale:
             client.close()
 
-    def _close_idle_stale_auth(self, owner_hash: str, profile: str, auth_fingerprint: str) -> None:
+    def _close_idle_stale_auth(
+        self,
+        auth_principal_hash: str,
+        profile: str,
+        auth_fingerprint: str,
+    ) -> None:
         stale: list[AppServerClient] = []
         with self._lock:
             for key, client in list(self._clients.items()):
-                if key[0] == owner_hash and key[1] == profile and key[2] != auth_fingerprint and not client.has_active_contexts:
+                if (
+                    key[0] == auth_principal_hash
+                    and key[1] == profile
+                    and key[2] != auth_fingerprint
+                    and not client.has_active_contexts
+                ):
                     self._clients.pop(key, None)
                     stale.append(client)
         for client in stale:

@@ -6,12 +6,14 @@ import shutil
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .config import BrokerConfig
+from .identity import AuthPrincipalPolicy, AuthScope
 from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, classify_runtime_error
 from .state import StateStore
 from .util import clean_process_env, ensure_dir, env_with, owner_digest, redact, utc_now
@@ -85,6 +87,7 @@ class DeviceAuthSession:
     command: list[str]
     started_at: str
     updated_at: str
+    auth_principal_hash: str | None = None
     state: str = "starting"
     completed_at: str | None = None
     login_url: str | None = None
@@ -122,31 +125,51 @@ class AuthManager:
     def __init__(self, config: BrokerConfig, state: StateStore) -> None:
         self.config = config
         self.state = state
+        self.policy = AuthPrincipalPolicy(config)
         self._sessions: dict[tuple[str, str], DeviceAuthSession] = {}
+        self._profile_locks: dict[tuple[str, str], threading.RLock] = {}
         self._lock = threading.RLock()
 
     def hash_owner(self, owner_id: str) -> str:
         return owner_digest(owner_id, self.config.owner_hash_secret)
 
+    def resolve_scope(
+        self,
+        owner_id: str,
+        auth_principal_id: str | None = None,
+    ) -> AuthScope:
+        return self.policy.resolve(owner_id, auth_principal_id)
+
+    def hash_auth_principal(self, auth_principal_id: str) -> str:
+        return owner_digest(auth_principal_id, self.config.owner_hash_secret)
+
     def profile_key(self, profile: str | None = None) -> str:
         return normalize_profile(profile)
 
-    def profile_home(self, owner_hash: str, profile: str = "default") -> Path:
+    @contextmanager
+    def profile_guard(self, auth_principal_hash: str, profile: str = "default") -> Any:
+        key = (auth_principal_hash, self.profile_key(profile))
+        with self._lock:
+            lock = self._profile_locks.setdefault(key, threading.RLock())
+        with lock:
+            yield
+
+    def profile_home(self, auth_principal_hash: str, profile: str = "default") -> Path:
         profile_key = self.profile_key(profile)
-        profiles_root = (self.config.auth_root / owner_hash / "profiles").resolve()
+        profiles_root = (self.config.auth_root / auth_principal_hash / "profiles").resolve()
         home = (profiles_root / profile_key / "codex-home").resolve()
         if not home.is_relative_to(profiles_root):
-            raise ValueError("Profile resolves outside the owner's authentication directory.")
+            raise ValueError("Profile resolves outside the auth principal's authentication directory.")
         ensure_dir(home)
         for private_dir in (self.config.auth_root, profiles_root.parent, profiles_root, home.parent, home):
             private_dir.chmod(0o700)
         self._ensure_config(home)
-        self.state.ensure_profile(owner_hash, profile_key)
+        self.state.ensure_profile(auth_principal_hash, profile_key)
         return home
 
-    def codex_env(self, owner_hash: str, profile: str = "default") -> dict[str, str]:
+    def codex_env(self, auth_principal_hash: str, profile: str = "default") -> dict[str, str]:
         profile_key = self.profile_key(profile)
-        home = self.profile_home(owner_hash, profile_key)
+        home = self.profile_home(auth_principal_hash, profile_key)
         return env_with(
             clean_process_env(),
             {
@@ -156,12 +179,12 @@ class AuthManager:
             },
         )
 
-    def auth_file(self, owner_hash: str, profile: str = "default") -> Path:
+    def auth_file(self, auth_principal_hash: str, profile: str = "default") -> Path:
         profile_key = self.profile_key(profile)
-        return self.profile_home(owner_hash, profile_key) / "auth.json"
+        return self.profile_home(auth_principal_hash, profile_key) / "auth.json"
 
-    def auth_fingerprint(self, owner_hash: str, profile: str = "default") -> str:
-        auth_file = self.auth_file(owner_hash, profile)
+    def auth_fingerprint(self, auth_principal_hash: str, profile: str = "default") -> str:
+        auth_file = self.auth_file(auth_principal_hash, profile)
         if not auth_file.exists():
             return "missing"
         try:
@@ -174,29 +197,61 @@ class AuthManager:
     def mark_runtime_auth_failure(
         self,
         owner_hash: str,
+        auth_principal_hash: str,
         profile: str,
         *,
         code: str,
         admin_message: str,
     ) -> None:
         profile_key = self.profile_key(profile)
-        fingerprint = self.auth_fingerprint(owner_hash, profile_key)
-        self.state.update_auth_status(owner_hash, profile_key, "refresh_failed", auth_fingerprint=fingerprint)
+        fingerprint = self.auth_fingerprint(auth_principal_hash, profile_key)
+        self.state.update_auth_status(
+            auth_principal_hash,
+            profile_key,
+            "refresh_failed",
+            auth_fingerprint=fingerprint,
+        )
         self.state.append_audit(
             owner_hash,
             "auth.runtime.failure",
             {"code": code, "authFingerprint": fingerprint, "adminMessage": redact(admin_message, 1200)},
+            auth_principal_hash=auth_principal_hash,
             profile=profile_key,
         )
 
-    def status(self, owner_id: str, profile: str = "default") -> dict[str, Any]:
+    def list_profiles(
+        self,
+        owner_id: str,
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        scope = self.resolve_scope(owner_id, auth_principal_id)
+        profiles = [
+            {
+                "profile": row["profile"],
+                "state": row["auth_status"],
+                "authType": row.get("auth_type"),
+                "authFingerprint": row.get("auth_fingerprint"),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in self.state.list_profiles(scope.auth_principal_hash)
+        ]
+        return {**scope.public(), "profiles": profiles}
+
+    def status(
+        self,
+        owner_id: str,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
         profile_key = self.profile_key(profile)
-        owner_hash = self.hash_owner(owner_id)
-        home = self.profile_home(owner_hash, profile_key)
-        session = self._session(owner_hash, profile_key)
+        scope = self.resolve_scope(owner_id, auth_principal_id)
+        principal_hash = scope.auth_principal_hash
+        home = self.profile_home(principal_hash, profile_key)
+        session = self._session(principal_hash, profile_key)
         auth_file_exists = (home / "auth.json").exists()
-        fingerprint = self.auth_fingerprint(owner_hash, profile_key)
-        profile_row = self.state.get_profile(owner_hash, profile_key)
+        fingerprint = self.auth_fingerprint(principal_hash, profile_key)
+        profile_row = self.state.get_profile(principal_hash, profile_key)
         remembered_state = str(profile_row.get("auth_status")) if profile_row else "unknown"
         remembered_fingerprint = str(profile_row.get("auth_fingerprint")) if profile_row and profile_row.get("auth_fingerprint") else None
         state = "missing" if not auth_file_exists else "present_unverified"
@@ -208,7 +263,7 @@ class AuthManager:
                 result = subprocess.run(
                     command,
                     cwd=str(home),
-                    env=self.codex_env(owner_hash, profile_key),
+                    env=self.codex_env(principal_hash, profile_key),
                     text=True,
                     input="",
                     capture_output=True,
@@ -229,28 +284,35 @@ class AuthManager:
                 output = redact(str(exc), 1200)
                 state = "missing" if not auth_file_exists else "present_unverified"
         auth_file_exists = (home / "auth.json").exists()
-        fingerprint = self.auth_fingerprint(owner_hash, profile_key)
+        fingerprint = self.auth_fingerprint(principal_hash, profile_key)
         if remembered_state == "refresh_failed" and remembered_fingerprint == fingerprint:
             state = "refresh_failed"
-        self.state.update_auth_status(owner_hash, profile_key, state, auth_fingerprint=fingerprint)
+        self.state.update_auth_status(principal_hash, profile_key, state, auth_fingerprint=fingerprint)
         return {
-            "ownerHash": owner_hash,
+            **scope.public(),
             "profile": profile_key,
             "state": state,
-            "deviceAuth": session.public() if session else None,
+            "deviceAuth": {**scope.public(), **session.public()} if session else None,
             "authFilePresent": auth_file_exists,
             "authFingerprint": fingerprint,
             "loginStatusExitCode": exit_code,
             "loginStatusOutput": output,
         }
 
-    def probe(self, owner_id: str, profile: str = "default") -> dict[str, Any]:
+    def probe(
+        self,
+        owner_id: str,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
         profile_key = self.profile_key(profile)
-        owner_hash = self.hash_owner(owner_id)
-        home = self.profile_home(owner_hash, profile_key)
+        scope = self.resolve_scope(owner_id, auth_principal_id)
+        owner_hash = scope.owner_hash
+        principal_hash = scope.auth_principal_hash
+        home = self.profile_home(principal_hash, profile_key)
         auth_file = home / "auth.json"
         auth_file_exists = auth_file.exists()
-        previous_fingerprint = self.auth_fingerprint(owner_hash, profile_key)
+        previous_fingerprint = self.auth_fingerprint(principal_hash, profile_key)
         started_at = utc_now()
         started_monotonic = time.monotonic()
         command = self._probe_command(home)
@@ -258,6 +320,7 @@ class AuthManager:
             owner_hash,
             "auth.probe.start",
             {"authFingerprint": previous_fingerprint},
+            auth_principal_hash=principal_hash,
             profile=profile_key,
         )
 
@@ -268,14 +331,14 @@ class AuthManager:
         admin_message: str | None = None
         if not auth_file_exists:
             state = "missing"
-            self.state.update_auth_status(owner_hash, profile_key, state, auth_fingerprint=previous_fingerprint)
+            self.state.update_auth_status(principal_hash, profile_key, state, auth_fingerprint=previous_fingerprint)
         else:
             try:
                 timeout = max(5.0, min(float(self.config.request_timeout_seconds), 120.0))
                 result = subprocess.run(
                     command,
                     cwd=str(home),
-                    env=self.codex_env(owner_hash, profile_key),
+                    env=self.codex_env(principal_hash, profile_key),
                     input=f"{AUTH_PROBE_PROMPT}\n",
                     text=True,
                     capture_output=True,
@@ -297,6 +360,7 @@ class AuthManager:
                 admin_message = error_info.admin_message
                 self.mark_runtime_auth_failure(
                     owner_hash,
+                    principal_hash,
                     profile_key,
                     code=error_info.code,
                     admin_message=error_info.admin_message,
@@ -304,18 +368,18 @@ class AuthManager:
             elif exit_code == 0:
                 state = "authenticated"
                 self.state.update_auth_status(
-                    owner_hash,
+                    principal_hash,
                     profile_key,
                     state,
-                    auth_fingerprint=self.auth_fingerprint(owner_hash, profile_key),
+                    auth_fingerprint=self.auth_fingerprint(principal_hash, profile_key),
                 )
             elif "not logged in" in normalized or "not authenticated" in normalized:
                 state = "invalid" if auth_file.exists() else "missing"
                 self.state.update_auth_status(
-                    owner_hash,
+                    principal_hash,
                     profile_key,
                     state,
-                    auth_fingerprint=self.auth_fingerprint(owner_hash, profile_key),
+                    auth_fingerprint=self.auth_fingerprint(principal_hash, profile_key),
                 )
             else:
                 state = "failed"
@@ -324,14 +388,14 @@ class AuthManager:
                     public_message = error_info.public_message
                     admin_message = error_info.admin_message
                 self.state.update_auth_status(
-                    owner_hash,
+                    principal_hash,
                     profile_key,
                     state,
-                    auth_fingerprint=self.auth_fingerprint(owner_hash, profile_key),
+                    auth_fingerprint=self.auth_fingerprint(principal_hash, profile_key),
                 )
 
         completed_at = utc_now()
-        fingerprint = self.auth_fingerprint(owner_hash, profile_key)
+        fingerprint = self.auth_fingerprint(principal_hash, profile_key)
         audit_payload = {
             "state": state,
             "exitCode": exit_code,
@@ -343,10 +407,11 @@ class AuthManager:
             owner_hash,
             "auth.probe.success" if state == "authenticated" else "auth.probe.failure",
             audit_payload,
+            auth_principal_hash=principal_hash,
             profile=profile_key,
         )
         return {
-            "ownerHash": owner_hash,
+            **scope.public(),
             "profile": profile_key,
             "state": state,
             "authFilePresent": auth_file.exists(),
@@ -363,24 +428,36 @@ class AuthManager:
             "adminMessage": admin_message,
         }
 
-    def start_device_auth(self, owner_id: str, profile: str = "default") -> dict[str, Any]:
+    def start_device_auth(
+        self,
+        owner_id: str,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
         profile_key = self.profile_key(profile)
-        owner_hash = self.hash_owner(owner_id)
-        key = (owner_hash, profile_key)
-        with self._lock:
+        scope = self.resolve_scope(owner_id, auth_principal_id)
+        key = (scope.auth_principal_hash, profile_key)
+        with self.profile_guard(*key), self._lock:
             existing = self._sessions.get(key)
             if existing and existing.process and existing.process.poll() is None:
-                return existing.public()
+                return {**scope.public(), **existing.public()}
             session = DeviceAuthSession(
-                session_id=f"codex-auth-{owner_hash[:12]}-{int(threading.get_native_id())}",
-                owner_hash=owner_hash,
+                session_id=f"codex-auth-{scope.auth_principal_hash[:12]}-{int(threading.get_native_id())}",
+                owner_hash=scope.owner_hash,
+                auth_principal_hash=scope.auth_principal_hash,
                 profile=profile_key,
                 command=[*self.config.codex_command, "login", "--device-auth"],
                 started_at=utc_now(),
                 updated_at=utc_now(),
             )
             self._sessions[key] = session
-            self.state.append_audit(owner_hash, "auth.device.start", {"sessionId": session.session_id}, profile=profile_key)
+            self.state.append_audit(
+                scope.owner_hash,
+                "auth.device.start",
+                {"sessionId": session.session_id},
+                auth_principal_hash=scope.auth_principal_hash,
+                profile=profile_key,
+            )
             try:
                 self._spawn_device_auth(session)
             except (OSError, subprocess.SubprocessError) as exc:
@@ -391,19 +468,27 @@ class AuthManager:
                 session.exit_code = -1
                 session.completed_at = utc_now()
                 session.updated_at = session.completed_at
-                self.state.update_auth_status(owner_hash, profile_key, "failed", "chatgpt")
+                self.state.update_auth_status(scope.auth_principal_hash, profile_key, "failed", "chatgpt")
                 self.state.append_audit(
-                    owner_hash,
+                    scope.owner_hash,
                     "auth.device.failure",
                     {"sessionId": session.session_id, "exitCode": -1},
+                    auth_principal_hash=scope.auth_principal_hash,
                     profile=profile_key,
                 )
-            return session.public()
+            return {**scope.public(), **session.public()}
 
-    def submit_device_code(self, owner_id: str, code: str, profile: str = "default", session_id: str | None = None) -> dict[str, Any]:
+    def submit_device_code(
+        self,
+        owner_id: str,
+        code: str,
+        profile: str = "default",
+        session_id: str | None = None,
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
         profile_key = self.profile_key(profile)
-        owner_hash = self.hash_owner(owner_id)
-        session = self._session(owner_hash, profile_key)
+        scope = self.resolve_scope(owner_id, auth_principal_id)
+        session = self._session(scope.auth_principal_hash, profile_key)
         if not session or not session.process or session.process.poll() is not None:
             raise ValueError("No active Codex device-auth session.")
         if session_id and session.session_id != session_id:
@@ -415,100 +500,163 @@ class AuthManager:
         session.process.stdin.flush()
         session.state = "submitting_code"
         session.updated_at = utc_now()
-        return session.public()
+        return {**scope.public(), **session.public()}
 
-    def login_api_key(self, owner_id: str, api_key: str, profile: str = "default") -> dict[str, Any]:
+    def login_api_key(
+        self,
+        owner_id: str,
+        api_key: str,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
         if not api_key.strip():
             raise ValueError("apiKey is required.")
         profile_key = self.profile_key(profile)
-        owner_hash = self.hash_owner(owner_id)
-        home = self.profile_home(owner_hash, profile_key)
-        command = [*self.config.codex_command, "login", "--with-api-key"]
-        self.state.append_audit(owner_hash, "auth.api_key.start", {}, profile=profile_key)
-        try:
-            result = subprocess.run(
-                command,
-                cwd=str(home),
-                env=self.codex_env(owner_hash, profile_key),
-                input=f"{api_key.strip()}\n",
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=False,
+        scope = self.resolve_scope(owner_id, auth_principal_id)
+        with self.profile_guard(scope.auth_principal_hash, profile_key):
+            home = self.profile_home(scope.auth_principal_hash, profile_key)
+            command = [*self.config.codex_command, "login", "--with-api-key"]
+            self.state.append_audit(
+                scope.owner_hash,
+                "auth.api_key.start",
+                {},
+                auth_principal_hash=scope.auth_principal_hash,
+                profile=profile_key,
             )
-            exit_code = result.returncode
-            output = redact(f"{result.stdout}\n{result.stderr}".strip(), 1200)
-        except (OSError, subprocess.SubprocessError) as exc:
-            exit_code = -1
-            output = redact(str(exc), 1200)
-        status = "authenticated" if exit_code == 0 else "failed"
-        self.state.update_auth_status(owner_hash, profile_key, status, "api-key", self.auth_fingerprint(owner_hash, profile_key))
-        self.state.append_audit(
-            owner_hash,
-            "auth.api_key.success" if status == "authenticated" else "auth.api_key.failure",
-            {"exitCode": exit_code},
-            profile=profile_key,
-        )
-        return {
-            "ownerHash": owner_hash,
-            "profile": profile_key,
-            "state": status,
-            "authFingerprint": self.auth_fingerprint(owner_hash, profile_key),
-            "exitCode": exit_code,
-            "output": output,
-        }
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=str(home),
+                    env=self.codex_env(scope.auth_principal_hash, profile_key),
+                    input=f"{api_key.strip()}\n",
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                exit_code = result.returncode
+                output = redact(f"{result.stdout}\n{result.stderr}".strip(), 1200)
+            except (OSError, subprocess.SubprocessError) as exc:
+                exit_code = -1
+                output = redact(str(exc), 1200)
+            status = "authenticated" if exit_code == 0 else "failed"
+            fingerprint = self.auth_fingerprint(scope.auth_principal_hash, profile_key)
+            self.state.update_auth_status(
+                scope.auth_principal_hash,
+                profile_key,
+                status,
+                "api-key",
+                fingerprint,
+            )
+            self.state.append_audit(
+                scope.owner_hash,
+                "auth.api_key.success" if status == "authenticated" else "auth.api_key.failure",
+                {"exitCode": exit_code},
+                auth_principal_hash=scope.auth_principal_hash,
+                profile=profile_key,
+            )
+            return {
+                **scope.public(),
+                "profile": profile_key,
+                "state": status,
+                "authFingerprint": fingerprint,
+                "exitCode": exit_code,
+                "output": output,
+            }
 
-    def logout(self, owner_id: str, profile: str = "default", *, delete_profile: bool = False) -> dict[str, Any]:
+    def logout(
+        self,
+        owner_id: str,
+        profile: str = "default",
+        *,
+        delete_profile: bool = False,
+        auth_principal_id: str | None = None,
+    ) -> dict[str, Any]:
         profile_key = self.profile_key(profile)
-        owner_hash = self.hash_owner(owner_id)
-        home = self.profile_home(owner_hash, profile_key)
-        with self._lock:
-            session = self._sessions.pop((owner_hash, profile_key), None) if delete_profile else self._sessions.get((owner_hash, profile_key))
-        if session and session.process and session.process.poll() is None:
-            session.process.terminate()
-        try:
-            result = subprocess.run(
-                [*self.config.codex_command, "logout"],
-                cwd=str(home),
-                env=self.codex_env(owner_hash, profile_key),
-                text=True,
-                capture_output=True,
-                timeout=15,
-                check=False,
+        scope = self.resolve_scope(owner_id, auth_principal_id)
+        principal_hash = scope.auth_principal_hash
+        with self.profile_guard(principal_hash, profile_key):
+            home = self.profile_home(principal_hash, profile_key)
+            with self._lock:
+                key = (principal_hash, profile_key)
+                session = self._sessions.pop(key, None) if delete_profile else self._sessions.get(key)
+            if session:
+                self._terminate_session(session)
+            try:
+                result = subprocess.run(
+                    [*self.config.codex_command, "logout"],
+                    cwd=str(home),
+                    env=self.codex_env(principal_hash, profile_key),
+                    text=True,
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
+                exit_code = result.returncode
+                output = redact(f"{result.stdout}\n{result.stderr}".strip(), 1200)
+            except (OSError, subprocess.SubprocessError) as exc:
+                exit_code = -1
+                output = redact(str(exc), 1200)
+            auth_file = home / "auth.json"
+            if auth_file.exists():
+                auth_file.unlink()
+            deleted = False
+            if delete_profile:
+                profiles_root = (self.config.auth_root / principal_hash / "profiles").resolve()
+                profile_dir = home.parent.resolve()
+                if not profile_dir.is_relative_to(profiles_root) or profile_dir == profiles_root:
+                    raise ValueError("Refusing to delete a profile outside the authentication directory.")
+                if profile_dir.exists():
+                    shutil.rmtree(profile_dir)
+                if profile_dir.exists():
+                    raise OSError("Codex auth profile directory still exists after deletion.")
+                self.state.delete_profile(principal_hash, profile_key)
+                self.state.append_audit(
+                    scope.owner_hash,
+                    "auth.profile.delete",
+                    {"exitCode": exit_code},
+                    auth_principal_hash=principal_hash,
+                    profile=profile_key,
+                )
+                deleted = True
+            else:
+                self.state.update_auth_status(
+                    principal_hash,
+                    profile_key,
+                    "missing",
+                    auth_fingerprint=self.auth_fingerprint(principal_hash, profile_key),
+                )
+            self.state.append_audit(
+                scope.owner_hash,
+                "auth.logout",
+                {"exitCode": exit_code, "deleteProfile": delete_profile},
+                auth_principal_hash=principal_hash,
+                profile=profile_key,
             )
-            exit_code = result.returncode
-            output = redact(f"{result.stdout}\n{result.stderr}".strip(), 1200)
-        except (OSError, subprocess.SubprocessError) as exc:
-            exit_code = -1
-            output = redact(str(exc), 1200)
-        auth_file = home / "auth.json"
-        if auth_file.exists():
-            auth_file.unlink()
-        deleted = False
-        if delete_profile:
-            profiles_root = (self.config.auth_root / owner_hash / "profiles").resolve()
-            profile_dir = home.parent.resolve()
-            if not profile_dir.is_relative_to(profiles_root) or profile_dir == profiles_root:
-                raise ValueError("Refusing to delete a profile outside the owner's authentication directory.")
-            shutil.rmtree(profile_dir, ignore_errors=True)
-            self.state.delete_profile(owner_hash, profile_key)
-            self.state.append_audit(owner_hash, "auth.profile.delete", {"exitCode": exit_code}, profile=profile_key)
-            deleted = True
-        else:
-            self.state.update_auth_status(owner_hash, profile_key, "missing", auth_fingerprint=self.auth_fingerprint(owner_hash, profile_key))
-        self.state.append_audit(owner_hash, "auth.logout", {"exitCode": exit_code, "deleteProfile": delete_profile}, profile=profile_key)
-        return {
-            "ownerHash": owner_hash,
-            "profile": profile_key,
-            "state": "deleted" if deleted else "unauthenticated",
-            "deleted": deleted,
-            "exitCode": exit_code,
-            "output": output,
-        }
+            return {
+                **scope.public(),
+                "profile": profile_key,
+                "state": "deleted" if deleted else "unauthenticated",
+                "deleted": deleted,
+                "exitCode": exit_code,
+                "output": output,
+            }
 
-    def _session(self, owner_hash: str, profile: str) -> DeviceAuthSession | None:
+    def _session(self, auth_principal_hash: str, profile: str) -> DeviceAuthSession | None:
         with self._lock:
-            return self._sessions.get((owner_hash, profile))
+            return self._sessions.get((auth_principal_hash, profile))
+
+    @staticmethod
+    def _terminate_session(session: DeviceAuthSession) -> None:
+        process = session.process
+        if not process or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
 
     def _ensure_config(self, home: Path) -> None:
         config_path = home / "config.toml"
@@ -535,11 +683,12 @@ class AuthManager:
         ]
 
     def _spawn_device_auth(self, session: DeviceAuthSession) -> None:
-        home = self.profile_home(session.owner_hash, session.profile)
+        principal_hash = session.auth_principal_hash or session.owner_hash
+        home = self.profile_home(principal_hash, session.profile)
         process = subprocess.Popen(
             session.command,
             cwd=str(home),
-            env=self.codex_env(session.owner_hash, session.profile),
+            env=self.codex_env(principal_hash, session.profile),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -577,17 +726,18 @@ class AuthManager:
 
     def _wait_auth_process(self, session: DeviceAuthSession) -> None:
         assert session.process is not None
+        principal_hash = session.auth_principal_hash or session.owner_hash
         code = session.process.wait()
         if session.process.stdin:
             try:
                 session.process.stdin.close()
             except OSError:
                 pass
-        with self._lock:
+        with self.profile_guard(principal_hash, session.profile), self._lock:
             session.exit_code = code
             session.completed_at = utc_now()
             session.updated_at = session.completed_at
-            if self._sessions.get((session.owner_hash, session.profile)) is not session:
+            if self._sessions.get((principal_hash, session.profile)) is not session:
                 session.state = "cancelled"
                 session.error = "Authentication was cancelled."
                 return
@@ -595,25 +745,27 @@ class AuthManager:
                 session.state = "completed"
                 session.error = None
                 self.state.update_auth_status(
-                    session.owner_hash,
+                    principal_hash,
                     session.profile,
                     "authenticated",
                     "chatgpt",
-                    self.auth_fingerprint(session.owner_hash, session.profile),
+                    self.auth_fingerprint(principal_hash, session.profile),
                 )
                 self.state.append_audit(
                     session.owner_hash,
                     "auth.device.success",
                     {"sessionId": session.session_id},
+                    auth_principal_hash=principal_hash,
                     profile=session.profile,
                 )
             else:
                 session.state = "failed"
                 session.error = session.output[-1] if session.output else f"codex login exited with {code}"
-                self.state.update_auth_status(session.owner_hash, session.profile, "failed", "chatgpt")
+                self.state.update_auth_status(principal_hash, session.profile, "failed", "chatgpt")
                 self.state.append_audit(
                     session.owner_hash,
                     "auth.device.failure",
                     {"sessionId": session.session_id, "exitCode": code},
+                    auth_principal_hash=principal_hash,
                     profile=session.profile,
                 )

@@ -58,6 +58,35 @@ def _config_profiles() -> dict[str, dict[str, Any]]:
     return profiles
 
 
+def _auth_principal_mappings() -> dict[str, str]:
+    raw = os.environ.get("CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON")
+    path = os.environ.get("CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE")
+    if raw and path:
+        raise ValueError(
+            "Set only one of CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON and CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE."
+        )
+    if path:
+        mapping_path = Path(path).expanduser()
+        if not mapping_path.is_file():
+            raise FileNotFoundError(f"Auth principal mapping file does not exist or is not a file: {mapping_path}")
+        raw = mapping_path.read_text(encoding="utf-8")
+        if not raw.strip():
+            raise ValueError(f"Auth principal mapping file is empty: {mapping_path}")
+    if not raw:
+        return {}
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("Auth principal mappings must be a JSON object keyed by ownerId.")
+    mappings: dict[str, str] = {}
+    for owner_id, principal_id in parsed.items():
+        if not isinstance(owner_id, str) or not owner_id:
+            raise ValueError("Every auth principal mapping ownerId must be a non-empty string.")
+        if not isinstance(principal_id, str) or not principal_id:
+            raise ValueError(f"Auth principal mapping for {owner_id!r} must be a non-empty string.")
+        mappings[owner_id] = principal_id
+    return mappings
+
+
 def _owner_hash_secret(data_dir: Path, internal_key: str | None) -> str | None:
     explicit = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY")
     explicit_file = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY_FILE")
@@ -124,6 +153,7 @@ class BrokerConfig:
     shutdown_drain_timeout_seconds: float
     codex_passthrough_env: tuple[str, ...] = ()
     config_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    auth_principal_mappings: dict[str, str] = field(default_factory=dict)
     client_name: str = "codex_broker"
     client_title: str = "Codex Broker"
     client_version: str = __version__
@@ -216,6 +246,7 @@ class BrokerConfig:
             shutdown_mode=os.environ.get("CODEX_BROKER_SHUTDOWN_MODE", "interrupt"),
             shutdown_drain_timeout_seconds=float(os.environ.get("CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS", "30")),
             config_profiles=_config_profiles(),
+            auth_principal_mappings=_auth_principal_mappings(),
             max_queued_turns=_int_env("CODEX_BROKER_MAX_QUEUED_TURNS", 1000),
             hosted_tool_max_response_bytes=_int_env(
                 "CODEX_BROKER_HOSTED_TOOL_MAX_RESPONSE_BYTES",

@@ -34,6 +34,7 @@ def finalize_turn(
     raw_method: str | None = None,
     raw_params: dict[str, Any] | None = None,
     ambiguous: bool = False,
+    auth_principal_hash: str | None = None,
     audit_action: str | None = None,
     audit_payload: dict[str, Any] | None = None,
 ) -> bool:
@@ -77,6 +78,7 @@ def finalize_turn(
                 owner_hash,
                 audit_action,
                 audit_payload or {},
+                auth_principal_hash=auth_principal_hash or owner_hash,
                 thread_id=thread_id,
                 turn_id=turn_id,
                 created_at=now,

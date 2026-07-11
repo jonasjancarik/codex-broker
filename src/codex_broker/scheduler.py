@@ -6,19 +6,19 @@ import re
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from .app_server import AppServerClient, AppServerError, AppServerPool
 from .auth import AuthManager
-from .bundles import BundleError, BundleRegistry, ResolvedBundle
+from .bundles import BundleRegistry, ResolvedBundle
 from .config import BrokerConfig
 from .events import normalize_app_server_event
 from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, RuntimeErrorInfo, classify_app_server_error, classify_runtime_error
 from .scheduler_errors import ActiveTurnError, ConflictError, NotFoundError
-from . import scheduler_config, scheduler_interactions
+from . import scheduler_config, scheduler_interactions, scheduler_threads
 from .state import StateStore
 from .util import json_dumps, json_log, redact_json, utc_now
 
@@ -31,6 +31,7 @@ def optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 @dataclass
 class ThreadGate:
+    binding_lock: threading.RLock = field(default_factory=threading.RLock)
     active_context: "BrokerTurnContext | None" = None
     running: bool = False
     queue: deque["QueuedTurn"] | None = None
@@ -53,6 +54,7 @@ class BrokerTurnContext:
         *,
         state: StateStore,
         owner_hash: str,
+        auth_principal_hash: str | None = None,
         thread_id: str,
         turn_id: str,
         codex_thread_id: str | None,
@@ -61,6 +63,7 @@ class BrokerTurnContext:
     ) -> None:
         self.state = state
         self.owner_hash = owner_hash
+        self.auth_principal_hash = auth_principal_hash or owner_hash
         self.thread_id = thread_id
         self.turn_id = turn_id
         self.codex_thread_id = codex_thread_id
@@ -116,6 +119,7 @@ class BrokerTurnContext:
                 self.owner_hash,
                 event_type,
                 payload,
+                auth_principal_hash=self.auth_principal_hash,
                 thread_id=self.thread_id,
                 turn_id=self.turn_id,
             )
@@ -222,48 +226,13 @@ class TurnScheduler:
         }
 
     def create_thread(self, owner_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        owner_hash = self.auth.hash_owner(owner_id)
-        profile = self.auth.profile_key(body.get("profile") if body.get("profile") is not None else "default")
-        config_profile = self._request_config_profile(body)
-        config_profile_config = self._config_profile_config(config_profile)
-        host_app = optional_text(body.get("hostApp"))
-        if "productThreadId" in body:
-            raise ValueError("productThreadId has been removed; pass threadId instead.")
-        requested_thread_id = optional_text(body.get("threadId"))
-        if requested_thread_id:
-            existing = self.state.get_thread(owner_hash, requested_thread_id)
-            if existing:
-                return self._public_thread(existing)
-        bundle_id = str(body["bundleId"]) if body.get("bundleId") else None
-        self._validate_config_profile_bundle(config_profile_config, bundle_id)
-        bundle = self.bundles.resolve(bundle_id) if bundle_id else None
-        cwd = self.bundles.validate_cwd(body.get("cwd"), bundle)
-        self._validate_config_profile_cwd(cwd, config_profile_config)
-        self.auth.profile_home(owner_hash, profile)
-        thread = self.state.create_thread(
-            owner_hash,
-            thread_id=requested_thread_id,
-            profile=profile,
-            config_profile=config_profile,
-            host_app=host_app,
-            bundle_id=str(bundle_id) if bundle_id else None,
-            cwd=str(cwd) if cwd else None,
-        )
-        return self._public_thread(thread)
+        return scheduler_threads.create_thread(self, owner_id, body)
 
     def get_thread(self, owner_id: str, thread_id: str) -> dict[str, Any]:
-        owner_hash = self.auth.hash_owner(owner_id)
-        thread = self.state.get_thread(owner_hash, thread_id)
-        if not thread:
-            raise NotFoundError("Thread not found.")
-        return self._public_thread(thread)
+        return scheduler_threads.get_thread(self, owner_id, thread_id)
 
     def archive_thread(self, owner_id: str, thread_id: str) -> dict[str, Any]:
-        owner_hash = self.auth.hash_owner(owner_id)
-        thread = self.state.archive_thread(owner_hash, thread_id)
-        if not thread:
-            raise NotFoundError("Thread not found.")
-        return self._public_thread(thread)
+        return scheduler_threads.archive_thread(self, owner_id, thread_id)
 
     def start_turn(self, owner_id: str, thread_id: str, body: dict[str, Any]) -> dict[str, Any]:
         if self._shutdown.is_set():
@@ -272,6 +241,7 @@ class TurnScheduler:
         thread = self.state.get_thread(owner_hash, thread_id)
         if not thread:
             raise NotFoundError("Thread not found.")
+        scope = scheduler_threads.validate_turn_auth_binding(self, owner_id, thread, body)
         if thread["status"] == "archived":
             raise ConflictError("Thread is archived.")
         input_items = body.get("input")
@@ -297,7 +267,7 @@ class TurnScheduler:
         config_profile = self._request_config_profile(body, thread.get("config_profile") or "default")
         config_profile_config = self._config_profile_config(config_profile)
         host_app = optional_text(body.get("hostApp")) or thread.get("host_app")
-        profile = self.auth.profile_key(body.get("profile") if body.get("profile") is not None else thread.get("profile") or "default")
+        profile = str(thread["profile"])
         self._validate_config_profile_bundle(config_profile_config, bundle_id)
         bundle = self.bundles.resolve(bundle_id) if bundle_id else None
         cwd = self.bundles.validate_cwd(body.get("cwd") or thread.get("cwd"), bundle)
@@ -321,6 +291,8 @@ class TurnScheduler:
             turn = self.state.create_turn(
                 owner_hash,
                 thread_id,
+                auth_principal_hash=scope.auth_principal_hash,
+                auth_profile_instance_id=str(thread["auth_profile_instance_id"]),
                 profile=profile,
                 config_profile=config_profile,
                 host_app=host_app,
@@ -334,6 +306,7 @@ class TurnScheduler:
                 request_fingerprint=hashlib.sha256(json_dumps(body).encode("utf-8")).hexdigest(),
                 bundle_digest=bundle.digest if bundle else None,
                 resolved_options={
+                    "authPrincipalHash": scope.auth_principal_hash,
                     "profile": profile,
                     "configProfile": config_profile,
                     "hostApp": host_app,
@@ -402,7 +375,14 @@ class TurnScheduler:
             active.client.request("turn/interrupt", params)
         active.finish("interrupted", "Turn interrupted.", "turn.interrupted")
         if self._persist_context_terminal(active):
-            self.state.append_audit(owner_hash, "turn.interrupt", {}, thread_id=thread_id, turn_id=turn_id)
+            self.state.append_audit(
+                owner_hash,
+                "turn.interrupt",
+                {},
+                auth_principal_hash=active.auth_principal_hash,
+                thread_id=thread_id,
+                turn_id=turn_id,
+            )
             self._metric("turns_interrupted", 1)
         return self.get_turn(owner_id, thread_id, turn_id)
 
@@ -603,6 +583,7 @@ class TurnScheduler:
             self._finalize_interrupted(work.owner_hash, work.thread_id, work.turn_id, message)
 
     def _finalize_interrupted(self, owner_hash: str, thread_id: str, turn_id: str, message: str) -> None:
+        turn = self.state.get_turn(owner_hash, thread_id, turn_id)
         finalized = self.state.finalize_turn(
             owner_hash,
             thread_id,
@@ -611,6 +592,7 @@ class TurnScheduler:
             error=message,
             event_type="turn.interrupted",
             event_payload={"message": message},
+            auth_principal_hash=turn.get("auth_principal_hash") if turn else owner_hash,
             audit_action="turn.interrupt",
             audit_payload={"reason": "shutdown"},
         )
@@ -636,6 +618,7 @@ class TurnScheduler:
             admin_message=context.admin_message,
             event_type=context.terminal_event_type or ("turn.completed" if status == "completed" else "turn.failed"),
             event_payload=context.terminal_payload or {},
+            auth_principal_hash=context.auth_principal_hash,
             product_correlation_id=context.product_correlation_id,
             codex_thread_id=context.codex_thread_id,
             codex_turn_id=context.codex_turn_id,
@@ -680,6 +663,7 @@ class TurnScheduler:
                     "hostApp": turn.get("host_app"),
                     "configProfile": turn.get("config_profile"),
                 },
+                auth_principal_hash=str(turn["auth_principal_hash"]),
                 profile=str(turn["profile"]),
                 thread_id=thread_id,
                 turn_id=turn_id,
@@ -688,6 +672,7 @@ class TurnScheduler:
                 self.config.json_logs,
                 "turn.start",
                 ownerHash=owner_hash,
+                authPrincipalHash=turn.get("auth_principal_hash"),
                 threadId=thread_id,
                 turnId=turn_id,
                 bundleId=turn.get("bundle_id"),
@@ -703,6 +688,7 @@ class TurnScheduler:
                     turn_id,
                     adapter_context={
                         "ownerHash": owner_hash,
+                        "authPrincipalHash": turn.get("auth_principal_hash"),
                         "threadId": thread_id,
                         "turnId": turn_id,
                         "hostApp": turn.get("host_app"),
@@ -720,22 +706,28 @@ class TurnScheduler:
                 self.bundles.validate_cwd(str(cwd), bundle)
                 self._validate_config_profile_cwd(cwd, config_profile_config)
             profile = str(turn["profile"])
-            codex_home = self.auth.profile_home(owner_hash, profile)
-            mcp_servers = self.bundles.mcp_servers_for_bundle(bundle, overlay) if bundle else ()
-            codex_config_args = self._codex_process_config_args(body, config_profile_config)
-            auth_fingerprint = self.auth.auth_fingerprint(owner_hash, profile)
-            client = self.pool.get(
-                owner_hash=owner_hash,
-                profile=profile,
-                codex_home=codex_home,
-                config_profile=str(turn["config_profile"]),
-                mcp_servers=mcp_servers,
-                codex_config_args=codex_config_args,
-                auth_fingerprint=auth_fingerprint,
-            )
+            auth_principal_hash = str(turn["auth_principal_hash"])
+            with self.auth.profile_guard(auth_principal_hash, profile):
+                self._validate_execution_auth_binding(thread, turn)
+                codex_home = self.auth.profile_home(auth_principal_hash, profile)
+                self._validate_execution_auth_binding(thread, turn)
+                mcp_servers = self.bundles.mcp_servers_for_bundle(bundle, overlay) if bundle else ()
+                codex_config_args = self._codex_process_config_args(body, config_profile_config)
+                auth_fingerprint = self.auth.auth_fingerprint(auth_principal_hash, profile)
+                client = self.pool.get(
+                    auth_principal_hash=auth_principal_hash,
+                    profile=profile,
+                    codex_home=codex_home,
+                    config_profile=str(turn["config_profile"]),
+                    mcp_servers=mcp_servers,
+                    tenant_scope_hash=owner_hash,
+                    codex_config_args=codex_config_args,
+                    auth_fingerprint=auth_fingerprint,
+                )
             context = BrokerTurnContext(
                 state=self.state,
                 owner_hash=owner_hash,
+                auth_principal_hash=auth_principal_hash,
                 thread_id=thread_id,
                 turn_id=turn_id,
                 codex_thread_id=thread.get("codex_thread_id"),
@@ -768,11 +760,12 @@ class TurnScheduler:
             if context.error_code == CODEX_AUTH_REQUIRES_ADMIN:
                 self.auth.mark_runtime_auth_failure(
                     owner_hash,
+                    auth_principal_hash,
                     profile,
                     code=context.error_code,
                     admin_message=context.admin_message or context.error_text or "",
                 )
-                self.pool.close_profile(owner_hash, profile)
+                self.pool.close_profile(auth_principal_hash, profile)
             if finalized:
                 self._metric("turns_completed" if status == "completed" else "turns_failed", 1)
         except Exception as exc:  # noqa: BLE001 - background worker must persist failure state.
@@ -790,18 +783,21 @@ class TurnScheduler:
                 admin_message=error_info.admin_message,
                 event_type="turn.failed",
                 event_payload=error_info.public_payload(),
+                auth_principal_hash=turn.get("auth_principal_hash") if turn else owner_hash,
                 product_correlation_id=turn.get("product_correlation_id") if turn else None,
                 codex_thread_id=thread.get("codex_thread_id") if thread else None,
                 codex_turn_id=turn.get("codex_turn_id") if turn else None,
             )
             if error_info.code == CODEX_AUTH_REQUIRES_ADMIN and profile:
+                auth_principal_hash = str(turn["auth_principal_hash"]) if turn else owner_hash
                 self.auth.mark_runtime_auth_failure(
                     owner_hash,
+                    auth_principal_hash,
                     profile,
                     code=error_info.code,
                     admin_message=error_info.admin_message,
                 )
-                self.pool.close_profile(owner_hash, profile)
+                self.pool.close_profile(auth_principal_hash, profile)
             if finalized:
                 self._metric("turns_failed", 1)
         finally:
@@ -824,6 +820,7 @@ class TurnScheduler:
                     self.config.json_logs,
                     "turn.finish",
                     ownerHash=owner_hash,
+                    authPrincipalHash=final_turn.get("auth_principal_hash") if final_turn else None,
                     threadId=thread_id,
                     turnId=turn_id,
                     status=final_turn.get("status") if final_turn else None,
@@ -834,6 +831,20 @@ class TurnScheduler:
                     productCorrelationId=final_turn.get("product_correlation_id") if final_turn else None,
                     durationMs=round(elapsed * 1000, 3),
                 )
+
+    def _validate_execution_auth_binding(
+        self,
+        thread: dict[str, Any],
+        turn: dict[str, Any],
+    ) -> None:
+        if thread.get("auth_binding_error"):
+            raise ConflictError("Legacy broker thread used multiple auth profiles; start a new broker thread.")
+        for key in ("auth_principal_hash", "auth_profile_instance_id", "profile"):
+            if turn.get(key) != thread.get(key):
+                raise ConflictError("Turn authentication binding does not match its broker thread.")
+        profile = self.state.get_profile(str(turn["auth_principal_hash"]), str(turn["profile"]))
+        if not profile or profile.get("instance_id") != turn.get("auth_profile_instance_id"):
+            raise ConflictError("The Codex account for this auth profile was removed or replaced; start a new broker thread.")
 
     def _ensure_codex_thread(
         self,
@@ -953,47 +964,10 @@ class TurnScheduler:
             self._metrics[key] = max(0, self._metrics.get(key, 0) + delta)
 
     def _public_thread(self, thread: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "threadId": thread["thread_id"],
-            "codexThreadId": thread.get("codex_thread_id"),
-            "profile": thread["profile"],
-            "configProfile": thread["config_profile"],
-            "hostApp": thread.get("host_app"),
-            "bundleId": thread.get("bundle_id"),
-            "cwd": thread.get("cwd"),
-            "status": thread["status"],
-            "createdAt": thread["created_at"],
-            "updatedAt": thread["updated_at"],
-        }
+        return scheduler_threads.public_thread(thread)
 
     def _public_turn(self, turn: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "threadId": turn["thread_id"],
-            "turnId": turn["turn_id"],
-            "codexTurnId": turn.get("codex_turn_id"),
-            "profile": turn["profile"],
-            "configProfile": turn["config_profile"],
-            "hostApp": turn.get("host_app"),
-            "bundleId": turn.get("bundle_id"),
-            "cwd": turn.get("cwd"),
-            "mode": turn["mode"],
-            "productCorrelationId": turn.get("product_correlation_id"),
-            "status": turn["status"],
-            "error": turn.get("error"),
-            "errorCode": turn.get("error_code"),
-            "publicMessage": turn.get("public_message"),
-            "adminMessage": turn.get("admin_message"),
-            "createdAt": turn["created_at"],
-            "startedAt": turn.get("started_at"),
-            "completedAt": turn.get("completed_at"),
-            "updatedAt": turn["updated_at"],
-            "execution": {
-                "requestFingerprint": turn.get("request_fingerprint"),
-                "bundleDigest": turn.get("bundle_digest"),
-                "resolvedOptions": turn.get("resolved_options"),
-                "brokerVersion": turn.get("broker_version"),
-            },
-        }
+        return scheduler_threads.public_turn(turn)
 
     def _stream_url(self, owner_id: str, thread_id: str, turn_id: str) -> str:
         return f"/v1/owners/{quote(owner_id, safe='')}/threads/{quote(thread_id, safe='')}/events?turnId={quote(turn_id, safe='')}"

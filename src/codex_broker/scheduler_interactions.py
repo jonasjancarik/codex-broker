@@ -56,6 +56,7 @@ def resolve_interaction(
         owner_hash,
         "interaction.resolved_by_host",
         {"interactionId": interaction_id, "method": interaction["method"], "response": response},
+        auth_principal_hash=active.auth_principal_hash,
         thread_id=thread_id,
         turn_id=turn_id,
     )

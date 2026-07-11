@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_broker.auth import AuthManager, normalize_profile
 from codex_broker.http_api import BrokerServices
@@ -54,7 +55,7 @@ class AuthProfileTests(unittest.TestCase):
             finally:
                 state.close()
 
-    def test_scheduler_records_canonical_profile_keys(self) -> None:
+    def test_scheduler_canonicalizes_and_keeps_thread_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))
             try:
@@ -67,13 +68,19 @@ class AuthProfileTests(unittest.TestCase):
                 turn = services.scheduler.start_turn(
                     "owner-a",
                     thread["threadId"],
-                    {"profile": "ops/team", "input": [{"type": "text", "text": "profile"}]},
+                    {"profile": "work/team", "input": [{"type": "text", "text": "profile"}]},
                 )
-                self.assertEqual(turn["profile"], "ops_team")
+                self.assertEqual(turn["profile"], "work_team")
                 self.assertEqual(wait_turn(services, "owner-a", thread["threadId"], turn["turnId"])["status"], "completed")
 
                 owner_hash = services.auth.hash_owner("owner-a")
-                self.assertEqual([row["profile"] for row in services.state.list_profiles(owner_hash)], ["ops_team", "work_team"])
+                self.assertEqual([row["profile"] for row in services.state.list_profiles(owner_hash)], ["work_team"])
+                with self.assertRaisesRegex(Exception, "bound to auth profile"):
+                    services.scheduler.start_turn(
+                        "owner-a",
+                        thread["threadId"],
+                        {"profile": "ops/team", "input": [{"type": "text", "text": "switch"}]},
+                    )
             finally:
                 services.pool.close_all()
                 services.state.close()
@@ -234,6 +241,47 @@ class AuthProfileTests(unittest.TestCase):
                 actions = [entry["action"] for entry in services.state.list_audit_logs(owner_hash)]
                 self.assertEqual(actions[-2:], ["auth.profile.delete", "auth.logout"])
             finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_delete_profile_does_not_report_success_when_directory_removal_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            try:
+                result = services.auth.login_api_key("owner-a", "sk-test", "work")
+                principal_hash = result["authPrincipalHash"]
+                profile_dir = services.auth.profile_home(principal_hash, "work").parent
+
+                with patch("codex_broker.auth.shutil.rmtree", side_effect=OSError("permission denied")):
+                    with self.assertRaisesRegex(OSError, "permission denied"):
+                        services.auth.logout("owner-a", "work", delete_profile=True)
+
+                self.assertTrue(profile_dir.exists())
+                self.assertIsNotNone(services.state.get_profile(principal_hash, "work"))
+                actions = [entry["action"] for entry in services.state.list_audit_logs(result["ownerHash"])]
+                self.assertNotIn("auth.profile.delete", actions)
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_delete_profile_waits_for_active_device_auth_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            os.environ["FAKE_CODEX_DEVICE_AUTH_DELAY"] = "2"
+            try:
+                started = services.auth.start_device_auth("owner-a", "work")
+                principal_hash = services.auth.hash_owner("owner-a")
+                session = services.auth._session(principal_hash, "work")
+                assert session is not None and session.process is not None
+
+                result = services.auth.logout("owner-a", "work", delete_profile=True)
+
+                self.assertTrue(result["deleted"])
+                self.assertIsNotNone(session.process.poll())
+                self.assertFalse((services.config.auth_root / principal_hash / "profiles" / "work").exists())
+                self.assertIsNone(services.state.get_profile(principal_hash, "work"))
+            finally:
+                os.environ.pop("FAKE_CODEX_DEVICE_AUTH_DELAY", None)
                 services.pool.close_all()
                 services.state.close()
 
