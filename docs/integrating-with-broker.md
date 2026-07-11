@@ -10,8 +10,9 @@ The host app owns users, product authorization, database records, UI state, prom
 
 Use stable product IDs:
 
-- `ownerId`: stable product user id or service account id. This scopes Codex auth.
-- `profile`: Codex auth profile under the owner. Defaults to `default`.
+- `ownerId`: stable product user, tenant, or service-account id. This scopes broker state, authorization, and audits.
+- `authPrincipalId`: optional assertion of the Codex account identity selected by trusted deployment policy. Omission defaults to `ownerId`.
+- `profile`: Codex auth profile under the resolved principal. Defaults to `default` and is immutable for a broker thread.
 - `threadId`: broker thread id returned by the broker. Host apps may supply a stable chat/job id as `threadId` on create, or omit it and let the broker generate one. Submit turns to this id.
 - `turnId`: broker turn id returned by the broker. Use it for polling, streaming filters, steering, and interrupting.
 - `productCorrelationId`: optional host id for tracing one product action through broker events.
@@ -41,7 +42,7 @@ OWNER=service-account-1
 
 The curl examples use path-safe IDs. If an `ownerId`, `threadId`, or `turnId` contains characters such as `/` or spaces, URL-encode that path segment. The bundled Python and TypeScript clients do this for you.
 
-Check Codex auth for the owner/profile:
+Check Codex auth for the resolved auth-principal/profile:
 
 ```bash
 curl -sS \
@@ -49,7 +50,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/status?profile=default"
 ```
 
-The `state` field is one of `missing`, `present_unverified`, `authenticated`, `invalid`, `refresh_failed`, `failed`, or `unknown`. `authFingerprint` changes when the owner/profile auth file changes, and pooled app-server children are keyed by that fingerprint so refreshed auth starts fresh runtime processes.
+The `state` field is one of `missing`, `present_unverified`, `authenticated`, `invalid`, `refresh_failed`, `failed`, or `unknown`. `authFingerprint` changes when the auth-principal/profile auth file changes, and pooled app-server children are keyed by that fingerprint so refreshed auth starts fresh runtime processes.
 
 Run an explicit active probe when an administrator needs to verify the credentials against the real Codex backend:
 
@@ -62,7 +63,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/probe"
 ```
 
-The probe spends one tiny Codex request. It is intended for manual checks or low-frequency health workflows, not frequent polling. If Codex reports token invalidation, the broker stores `refresh_failed` for that owner/profile and closes stale pooled app-server children.
+The probe spends one tiny Codex request. It is intended for manual checks or low-frequency health workflows, not frequent polling. If Codex reports token invalidation, the broker stores `refresh_failed` for that auth-principal/profile and closes stale pooled app-server children.
 
 Read the account's current usage and rate-limit windows without starting a turn:
 
@@ -76,7 +77,15 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/rate-limits?profile=default"
 ```
 
-The broker returns Codex's current account payload under `usage` or `rateLimits`. The nested fields are passed through so host integrations remain compatible as Codex adds usage periods or limit types.
+The broker returns Codex's current account payload under `usage` or `rateLimits`. Responses include `ownerHash`, `authPrincipalHash`, and `sharedAuthPrincipal`. Totals belong to `authPrincipalHash + profile`, so mapped owners see the same upstream totals while retaining separate broker state and audits. The nested fields are passed through so host integrations remain compatible as Codex adds usage periods or limit types.
+
+List persisted profiles and their last-recorded state without running Codex:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/profiles"
+```
 
 Consuming a rate-limit reset credit changes account state and should only be offered after an explicit user or administrator action. Reuse the same idempotency key when retrying one action:
 
@@ -122,6 +131,7 @@ curl -sS \
   -H "Content-Type: application/json" \
   -d '{
     "threadId": "chat-123",
+    "profile": "default",
     "hostApp": "chat-app",
     "bundleId": "example-chat-v1",
     "configProfile": "default",
@@ -129,6 +139,20 @@ curl -sS \
   }' \
   "$BROKER/v1/owners/$OWNER/threads"
 ```
+
+The thread is bound to the resolved auth principal, canonical profile, and current profile instance. A turn cannot change that binding. Sending `profile` or `authPrincipalId` on a turn is only a consistency assertion and is validated before steer or idempotency handling.
+
+### Sharing one Codex account
+
+Configure the mapping in the broker process, never from browser input:
+
+```env
+CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON={"tenant-a":"shared-codex","tenant-b":"shared-codex"}
+```
+
+Both owners use the same credentials, usage, rate limits, and compatible App Server child, but every broker thread, event, interaction, authorization check, and audit lookup remains owner-scoped. A request may omit `authPrincipalId`; if it supplies the field, it must match policy or the broker returns `403`.
+
+To replace an upstream account, quiesce work for all owners sharing the principal/profile, logout with `deleteProfile: true`, authenticate the replacement account, and create a new broker thread with a new `threadId` or no caller-supplied id. Deletion changes the profile instance, so old and queued threads fail closed.
 
 Response shape:
 
@@ -243,11 +267,14 @@ broker = CodexBrokerClient(
 )
 
 owner_id = "service-account-1"
+profiles = broker.list_auth_profiles(owner_id)
+usage = broker.account_usage(owner_id, profile="default")
 
 thread = broker.create_thread(
     owner_id,
     {
         "threadId": "chat-123",
+        "profile": "default",
         "hostApp": "chat-app",
         "bundleId": "example-chat-v1",
         "configProfile": "default",
@@ -295,9 +322,14 @@ const broker = new CodexBrokerClient({
 });
 
 const ownerId = "service-account-1";
+const auth = { profile: "default" };
+
+const profiles = await broker.listAuthProfiles(ownerId);
+const usage = await broker.accountUsage(ownerId, auth);
 
 const thread = await broker.createThread(ownerId, {
   threadId: "chat-123",
+  profile: auth.profile,
   hostApp: "chat-app",
   bundleId: "example-chat-v1",
   configProfile: "default",
@@ -547,6 +579,7 @@ Common statuses:
 | --- | --- |
 | 400 | Invalid request body, invalid mode, invalid bundle, invalid `cwd`, or policy validation failure. |
 | 401 | Missing or invalid broker key. |
+| 403 | `authPrincipalId` does not match trusted owner-to-principal policy. |
 | 404 | Unknown route, thread, turn, or stream filter target. |
 | 409 | Active turn conflict, archived thread, shutdown, or other conflict. |
 | 502 | Codex app-server request failed. |
@@ -556,6 +589,9 @@ Common statuses:
 
 - Call the broker only from trusted server-side code.
 - Choose stable `ownerId` values and avoid raw secrets or emails when a service-account id is enough.
+- Keep owner-to-auth-principal mappings in trusted broker configuration; never let a browser choose arbitrary identities.
+- Select the auth profile when creating a thread. Turn-level `profile` and `authPrincipalId` are assertions, not overrides.
+- Replace an upstream account with `deleteProfile: true`, re-authentication, and a new broker thread id.
 - Store broker `threadId` next to product chat/job records.
 - Send a caller-owned `threadId` on thread creation when you want idempotent host chat or job mapping.
 - Send `productCorrelationId` and `idempotencyKey` on every retriable product action.

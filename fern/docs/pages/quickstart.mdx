@@ -79,7 +79,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/status"
 ```
 
-Omitting `profile` uses the default Codex auth profile. Pass `profile` only when that user or service account has more than one Codex auth profile.
+`ownerId` owns broker state. Trusted policy resolves the Codex auth principal, defaulting to the same id. Omitting `profile` uses `default`; select it explicitly when creating the broker thread.
 
 For service-account style deployments, store an API key in the service account's Codex auth profile:
 
@@ -103,6 +103,7 @@ curl -sS \
   -H "Content-Type: application/json" \
   -d '{
     "threadId": "chat-123",
+    "profile": "default",
     "hostApp": "chat-app",
     "bundleId": "example-chat-v1",
     "configProfile": "default",
@@ -111,7 +112,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/threads"
 ```
 
-Repeated creates with the same user or service account and `threadId` return the existing broker thread.
+Repeated creates with the same owner and `threadId` return the existing broker thread only when the immutable principal/profile binding matches. To share one Codex account across owners, configure the owner-to-principal mapping on the broker; do not accept it from untrusted browser input.
 
 ## Submit a turn
 

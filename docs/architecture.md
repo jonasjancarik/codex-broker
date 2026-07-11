@@ -55,12 +55,16 @@ The implementation intentionally uses the Python standard library HTTP server an
 | `src/codex_broker/__main__.py` | Console entry point. |
 | `src/codex_broker/config.py` | Environment parsing and derived filesystem paths. |
 | `src/codex_broker/http_api.py` | HTTP routes, auth header checks, readiness, metrics, SSE, OpenAPI. |
-| `src/codex_broker/auth.py` | Owner hashing, profile normalization, CODEX_HOME creation, Codex login/status/logout. |
+| `src/codex_broker/identity.py` | Trusted owner-to-auth-principal policy and hashed identity scopes. |
+| `src/codex_broker/auth.py` | Profile normalization, CODEX_HOME creation, profile-instance lifecycle, Codex login/status/logout. |
+| `src/codex_broker/auth_api.py` | Auth/profile HTTP routes and OpenAPI fragments. |
 | `src/codex_broker/scheduler.py` | Thread and turn lifecycle, same-thread gates, config profiles, Codex request params, metrics. |
+| `src/codex_broker/scheduler_threads.py` | Immutable thread auth bindings and public thread/turn shapes. |
 | `src/codex_broker/app_server.py` | `codex app-server` process pool, JSON-RPC transport, interaction mediation. |
 | `src/codex_broker/bundles.py` | Mounted and inline bundle lookup, validation, overlays, MCP config, hosted-tool declarations. |
 | `src/codex_broker/tool_adapter_mcp.py` | Local MCP server that forwards broker-hosted tool calls to host-owned HTTP endpoints. |
-| `src/codex_broker/state.py` | SQLite schema, persistence, restart recovery, event and audit queries. |
+| `src/codex_broker/state.py` | SQLite persistence, restart recovery, event and audit queries. |
+| `src/codex_broker/state_schema.py` | Transactional schema creation and backward-compatible migrations. |
 | `src/codex_broker/events.py` | Codex app-server notification to broker event normalization. |
 | `src/codex_broker/interactions.py` | Validation and fallback response shapes for approvals, permissions, user input, and MCP elicitations. |
 | `src/codex_broker/client.py` | Small Python client for host services and workers. |
@@ -110,7 +114,7 @@ The default data directory is `.data`; Docker deployments usually set it to `/da
         tool-adapters.json
 ```
 
-The broker never uses raw `ownerId` values in paths. `AuthManager.hash_owner()` uses an explicit owner-hash key or a broker-generated persistent key stored separately from the internal API key. Rotating the API key therefore does not orphan existing state. Profile ids are canonicalized; dot-segment ids are rejected, and deletion is containment-checked before touching disk.
+The broker never uses raw `ownerId` or `authPrincipalId` values in paths. Both use the same explicit or broker-generated persistent HMAC key. Rotating the API key therefore does not orphan existing state. Profile ids are canonicalized; dot-segment ids are rejected, and deletion is containment-checked and verified before metadata is removed.
 
 ## SQLite State
 
@@ -118,9 +122,9 @@ The broker never uses raw `ownerId` values in paths. `AuthManager.hash_owner()` 
 
 | Table | Purpose |
 | --- | --- |
-| `owner_profiles` | Auth status, auth type, and auth fingerprint by owner hash and profile. |
-| `threads` | Broker thread ids, Codex thread ids, profile/config profile, host app, bundle, cwd, status. |
-| `turns` | Broker turns, Codex turn ids, input JSON, idempotency key, correlation id, status, errors, request fingerprint, bundle digest, resolved options, and broker version. |
+| `auth_profiles` | Auth status, type, fingerprint, and immutable instance id by auth-principal hash and profile. |
+| `threads` | Owner-scoped broker thread ids plus immutable auth-principal/profile/instance binding, Codex thread id, config profile, host app, bundle, cwd, and status. |
+| `turns` | Owner-scoped turns with a snapshot of the thread auth binding, Codex turn id, input, idempotency, status, errors, and resolved execution options. |
 | `events` | Normalized stream events plus optional redacted raw app-server method/params. |
 | `bundle_digests` | Mounted or inline bundle id, digest, source, and path records. |
 | `app_server_processes` | Durable start/close records for app-server child diagnostics. |
@@ -131,10 +135,10 @@ The database carries a schema version and rejects databases created by a newer b
 
 ## Auth Boundary
 
-The host app chooses an `ownerId` and optional `profile`. The broker hashes the owner id and creates an isolated Codex home at:
+The host app chooses an `ownerId`. Trusted configuration resolves an auth principal, defaulting to the same id, and requests may only assert that configured value. The broker hashes both identities and creates the Codex home at:
 
 ```text
-<data_dir>/auth/owners/<owner-hash>/profiles/<profile>/codex-home
+<data_dir>/auth/owners/<auth-principal-hash>/profiles/<profile>/codex-home
 ```
 
 Codex login commands run with:
@@ -144,7 +148,9 @@ Codex login commands run with:
 - `HOME` set to the profile parent directory,
 - a scrubbed environment that keeps only safe base variables.
 
-The broker supports cheap status checks, explicit active auth probes, device auth start/submit, API-key login, runtime invalidation, logout, and explicit profile deletion. Updating auth closes that owner/profile's pooled app-server children so the next turn starts with the new auth fingerprint.
+The broker supports cheap profile lists and status checks, explicit active auth probes, device auth start/submit, API-key login, runtime invalidation, logout, and explicit profile deletion. Owner state and audits remain isolated even when several owners share one principal. The App Server pool uses principal/profile credentials; processes with mounted MCP servers remain owner-isolated because an MCP server may carry tenant state.
+
+Creating a thread stores the resolved principal hash, canonical profile, and profile-instance id. Turn requests inherit this binding; supplied identity fields are assertions only. Deleting a profile removes its instance, so old and queued threads cannot resume after an account replacement. Schema-v2 installations default principal hash to owner hash, and historically mixed-profile threads are marked unsafe instead of silently resumed.
 
 ## Thread And Turn Flow
 

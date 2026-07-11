@@ -23,11 +23,11 @@ The broker also owns Codex process management, Codex auth homes, app-server JSON
 - Keep the broker product-facing, not a raw JSON-RPC passthrough.
 - Keep product authorization and app-specific data behavior in the host app.
 - Run long-lived `codex app-server` processes instead of spawning one process per turn.
-- Isolate Codex credentials by owner and profile.
+- Isolate Codex credentials by auth principal and profile while keeping broker state owner-scoped.
 - Enforce one active turn at a time per broker thread.
 - Allow different threads and different owners to run concurrently.
 - Keep tool declarations explicit, reviewed, and validated.
-- Avoid mutating owner auth homes when mounting task-specific files and config.
+- Avoid mutating auth-principal homes when mounting task-specific files and config.
 - Persist enough state to recover cleanly after broker restart.
 
 ## Non-Goals
@@ -41,8 +41,9 @@ The broker also owns Codex process management, Codex auth homes, app-server JSON
 ## Terms
 
 - **Host app**: the product using the broker.
-- **Owner**: a host-app identity that owns a Codex auth home. Usually a product user id or service-account id.
-- **Profile**: a named Codex auth profile under an owner.
+- **Owner**: a host-app identity that owns broker state, authorization decisions, and audits. Usually a product user, tenant, or service-account id.
+- **Auth principal**: a trusted-policy identity that owns upstream Codex credentials, usage, rate limits, auth homes, and compatible App Server children. It defaults to the owner but may be shared by several owners.
+- **Profile**: a named Codex auth profile under an auth principal.
 - **Configuration profile**: broker-side policy and defaults for model, sandbox, approval policy, workspace roots, and enabled bundles. API requests choose one with `configProfile`.
 - **Broker thread**: the broker's durable thread id used by host apps.
 - **Codex thread**: the app-server conversation id managed by the broker.
@@ -60,7 +61,7 @@ Host app backend / worker
 Codex Broker
   |
   +-- auth manager
-  |     +-- owner/profile CODEX_HOME directories
+  |     +-- auth-principal/profile CODEX_HOME directories
   |
   +-- thread and turn scheduler
   |     +-- one active turn per broker thread
@@ -68,7 +69,8 @@ Codex Broker
   |
   +-- app-server pool
   |     +-- long-lived codex app-server children
-  |     +-- pool key: owner + profile + configuration profile + MCP config
+  |     +-- pool key: auth principal + profile + configuration profile
+  |     +-- owner isolation when an MCP process may carry tenant state
   |
   +-- bundle registry
   |     +-- mounted bundles
@@ -83,12 +85,14 @@ Codex Broker
 
 The broker maintains a pool of app-server clients keyed by:
 
-- owner hash,
+- auth-principal hash,
 - auth profile,
 - Codex command/version,
 - credential-store mode,
 - configuration profile (`configProfile`),
 - resolved MCP config.
+
+Pool notification routing must never guess an owner context when an event names an unknown explicit Codex thread or turn id. ID-less events may use a single unambiguous active context. Owner-scoped interaction/event persistence must always use the turn context, never the shared principal.
 
 Task bundle selection should not force a new app-server process unless it changes process-level state. Prefer per-turn app-server parameters and ephemeral overlays over mutating shared auth homes.
 
@@ -100,7 +104,7 @@ Each app-server client must:
 - reject unsupported app-server approval requests safely,
 - fail active turns if the child process crashes.
 
-Idle app-server processes may be closed after a configurable TTL. Active processes must not be killed except during shutdown, explicit owner logout, or unrecoverable health failure.
+Idle App Server processes may be closed after a configurable TTL. Principal/profile logout or invalidation may close active shared children as an explicit administrative action.
 
 ## Turn Scheduling
 
@@ -137,10 +141,11 @@ Broker-managed auth layout:
             codex-home/
 ```
 
-The broker should hash or HMAC product owner ids before using them in paths. Raw product ids should not appear in filesystem paths by default.
+The broker should hash or HMAC owner and auth-principal ids before persistence or filesystem use. The legacy `auth/owners` directory contains auth-principal hashes after migration; raw ids should not appear in paths.
 
 Auth features:
 
+- read-only persisted profile listing,
 - status checks,
 - explicit active auth probe,
 - device auth start/submit,
@@ -159,6 +164,10 @@ Core endpoints:
 - `GET /metrics`
 - `GET /openapi.json`
 - `GET /v1/owners/{ownerId}/auth/status?profile=default`
+- `GET /v1/owners/{ownerId}/auth/profiles`
+- `GET /v1/owners/{ownerId}/auth/usage`
+- `GET /v1/owners/{ownerId}/auth/rate-limits`
+- `POST /v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume`
 - `POST /v1/owners/{ownerId}/auth/probe`
 - `POST /v1/owners/{ownerId}/auth/device/start`
 - `POST /v1/owners/{ownerId}/auth/device/submit`
@@ -179,6 +188,7 @@ Thread create example:
 ```json
 {
   "threadId": "chat-123",
+  "profile": "default",
   "hostApp": "chat-app",
   "bundleId": "example-chat-v1",
   "configProfile": "default",
@@ -200,6 +210,8 @@ Turn create example:
 ```
 
 The broker should return a `streamUrl` for turns so host apps can consume normalized events with SSE.
+
+`authPrincipalId` is an optional request assertion validated against trusted owner-to-principal configuration. It is never an arbitrary client-selected identity. A broker thread permanently binds the resolved principal hash, canonical profile, and profile instance. Turns inherit that binding and cannot override it. Deleting a profile changes its instance so old and queued threads fail closed; a replacement account must use a new broker thread id. Schema migration defaults existing installations to principal=owner and rejects legacy threads whose historical turns mixed profiles.
 
 ## Events
 

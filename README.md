@@ -40,11 +40,11 @@ Example: document review or report-normalization jobs.
 
 The product app owns the queue, job records, input/output files, artifacts, and review workflow. The broker runs Codex turns for those jobs using the same broker API that live chat uses.
 
-### Per-User Codex Auth
+### Per-Principal Codex Auth
 
 Example: an app where each product user brings their own Codex login.
 
-The host app decides who the product user is and whether they may use Codex. The broker creates a separate per-user/per-Codex-auth-profile auth home, runs device auth or API-key auth, and keeps credentials out of host app databases.
+The host app decides who the product user is and whether they may use Codex. Trusted policy resolves an auth principal, and the broker creates a separate auth home for each principal/profile, runs device auth or API-key auth, and keeps credentials out of host app databases.
 
 ### Reusable Bundles
 
@@ -57,7 +57,7 @@ The broker validates and mounts the bundle. The host app still owns what its too
 The broker owns generic Codex infrastructure:
 
 - `codex app-server` child processes and pooling,
-- per-user and per-Codex-auth-profile `CODEX_HOME` directories,
+- per-auth-principal and per-profile `CODEX_HOME` directories,
 - Codex login status, active auth probe, device auth, API-key auth, and logout,
 - broker-thread to Codex-thread mappings,
 - turn creation, turn status, interruption, steering, and archive behavior,
@@ -85,8 +85,9 @@ This split is important. The broker should not know what a product evidence hit 
 ## Important Terms
 
 - **Host app**: the product using the broker.
-- **User**: the product user or service account whose Codex credentials should be used. The API field is `ownerId`.
-- **Codex auth profile**: a named Codex credential set for a user. The API field is `profile`, and `default` is enough for many apps.
+- **Owner**: the product user, tenant, or service account that owns broker threads, turns, events, authorization decisions, and audit records. The API field is `ownerId`.
+- **Auth principal**: the identity whose upstream Codex credentials, usage, rate limits, auth homes, and App Server pool are used. The optional API assertion is `authPrincipalId`; trusted-host policy maps it from `ownerId`, and omission defaults it to `ownerId`.
+- **Codex auth profile**: a named Codex credential set under an auth principal. The API field is `profile`, and `default` is enough for many apps.
 - **Broker thread**: the broker's durable thread id. Host apps submit turns to this id. Host apps may supply this id when creating a thread, or omit it and let the broker generate one.
 - **Codex thread id**: the raw thread id returned by `codex app-server`. The broker stores it so host apps do not need to manage app-server details.
 - **Turn**: one unit of Codex work submitted to a broker thread.
@@ -98,18 +99,20 @@ This split is important. The broker should not know what a product evidence hit 
 A typical host integration follows this shape.
 
 1. The host app authenticates its own user.
-2. The host app chooses an `ownerId`, usually the product user id or a service-account id.
-3. The host app checks or starts Codex auth for that user and Codex auth profile.
-4. The host app creates or reuses a broker thread, optionally with a caller-supplied `threadId`.
-5. The host app submits a turn to the broker thread.
-6. The host app streams normalized broker events from `/events`.
-7. The host app maps those events into its own UI, job logs, database rows, or artifacts.
+2. The host app chooses an `ownerId`, usually the product user id, tenant id, or service-account id.
+3. Trusted deployment policy resolves the owner's auth principal; by default it is the same id.
+4. The host app checks or starts Codex auth for that principal and auth profile.
+5. The host app creates or reuses a broker thread, optionally with a caller-supplied `threadId`.
+6. The host app submits a turn to the broker thread.
+7. The host app streams normalized broker events from `/events`.
+8. The host app maps those events into its own UI, job logs, database rows, or artifacts.
 
 Example thread create:
 
 ```json
 {
   "threadId": "chat-123",
+  "profile": "default",
   "hostApp": "chat-app",
   "bundleId": "example-chat-v1",
   "configProfile": "default",
@@ -118,6 +121,8 @@ Example thread create:
 ```
 
 If the same user or service account creates a thread with the same `threadId` again, the broker returns the existing broker thread.
+
+The resolved auth principal, canonical `profile`, and profile instance are immutable for the lifetime of a broker thread. A turn may omit `profile`, or send the same value as a consistency assertion, but it cannot switch accounts or profiles. Reusing a `threadId` with a different binding returns a conflict.
 
 Example turn create:
 
@@ -185,6 +190,7 @@ Core endpoints:
 - `GET /metrics`
 - `GET /openapi.json`
 - `GET /v1/owners/{ownerId}/auth/status`
+- `GET /v1/owners/{ownerId}/auth/profiles`
 - `GET /v1/owners/{ownerId}/auth/usage`
 - `GET /v1/owners/{ownerId}/auth/rate-limits`
 - `POST /v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume`
@@ -206,9 +212,22 @@ Core endpoints:
 
 Requests other than health and readiness require `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`. This includes `/metrics` and `/openapi.json`.
 
-Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the user/Codex-profile auth file. `GET /auth/status` is a cheap local check. `POST /auth/probe` runs a tiny real Codex request for the user/Codex-profile pair and persists `refresh_failed` when token refresh is invalidated. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the Codex auth profile to close pooled app-server children that were started with the old auth.
+Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the principal/profile auth file. `GET /auth/profiles` cheaply lists last-recorded profile state without running Codex. `GET /auth/status` checks local credential state, while `POST /auth/probe` runs a tiny real Codex request. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled App Server children that were started with the old auth.
 
-Account usage and rate-limit routes query Codex for the selected owner/profile and return the current App Server payload under `usage` or `rateLimits`. These payloads are intentionally passed through because their nested fields can evolve with Codex. Consuming a rate-limit reset credit is a mutating account action: send a stable, non-empty `idempotencyKey`; successful requests are recorded in the owner audit log.
+Account usage and rate-limit routes query Codex for the selected `authPrincipalHash + profile` and return the current App Server payload under `usage` or `rateLimits`. These are shared upstream totals when several owners map to the same principal. Consuming a rate-limit reset credit mutates that shared account: send a stable, non-empty `idempotencyKey`; the action is still recorded only in the requesting owner's audit log.
+
+## Shared Auth Principals And Account Replacement
+
+Set `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` or `CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE` to define the trusted owner-to-principal mapping. For example, `{"team-a":"shared-codex","team-b":"shared-codex"}` gives two isolated broker owners one shared Codex account. Clients may omit `authPrincipalId`; if they send it, it is only an assertion and must exactly match policy or the broker returns `403`. Never expose the broker key or raw owner/principal selection directly to browsers or other untrusted clients.
+
+To replace the upstream Codex account inside an existing profile safely:
+
+1. Quiesce work for every owner sharing that principal/profile.
+2. Call logout with `{"profile":"work","deleteProfile":true}`. This removes credentials and profile state and invalidates every old thread binding.
+3. Authenticate the replacement account into `work`.
+4. Create a new broker thread with a new `threadId` (or omit it). Old and queued threads fail closed and cannot resume under the replacement account.
+
+Logout, runtime invalidation, reset-credit consumption, and profile deletion affect the shared principal/profile even though threads and audits remain owner-scoped.
 
 Set `CODEX_BROKER_INTERNAL_KEY` or `CODEX_BROKER_INTERNAL_KEY_FILE`. Unauthenticated mode is only for local development and requires `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
 
@@ -246,6 +265,7 @@ CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS=30
 
 # Optional JSON object keyed by configProfile name:
 # CODEX_BROKER_CONFIG_PROFILES_JSON={"review":{"model":"gpt-5","enabledBundles":["review-bundle"]}}
+# CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON={"team-a":"shared-codex","team-b":"shared-codex"}
 ```
 
 ## Docker

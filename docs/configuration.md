@@ -31,8 +31,10 @@ Environment variables are read once at process startup by `BrokerConfig.from_env
 | `CODEX_BROKER_ALLOW_UNAUTHENTICATED` | `false` | Development escape hatch. When true and no key is configured, product routes accept unauthenticated requests. |
 | `CODEX_BROKER_OWNER_HASH_KEY` | persistent generated key | Explicit HMAC key for owner hashes. When unset, the broker creates `state/owner-hash.key` once and reuses it across API-key rotations. |
 | `CODEX_BROKER_OWNER_HASH_KEY_FILE` | unset | File containing the owner-hash HMAC key. Mutually exclusive with `CODEX_BROKER_OWNER_HASH_KEY`. |
+| `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` | unset | Trusted JSON object mapping each `ownerId` to the `authPrincipalId` whose Codex account it may use. |
+| `CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE` | unset | File containing the same mapping. Mutually exclusive with the JSON variable. |
 
-Only `GET /healthz` and `GET /readyz` are unauthenticated by design. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the development override is active.
+Only `GET /healthz` and `GET /readyz` are unauthenticated by design. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the development override is active. A distinct mapped auth principal requires an authenticated trusted-host connection; `authPrincipalId` in a request is an assertion checked against this deployment policy, never a free-form client choice.
 
 ### Filesystem And Policy Roots
 
@@ -48,7 +50,7 @@ Derived paths under `CODEX_BROKER_DATA_DIR`:
 | --- | --- |
 | `state/broker.sqlite` | SQLite state store. |
 | `state/owner-hash.key` | Mode-`0600` persistent owner-hash key. Back it up with the database and auth data. |
-| `auth/owners/<owner-hash>/profiles/<profile>/codex-home` | Per-owner/profile Codex home. |
+| `auth/owners/<auth-principal-hash>/profiles/<profile>/codex-home` | Per-auth-principal/profile Codex home. The legacy `owners` directory name is preserved so existing installations need no filesystem move. |
 | `bundles/inline/<digest>/bundle.json` | Accepted inline bundle content. |
 | `workspaces/overlays/<turn-id>` | Per-turn generated files, symlinks, MCP config, and hosted-tool config. |
 
@@ -57,7 +59,7 @@ Derived paths under `CODEX_BROKER_DATA_DIR`:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CODEX_BIN` | `codex` | Codex CLI command. May include arguments because the value is split with `shlex.split()`. |
-| `CODEX_CREDENTIAL_STORE` | `file` | Value written to each owner/profile `config.toml` as `cli_auth_credentials_store` and passed to Codex children. |
+| `CODEX_CREDENTIAL_STORE` | `file` | Value written to each auth-principal/profile `config.toml` as `cli_auth_credentials_store` and passed to Codex children. |
 | `CODEX_BROKER_PASSTHROUGH_ENV` | empty | CSV allowlist of exact environment variable names copied into app-server child processes in addition to the safe base environment. |
 
 The broker always sets `CODEX_HOME`, `CODEX_CREDENTIAL_STORE`, and `HOME` for Codex auth commands and app-server children. The child process environment is otherwise scrubbed; variables containing `TOKEN`, `SECRET`, `KEY`, or `PASSWORD` are not passed unless explicitly allowlisted.
@@ -201,7 +203,8 @@ Thread create accepts:
 | Field | Description |
 | --- | --- |
 | `threadId` | Optional caller-supplied stable broker thread id. Reusing the same owner/thread id returns the existing thread. |
-| `profile` | Owner auth profile. Defaults to `default`; returned value is canonicalized. |
+| `authPrincipalId` | Optional assertion of the trusted owner-to-principal mapping. Omission uses configured policy, then defaults to `ownerId`. |
+| `profile` | Auth profile under the resolved principal. Defaults to `default`; returned value is canonicalized and immutable for the thread lifetime. |
 | `configProfile` | Configuration profile name. Defaults to `default`. |
 | `runtimeProfile` | Deprecated alias for `configProfile`. |
 | `hostApp` | Optional host app name for logs, metrics, and returned objects. |
@@ -214,7 +217,8 @@ Turn start accepts:
 | --- | --- |
 | `input` | Required non-empty array of Codex input items. |
 | `mode` | `reject`, `queue`, or `steer`. Defaults to `reject`. |
-| `profile` | Overrides the thread profile for this turn. |
+| `authPrincipalId` | Optional consistency assertion. It must resolve to the thread's immutable auth principal. |
+| `profile` | Optional consistency assertion. It must canonicalize to the thread's immutable auth profile; it cannot override it. |
 | `configProfile` | Overrides the thread config profile for this turn. |
 | `runtimeProfile` | Deprecated alias for `configProfile`. |
 | `hostApp` | Overrides or inherits the thread host app. |
@@ -228,6 +232,8 @@ Turn start accepts:
 | `stream` | Present in OpenAPI for compatibility; current broker always persists events and returns `streamUrl`. |
 
 Supported `codexOptions` keys match the configuration profile keys listed above, plus aliases. Options that affect app-server process config are included in the pool key. Options that affect a single thread or turn are sent in the corresponding app-server request.
+
+The broker persists the resolved auth-principal hash, canonical profile, and profile-instance id on every thread and turn. Existing schema-v2 installations migrate with `authPrincipalId = ownerId`. Legacy threads that historically used several turn profiles are marked unsafe and must be replaced instead of resumed.
 
 ## Bundle Manifest Shape
 

@@ -79,7 +79,7 @@ Set `CODEX_HOST_TOOL_KEY` in both the broker process and the host app.
 
 Set `CODEX_BROKER_INTERNAL_KEY_FILE` to a Docker secret path. The broker reports not-ready without an internal key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true` is set for local development.
 
-Do not pass auth files, API keys, or access tokens as bundle content. User Codex credentials are stored under hashed user/Codex-profile paths in `/data/auth`.
+Do not pass auth files, API keys, or access tokens as bundle content. Codex credentials are stored under hashed auth-principal/profile paths in `/data/auth`.
 
 Codex app-server children start with a scrubbed process environment. Secret-looking variables are not passed through by default. If a reviewed deployment needs a helper inside Codex to read specific environment variables, set `CODEX_BROKER_PASSTHROUGH_ENV` to exact variable names:
 
@@ -90,6 +90,8 @@ CODEX_BROKER_PASSTHROUGH_ENV=ESTF_ARCHIVER_API_URL,ESTF_ARCHIVER_API_KEY
 ## Configuration profiles
 
 Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` to define named runtime and policy profiles. API requests select one with `configProfile`.
+
+Set `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` or `CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE` to define trusted owner-to-Codex-account mappings. A request `authPrincipalId` must match this policy. Keep the broker key and identity mapping behind the host backend; browser clients must not select either identity directly.
 
 Profiles can set app-server defaults such as `model`, `approvalPolicy`, `sandbox`, `personality`, `serviceTier`, `effort`, `summary`, `webSearch`, `modelVerbosity`, and `imageGeneration`, plus policy fields such as `enabledBundles` and `allowedWorkspaceRoots`.
 
@@ -108,7 +110,7 @@ When profiles are configured, unknown `configProfile` values are rejected.
 
 ## Process lifecycle
 
-- App-server children start lazily. The pool key includes user hash, Codex auth profile, auth fingerprint, config profile, Codex command/version, credential-store mode, mounted MCP config, and resolved MCP env hashes.
+- App Server children start lazily. The pool key uses auth-principal hash, profile, fingerprint, config profile, Codex command/version, credential-store mode, and process config. Compatible no-MCP children may be shared; mounted MCP processes remain owner-isolated.
 - Idle children close after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`.
 - Turns using broker-hosted adapters close their app-server child after finalization because adapter config is tied to the turn overlay.
 - If a child crashes, its active turns fail and the pool starts a new child for later work.

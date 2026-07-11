@@ -13,17 +13,23 @@ The product using the broker. It owns product identity, permissions, database re
 
 The broker should not know what a product evidence hit means or whether a user is allowed to access a product record. The host app keeps those checks.
 
-## User
+## Owner
 
-An `ownerId` is the API field for the product user or service account whose Codex credentials should be used. In prose, think of this as the broker user.
+An `ownerId` is the API field for the product user, tenant, or service account that owns broker threads, events, interactions, authorization decisions, and audit records.
 
-The broker never uses raw `ownerId` values in paths. It hashes them before creating user/Codex-profile auth homes or writing user-scoped logs.
+## Auth principal
+
+An auth principal owns upstream Codex credentials, usage, rate limits, auth homes, and compatible App Server children. Trusted broker configuration maps `ownerId` to `authPrincipalId`; omission defaults to the owner. Several owners may share one principal without sharing broker state.
+
+Requests may include `authPrincipalId` only as an assertion of that configured mapping. A mismatch returns `403`. The broker hashes owner and principal ids before persistence, paths, or logs.
 
 ## Codex auth profile
 
-A Codex auth profile is a named Codex credential set for a user or service account. The API field is `profile`, and `default` is enough for many apps. Multiple Codex auth profiles let one user use separate Codex login states for different deployments or workflows.
+A Codex auth profile is a named credential set under an auth principal. The API field is `profile`, and `default` is enough for many apps. `GET /auth/profiles` lists the last-recorded state without running Codex.
 
 Codex auth profile ids are canonicalized before use in filesystem paths. Characters outside `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-` are replaced with `_`.
+
+The resolved principal, canonical profile, and profile instance are immutable for a broker thread. Turns may repeat them as consistency assertions but cannot switch them. Deleting a profile invalidates old threads, so replacing an account requires a new broker thread.
 
 ## Broker thread
 

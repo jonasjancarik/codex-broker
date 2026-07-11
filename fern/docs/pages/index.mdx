@@ -29,17 +29,17 @@ The host app keeps users, product authorization, database records, UI state, pro
 Most integrations use this flow:
 
 1. The host authenticates its own user.
-2. The host chooses an `ownerId`, usually a product user id or service-account id.
-3. The host checks or starts Codex auth for that user or service account and Codex auth profile.
-4. The host creates or reuses a broker thread.
-5. The host submits a turn.
-6. The host streams normalized broker events from `/events`.
+2. The host chooses an `ownerId`, which owns broker state and audits.
+3. Trusted policy resolves the auth principal, defaulting it to the owner.
+4. The host checks or starts Codex auth for that principal/profile.
+5. The host creates a broker thread that immutably binds the principal and profile.
+6. The host submits turns and streams normalized events from `/events`.
 7. The host maps those events into its own UI, job logs, database rows, or artifacts.
 
 ```mermaid
 flowchart LR
   Host["Host app backend"] --> Broker["Codex Broker HTTP API"]
-  Broker --> Auth["User/Codex-profile auth"]
+  Broker --> Auth["Auth-principal/profile credentials"]
   Broker --> Threads["Broker threads and turns"]
   Broker --> Pool["codex app-server pool"]
   Broker --> Bundles["Task bundles and overlays"]

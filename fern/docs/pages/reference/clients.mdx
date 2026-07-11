@@ -22,13 +22,15 @@ broker = CodexBrokerClient(
 
 owner_id = "service-account-1"
 
-usage = broker.account_usage(owner_id)
-rate_limits = broker.account_rate_limits(owner_id)
+profiles = broker.list_auth_profiles(owner_id)
+usage = broker.account_usage(owner_id, profile="default")
+rate_limits = broker.account_rate_limits(owner_id, profile="default")
 
 thread = broker.create_thread(
     owner_id,
     {
         "threadId": "chat-123",
+        "profile": "default",
         "hostApp": "chat-app",
         "bundleId": "example-chat-v1",
         "configProfile": "default",
@@ -82,12 +84,15 @@ const broker = new CodexBrokerClient({
 });
 
 const ownerId = "service-account-1";
+const auth = { profile: "default" };
 
-const usage = await broker.accountUsage(ownerId);
-const rateLimits = await broker.accountRateLimits(ownerId);
+const profiles = await broker.listAuthProfiles(ownerId);
+const usage = await broker.accountUsage(ownerId, auth);
+const rateLimits = await broker.accountRateLimits(ownerId, auth);
 
 const thread = await broker.createThread(ownerId, {
   threadId: "chat-123",
+  profile: auth.profile,
   hostApp: "chat-app",
   bundleId: "example-chat-v1",
   configProfile: "default",
@@ -101,6 +106,8 @@ const turn = await broker.startTurn(ownerId, String(thread["threadId"]), {
   idempotencyKey: "chat-123:message-456",
 });
 ```
+
+For a configured shared account, add `authPrincipalId` to `auth` and the thread-create body. The field is a trusted-policy assertion, not a free-form account selector. Turn-level identity fields must match the immutable thread binding.
 
 ## Streaming in Node
 

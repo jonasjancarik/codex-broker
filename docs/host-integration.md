@@ -1,8 +1,10 @@
 # Host Integration
 
+read_when: integrating a trusted host, mapping owners to shared Codex accounts, replacing an upstream account, or changing thread/auth lifecycle behavior.
+
 Use this document when a product backend, chat service, or job worker wants to run Codex work through the broker. The host app calls the broker over HTTP; browser clients should keep calling the host app.
 
-The host app keeps product concerns: users, authorization, database records, UI, prompt construction, evidence behavior, job records, artifacts, and business rules. The broker handles reusable Codex plumbing: credentials per owner/profile, app-server process pooling, broker thread and turn state, one-active-turn-at-a-time locking, normalized event streaming, and the temporary per-turn files and config that expose bundles, MCP servers, and broker-hosted adapters to Codex.
+The host app keeps product concerns: users, authorization, database records, UI, prompt construction, evidence behavior, job records, artifacts, and business rules. The broker handles reusable Codex plumbing: credentials per auth principal/profile, App Server process pooling, broker thread and turn state, one-active-turn-at-a-time locking, normalized event streaming, and the temporary per-turn files and config that expose bundles, MCP servers, and broker-hosted adapters to Codex.
 
 A bundle is a named task manifest selected by `bundleId`. It declares the Codex-facing context and capabilities for a class of host work: instructions, mounted skills, prompt files, MCP servers, broker-hosted tool adapters, additional allowed workspace paths, and sandbox defaults. Bundles do not contain host business logic, user state, secrets, queues, artifacts, or authorization rules; those stay in the host app.
 
@@ -37,6 +39,7 @@ The JSON body below is the thread creation payload. `threadId` is optional; when
 ```json
 {
   "threadId": "chat-123",
+  "profile": "default",
   "hostApp": "chat-app",
   "bundleId": "example-chat-v1",
   "configProfile": "default",
@@ -44,7 +47,11 @@ The JSON body below is the thread creation payload. `threadId` is optional; when
 }
 ```
 
-Repeated creates with the same `ownerId` and `threadId` return the existing broker thread. Store the returned broker `threadId` for later turns. If the create request omits `threadId`, the broker generates one. The response also includes `codexThreadId`, which stays `null` until the broker creates or resumes the underlying Codex thread.
+Repeated creates with the same `ownerId` and `threadId` return the existing broker thread only when the auth binding also matches. Store the returned broker `threadId` for later turns. If the create request omits `threadId`, the broker generates one. The response also includes `authPrincipalHash` and `codexThreadId`; the latter stays `null` until the broker creates or resumes the underlying Codex thread.
+
+`ownerId` always owns broker state and audit records. `authPrincipalId` optionally asserts which configured Codex account to use. The broker resolves it from `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` or its file equivalent, defaults it to `ownerId`, and returns `403` when an assertion does not match policy. Two owners may share one principal without gaining access to each other's threads, events, interactions, or audits.
+
+The resolved principal, canonical `profile`, and profile instance are immutable for the broker thread lifetime. Omit them on turns, or repeat the same values as assertions. A different value returns a conflict before steering or idempotency handling.
 
 `bundleId` selects the task bundle, `configProfile` selects the broker runtime/policy profile, and `cwd` sets the working directory Codex should use when the turn runs.
 
@@ -85,13 +92,15 @@ The broker also accepts `runtime` as an alias for `codexOptions` and normalizes 
 
 Some Codex options affect the app-server child process rather than a single `turn/start` request. The broker launches and pools app-server children separately when `webSearch`, `modelVerbosity`, `imageGeneration`, or reasoning-effort process config differs, so one host turn cannot accidentally reuse a child started with incompatible runtime settings.
 
-Profile ids are canonicalized before they are used for auth state or filesystem paths. Characters outside `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-` are replaced with `_`, so host apps should treat the returned `profile` value as the broker's canonical profile id.
+Profile ids are canonicalized before they are used for auth state or filesystem paths. Characters outside `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-` are replaced with `_`, so host apps should treat the returned `profile` value as the broker's canonical profile id. `GET /v1/owners/{ownerId}/auth/profiles` lists persisted profiles and last-recorded state without launching Codex or creating a default profile.
 
-Auth logout removes Codex credentials for an owner/profile and closes pooled app-server children for that profile only. Other profiles for the same owner continue running. Passing `deleteProfile: true` also deletes the broker-managed profile directory and profile metadata while preserving thread/turn history.
+Auth logout removes Codex credentials for an auth-principal/profile and closes its pooled App Server children. Other profiles continue running. When the principal is shared, logout affects every mapped owner, although the audit entry belongs to the requesting owner. Passing `deleteProfile: true` also deletes the broker-managed profile directory and profile metadata while preserving thread/turn history.
+
+For an upstream account replacement, first quiesce every owner sharing the principal/profile. Then logout with `deleteProfile: true`, authenticate the replacement account into the same profile, and create a genuinely new broker thread. Do not reuse the previous caller-supplied `threadId`. The profile instance changes on deletion, so old and queued threads fail closed instead of resuming their Codex session under the replacement account.
 
 Auth status distinguishes `missing`, `present_unverified`, `authenticated`, `invalid`, and `refresh_failed`, and includes an `authFingerprint` for the owner/profile auth file. The cheap `GET /auth/status` route checks local credential state; `POST /auth/probe` runs a tiny real Codex request and persists `refresh_failed` if token refresh is invalidated. Failed turns expose a stable `errorCode`, end-user-safe `publicMessage`, and raw `adminMessage`; host UIs should show `publicMessage` or `error` and keep `adminMessage` in admin-only logs. When `errorCode` is `session_not_resumable`, Codex reported that previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for that profile so the next turn starts a fresh app-server child with the new auth.
 
-Use `GET /v1/owners/{ownerId}/auth/usage` and `GET /v1/owners/{ownerId}/auth/rate-limits` for owner/profile account displays. The broker returns the evolving Codex payload under `usage` or `rateLimits`; host code should tolerate additional nested fields. `POST /v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume` is a mutating account action, requires `idempotencyKey`, and creates an audit-log entry after Codex confirms success.
+Use `GET /v1/owners/{ownerId}/auth/usage` and `GET /v1/owners/{ownerId}/auth/rate-limits` for account displays. The response identifies both `ownerHash` and `authPrincipalHash`; the values under `usage` or `rateLimits` are totals for the principal/profile and may be shared across owners. `POST /v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume` mutates that shared upstream account, requires `idempotencyKey`, and creates an audit entry only for the requesting owner after Codex confirms success.
 
 Device-auth responses include `loginUrl`, `userCode`, `expiresAt`, and current `state` when the Codex CLI exposes them. `expiresAt` is `null` when no expiry can be inferred.
 
@@ -115,7 +124,7 @@ Move to the broker:
 
 Recommended chat flow:
 
-1. Resolve the authenticated product user to a stable `ownerId`.
+1. Resolve the authenticated product user to a stable `ownerId` and, only in trusted host code, its configured auth principal.
 2. Create or reuse a broker thread for the host chat.
 3. Submit normal chat turns with `mode=queue` so the broker serializes same-chat concurrency, or use `mode=steer` when the UI explicitly appends input to an active turn.
 4. Stream `/events` and map normalized event types to the existing UI stream protocol.

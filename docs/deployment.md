@@ -1,5 +1,7 @@
 # Deployment Notes
 
+read_when: deploying the broker, changing trusted owner/auth-principal policy, migrating persistent data, or operating shared Codex accounts.
+
 The broker is designed as one internal Docker image that a host app can run next to its own backend or worker services.
 
 For the complete environment-variable and profile reference, see [Configuration](configuration.md). For process, storage, pooling, and recovery details, see [Architecture](architecture.md).
@@ -75,6 +77,12 @@ exact variable names, for example
 
 Only `GET /healthz` and `GET /readyz` are intended for unauthenticated orchestrator probes. All product API routes, `/metrics`, `/openapi.json`, and bundle endpoints require the broker key unless the explicit development override is enabled.
 
+## Trusted Auth-Principal Policy
+
+Use `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` or `CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE` to map owner ids to shared Codex account identities. This mapping is deployment policy and must be controlled by the trusted host. A request `authPrincipalId` is accepted only when it matches policy; it does not grant clients a general account selector. Distinct principals require the authenticated broker-key path and are not available as an unauthenticated development feature.
+
+Existing databases migrate with each thread and profile bound to `authPrincipalId = ownerId`, so the on-disk `auth/owners/<hash>` layout remains valid. Back up `state/broker.sqlite`, `state/owner-hash.key`, and `auth/` together before rollout.
+
 ## Configuration Profiles
 
 Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` to define named configuration profiles. API requests refer to one with the `configProfile` field. Profile entries may set app-server defaults such as `model`, `approvalPolicy`, `sandbox`, `personality`, `serviceTier`, `effort`, `summary`, `webSearch`, `modelVerbosity`, and `imageGeneration`, plus policy fields `enabledBundles` and `allowedWorkspaceRoots`. When profiles are configured, unknown `configProfile` values are rejected. The older `runtimeProfile` request field is accepted as an alias for compatibility.
@@ -93,7 +101,7 @@ Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` t
 
 ## Operations
 
-- App-server children are started lazily and keyed by owner, auth profile, owner/profile auth fingerprint, configuration profile, Codex command/version, credential-store mode, mounted MCP config, and hashes of resolved MCP `env:VAR` values. They are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS` idle seconds. TTL cleanup skips children with active turn contexts.
+- App Server children are started lazily and keyed by auth-principal hash, auth profile, auth fingerprint, configuration profile, Codex command/version, credential-store mode, and process configuration. Compatible no-MCP children may be shared by mapped owners. Mounted MCP processes remain owner-keyed because an MCP server may hold tenant state. Children close after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS` idle seconds; TTL cleanup skips active turn contexts.
 - Turns using broker-hosted adapters close their per-turn app-server child after finalization because the adapter config includes per-turn overlay context.
 - A crashed child fails its active turns and the pool restarts lazily before later work.
 - A restarted broker marks abandoned `starting`, `queued`, and `running` turns failed on startup and emits a recovered `turn.failed` event. Pending interactions are marked failed with their fallback response so host UIs do not keep showing stale approval/input prompts.
@@ -101,7 +109,8 @@ Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` t
 - During process shutdown, `CODEX_BROKER_SHUTDOWN_MODE=interrupt` interrupts active turns and finalizes them as `interrupted`; `drain` rejects new turns and waits up to `CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` for accepted work before interrupting leftovers.
 - `/metrics` includes in-memory broker counters, HTTP request count/duration sums and counts by templated endpoint, SSE disconnects, turn duration sums/counts, aggregate auth start/success/failure counters, and durable audit-derived counters such as turn start, approvals, interrupts, and logout.
 - Auth command spawn and timeout failures are recorded as failed auth sessions/results with redacted output and durable `auth.*.failure` audit entries. Logout still invalidates broker-managed auth files or deletes the requested profile when the Codex logout command fails.
-- Runtime Codex auth refresh failures are classified as `codex_auth_requires_admin`, mark the owner/profile auth status as `refresh_failed`, close that profile's pooled app-server children, and preserve the raw Codex message in `adminMessage`. After refreshing shared auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` when you need to force-close any remaining profile runtimes before retrying work.
+- Runtime Codex auth refresh failures are classified as `codex_auth_requires_admin`, mark the principal/profile auth status as `refresh_failed`, close that profile's pooled App Server children, and preserve the raw Codex message in `adminMessage`. Profile deletion, logout, runtime invalidation, usage, rate limits, and reset credits affect every owner sharing the principal; audits remain attributed to the requesting owner.
+- Replace an upstream account only after quiescing all sharing owners: logout with `deleteProfile: true`, authenticate the replacement, and create new broker thread ids. The changed profile instance fences old and queued work.
 - Missing Codex rollout/session failures are classified as `session_not_resumable`. Host apps should recover by starting a new broker thread and reconstructing context from persisted workspace files instead of retrying the same missing session.
 - Raw app-server event capture is disabled by default; when enabled, secret-looking fields and strings, including JSON-like quoted secret fields, are redacted before persistence. `CODEX_BROKER_RAW_EVENT_RETENTION_SECONDS` controls startup pruning of persisted raw app-server method/params fields while preserving normalized events.
-- Structured JSON logs are enabled by default with `CODEX_BROKER_JSON_LOGS=true`. Log events include templated HTTP endpoints, owner hashes, broker thread/turn ids, product correlation ids, app-server process ids, and pool-key hashes; secret-looking fields are redacted before writing.
+- Structured JSON logs are enabled by default with `CODEX_BROKER_JSON_LOGS=true`. Turn logs include owner and auth-principal hashes; process logs use the auth-principal hash because a child may be shared. Logs also carry templated endpoints, broker thread/turn ids, product correlation ids, process ids, and pool-key hashes. Raw identities and secret-looking fields are not written.

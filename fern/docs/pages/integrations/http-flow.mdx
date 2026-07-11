@@ -17,7 +17,9 @@ OWNER=service-account-1
 
 If an `ownerId`, `threadId`, or `turnId` contains `/`, spaces, or other reserved characters, URL-encode that path segment. The bundled Python and TypeScript clients do this for you.
 
-These examples use the default Codex auth profile. Omit `profile` to use `default`; pass `profile` only when a user or service account has multiple Codex auth profiles.
+These examples use the default Codex auth profile. Select the profile when creating the broker thread. A turn cannot override the thread's auth principal or profile.
+
+`ownerId` scopes broker state and audits. Trusted policy resolves the upstream `authPrincipalId`, defaulting to the owner. A request may assert the configured value but cannot select an arbitrary account.
 
 ## Check auth status
 
@@ -28,6 +30,14 @@ curl -sS \
 ```
 
 `authFingerprint` changes when the user/Codex-profile auth file changes. App-server children are keyed by that fingerprint so refreshed auth starts fresh runtime processes.
+
+List last-recorded profile state without invoking Codex:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/profiles"
+```
 
 ## Run an active probe
 
@@ -46,7 +56,7 @@ If Codex reports token invalidation, the broker stores `refresh_failed` and clos
 
 ## Check usage and rate limits
 
-These reads query the selected owner/profile without starting a turn:
+These reads query the selected auth-principal/profile without starting a turn:
 
 ```bash
 curl -sS \
@@ -58,7 +68,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/rate-limits"
 ```
 
-The evolving Codex payload is returned under `usage` or `rateLimits`.
+The evolving Codex payload is returned under `usage` or `rateLimits`. `authPrincipalHash` identifies the upstream total; mapped owners share it while `ownerHash` and audits remain separate.
 
 ## Consume a rate-limit reset credit
 
@@ -99,6 +109,8 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/runtime/invalidate"
 ```
 
+To replace the account inside a profile, quiesce all sharing owners, logout with `deleteProfile: true`, authenticate the replacement, and use a new broker thread id. Profile deletion changes the binding instance, so old and queued threads fail closed.
+
 ## Create or reuse a thread
 
 ```bash
@@ -108,6 +120,7 @@ curl -sS \
   -H "Content-Type: application/json" \
   -d '{
     "threadId": "chat-123",
+    "profile": "default",
     "hostApp": "chat-app",
     "bundleId": "example-chat-v1",
     "configProfile": "default",
@@ -122,6 +135,7 @@ Response:
 {
   "threadId": "chat-123",
   "codexThreadId": null,
+  "authPrincipalHash": "...",
   "profile": "default",
   "configProfile": "default",
   "hostApp": "chat-app",
@@ -169,6 +183,7 @@ Response:
   "threadId": "chat-123",
   "turnId": "turn_...",
   "codexTurnId": null,
+  "authPrincipalHash": "...",
   "profile": "default",
   "configProfile": "default",
   "hostApp": "chat-app",
