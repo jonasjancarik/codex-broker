@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__
+from . import __version__, account_api
 from .app_server import AppServerError
 from .bundles import BundleError
 from .config import BrokerConfig
@@ -144,6 +144,8 @@ class BrokerHandler(BaseHTTPRequestHandler):
 
     def _auth_route(self, method: str, tail: list[str], owner_id: str, query: dict[str, list[str]]) -> None:
         profile = query.get("profile", ["default"])[0]
+        if account_api.handle_account_route(self, method, tail, owner_id, query):
+            return
         if method == "GET" and tail == ["status"]:
             self._json(self.broker.auth.status(owner_id, profile))
             return
@@ -468,6 +470,7 @@ def openapi_document() -> dict[str, Any]:
             "/openapi.json": {
                 "get": {"responses": {"200": json_response({"type": "object"}, "OpenAPI document")}}
             },
+            **account_api.openapi_paths(owner_param, ref, json_response, request_body),
             "/v1/owners/{ownerId}/auth/status": {
                 "get": {
                     "parameters": [owner_param, {"$ref": "#/components/parameters/profile"}],
@@ -642,6 +645,7 @@ def openapi_document() -> dict[str, Any]:
                 "limit": {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
             },
             "schemas": {
+                **account_api.openapi_schemas(),
                 "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
                 "Health": {"type": "object", "required": ["status"], "properties": {"status": {"const": "ok"}}},
                 "Readiness": {

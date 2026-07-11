@@ -174,6 +174,36 @@ def handle_app_server() -> int:
             continue
         if method == "initialize":
             send({"id": request_id, "result": {"serverInfo": {"name": "fake-codex"}}})
+        elif method == "account/usage/read":
+            send(
+                {
+                    "id": request_id,
+                    "result": {
+                        "totalTokens": 1200,
+                        "daily": [{"date": "2026-07-11", "tokens": 1200}],
+                    },
+                }
+            )
+        elif method == "account/rateLimits/read":
+            send(
+                {
+                    "id": request_id,
+                    "result": {
+                        "primary": {"usedPercent": 25, "resetsAt": "2026-07-11T16:00:00Z"},
+                        "resetCredits": 1,
+                    },
+                }
+            )
+        elif method == "account/rateLimitResetCredit/consume":
+            send(
+                {
+                    "id": request_id,
+                    "result": {
+                        "consumed": True,
+                        "idempotencyKey": params.get("idempotencyKey"),
+                    },
+                }
+            )
         elif method == "thread/start":
             thread_id = f"thr_fake_{next_thread}"
             next_thread += 1
