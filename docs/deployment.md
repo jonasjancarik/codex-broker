@@ -6,12 +6,14 @@ For the complete environment-variable and profile reference, see [Configuration]
 
 ## Image
 
-The Dockerfile installs the official Codex CLI Linux musl release from `openai/codex` and then installs the broker Python package. Build-time args:
+The Dockerfile installs the official Codex CLI Linux musl release from `openai/codex`, verifies it against the release `codex-package_SHA256SUMS`, and then installs the broker Python package. Build-time args:
 
 - `CODEX_VERSION`: Codex release version without the `rust-v` prefix, default `0.144.0`.
 - `TARGETARCH`: supplied by Docker BuildKit; `amd64` maps to `x86_64`, `arm64` maps to `aarch64`.
 
 GitHub Actions publishes multi-architecture images to `ghcr.io/jonasjancarik/codex-broker`. Pushes to `main` publish `edge`, and `v*` tags publish both `latest` and the matching version tag. Pull requests build the image without pushing it.
+
+The publish job depends on warning-sensitive tests and an exact generated-OpenAPI check. A failed test or stale contract prevents publication, and published image digests are signed with cosign.
 
 ## Extending The Broker Image
 
@@ -59,6 +61,10 @@ When enabling the example chat bundle, the broker container must share a Docker 
 ## Secrets
 
 Set `CODEX_BROKER_INTERNAL_KEY_FILE` to a Docker secret path. The broker reports not-ready without an internal key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true` is set for local development. Do not pass auth files, API keys, or access tokens as bundle content. Owner Codex credentials are stored under hashed owner/profile paths in `/data/auth`.
+
+The owner-hash key is stored separately at `/data/state/owner-hash.key` unless explicitly configured. Back up and restore it with `/data`; losing it makes existing owner-hash paths unreachable.
+
+Owner profiles run under the same container UID. Filesystem modes and Codex sandbox policy are defense in depth, not an operating-system tenant boundary. Run separate broker containers and `/data` volumes for mutually untrusted tenants.
 
 Codex app-server children start with a scrubbed process environment. Secret-looking
 variables such as keys and tokens are not passed through by default. If a

@@ -29,7 +29,8 @@ Environment variables are read once at process startup by `BrokerConfig.from_env
 | `CODEX_BROKER_INTERNAL_KEY` | unset | Shared internal API key. Required unless unauthenticated dev mode is enabled. |
 | `CODEX_BROKER_INTERNAL_KEY_FILE` | unset | File containing the internal API key. Used only when `CODEX_BROKER_INTERNAL_KEY` is not set. |
 | `CODEX_BROKER_ALLOW_UNAUTHENTICATED` | `false` | Development escape hatch. When true and no key is configured, product routes accept unauthenticated requests. |
-| `CODEX_BROKER_OWNER_HASH_KEY` | internal key when set, otherwise unset | HMAC key for owner hashes. Without it, owner ids are hashed with plain SHA-256. |
+| `CODEX_BROKER_OWNER_HASH_KEY` | persistent generated key | Explicit HMAC key for owner hashes. When unset, the broker creates `state/owner-hash.key` once and reuses it across API-key rotations. |
+| `CODEX_BROKER_OWNER_HASH_KEY_FILE` | unset | File containing the owner-hash HMAC key. Mutually exclusive with `CODEX_BROKER_OWNER_HASH_KEY`. |
 
 Only `GET /healthz` and `GET /readyz` are unauthenticated by design. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the development override is active.
 
@@ -46,6 +47,7 @@ Derived paths under `CODEX_BROKER_DATA_DIR`:
 | Path | Purpose |
 | --- | --- |
 | `state/broker.sqlite` | SQLite state store. |
+| `state/owner-hash.key` | Mode-`0600` persistent owner-hash key. Back it up with the database and auth data. |
 | `auth/owners/<owner-hash>/profiles/<profile>/codex-home` | Per-owner/profile Codex home. |
 | `bundles/inline/<digest>/bundle.json` | Accepted inline bundle content. |
 | `workspaces/overlays/<turn-id>` | Per-turn generated files, symlinks, MCP config, and hosted-tool config. |
@@ -64,7 +66,8 @@ The broker always sets `CODEX_HOME`, `CODEX_CREDENTIAL_STORE`, and `HOME` for Co
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `CODEX_BROKER_MAX_ACTIVE_TURNS` | `0` | Global active-turn cap. `0` means unlimited; same-thread locking still applies. |
+| `CODEX_BROKER_MAX_ACTIVE_TURNS` | `0` | Global active-turn cap. `0` uses the broker's bounded 32-worker default; same-thread serialization still applies. |
+| `CODEX_BROKER_MAX_QUEUED_TURNS` | `1000` | Maximum turns waiting behind active turns. Further queue requests fail closed. |
 | `CODEX_BROKER_POOL_IDLE_TTL_SECONDS` | `900` | Idle app-server children older than this are closed. Set `0` to disable idle sweeping. |
 | `CODEX_BROKER_REQUEST_TIMEOUT_SECONDS` | `60` | Timeout for JSON-RPC request/response calls to an app-server child. |
 | `CODEX_BROKER_TURN_TIMEOUT_SECONDS` | `0` | Maximum wall time for a Codex turn. `0` disables broker-level turn timeout. |
@@ -80,15 +83,20 @@ For user-input prompts, Codex may provide `autoResolutionMs`; the broker uses th
 | `CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES` | `http://127.0.0.1,http://localhost,http://host.docker.internal` | CSV allowlist for broker-hosted HTTP tool endpoints. Match is by parsed scheme and host, with optional explicit port and path prefix. |
 | `CODEX_BROKER_ENABLE_INLINE_BUNDLES` | `false` | Enables `POST /v1/bundles/inline`. |
 | `CODEX_BROKER_INLINE_BUNDLE_MAX_BYTES` | `262144` | Maximum serialized inline bundle payload size. |
+| `CODEX_BROKER_HOSTED_TOOL_MAX_RESPONSE_BYTES` | `1048576` | Default maximum hosted-tool response or error body. Bundles may override it with `maxResponseBytes`. |
 
 Inline bundles are stored by content digest. Re-sending the same payload is idempotent. A mounted bundle id cannot be shadowed by an inline bundle, and an accepted inline bundle id cannot later be reused with different content.
+
+An empty hosted-tool URL allowlist disables hosted tools. The adapter never follows redirects and rejects response bodies above its configured byte limit.
 
 ### Logging, Events, And Shutdown
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CODEX_BROKER_DEBUG_RAW_EVENTS` | `false` | When true, persists redacted raw app-server method and params beside normalized events. |
-| `CODEX_BROKER_RAW_EVENT_RETENTION_SECONDS` | `604800` | Startup pruning window for raw app-server method/params fields. Normalized events are preserved. |
+| `CODEX_BROKER_RAW_EVENT_RETENTION_SECONDS` | `604800` | Startup pruning window for raw app-server method/params fields. |
+| `CODEX_BROKER_HISTORY_RETENTION_SECONDS` | `7776000` | Retention for completed turns, normalized events, resolved interactions, audit logs, and closed child records. `0` disables age pruning. |
+| `CODEX_BROKER_MAX_EVENTS_PER_TURN` | `10000` | Maximum normalized events retained per turn. |
 | `CODEX_BROKER_JSON_LOGS` | `true` | Emits structured JSON logs to stderr. Set false to suppress broker JSON logs. |
 | `CODEX_BROKER_SHUTDOWN_MODE` | `interrupt` | `interrupt` or `drain`. Invalid values behave as `interrupt`. |
 | `CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` | `30` | Drain wait before interrupting leftovers when shutdown mode is `drain`. |
@@ -100,7 +108,7 @@ Logs and raw event payloads are redacted for common API key, token, bearer, pass
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CODEX_BROKER_CONFIG_PROFILES_JSON` | unset | JSON object keyed by `configProfile` name. Takes precedence over the file variable. |
-| `CODEX_BROKER_CONFIG_PROFILES_FILE` | unset | File containing the same JSON object. Used only when the JSON variable is unset and the file exists. |
+| `CODEX_BROKER_CONFIG_PROFILES_FILE` | unset | File containing the same JSON object. A configured missing, non-file, or empty path is a startup error. |
 
 When no configuration profiles are configured, any request `configProfile` name is accepted and no profile defaults are applied. When profiles are configured, every request profile must exist in the configured object. Requests that omit `configProfile` use `default`, so include a `default` entry if you enable profiles and want omitted profile fields to work.
 
@@ -163,6 +171,28 @@ Supported keys:
 | `workspaceRoots` | Broker policy | Alias for `allowedWorkspaceRoots`. |
 
 Request-level `codexOptions` override profile defaults for matching Codex options. The app-server pool key includes process-level options, so requests with different process-level settings do not accidentally reuse incompatible child processes.
+
+### Model And Reasoning Selection
+
+A turn can choose its model and reasoning effort directly:
+
+```json
+{
+  "input": [{ "type": "text", "text": "Review these changes." }],
+  "codexOptions": {
+    "model": "gpt-5.6-sol",
+    "effort": "high"
+  }
+}
+```
+
+Selection precedence is:
+
+1. Turn request `codexOptions.model` and `codexOptions.effort`.
+2. The selected configuration profile's `model` and `effort` defaults.
+3. Codex's current recommended model and model-specific reasoning default.
+
+The broker does not persist a request-level selection back into the configuration profile. `reasoningEffort` is accepted as an alias for `effort`. Model availability and supported effort values come from Codex and may differ by account, provider, and selected model.
 
 ## Request-Level Options
 

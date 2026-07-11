@@ -1,0 +1,95 @@
+---
+title: "Contributing to docs"
+description: "How maintainers edit, preview, validate, and publish the Fern docs site."
+---
+
+# Contributing to docs
+
+The Fern docs source lives in the `fern/` directory. Use Fern for reader-facing docs. Keep plain Markdown under `docs/` for source-local architecture notes and agent context.
+
+```text
+fern/
+  docs.yml
+  generators.yml
+  fern.config.json
+  styles.css
+  openapi/
+    openapi.json
+  docs/
+    pages/
+```
+
+## Edit content
+
+Write MDX pages under `fern/docs/pages/`. Each page should answer one reader question:
+
+- how does a host app call the broker?
+- what is the minimal HTTP sequence?
+- how do bundles and hosted tools work?
+- how is the broker deployed and operated?
+- where do API and client details live?
+
+Avoid repeating the full configuration reference in every guide. Link to reference pages when a reader needs the exhaustive field list.
+
+## Update navigation
+
+`fern/docs.yml` controls the navigation, tabs, generated API reference, brand colors, hosted instance, and custom CSS.
+
+When adding a page, add it to `navigation` in the same change. Fern only includes pages referenced by navigation or discovered through configured navigation.
+
+## API reference
+
+`fern/generators.yml` points Fern at the checked-in OpenAPI document:
+
+```text
+fern/openapi/openapi.json
+```
+
+The source of truth is `codex_broker.http_api.openapi_document()`. Regenerate the checked-in document after changing routes or schemas:
+
+```bash
+pnpm openapi:generate
+```
+
+The generated API reference appears in the Reference tab.
+
+`fern/generators.yml` also defines a local TypeScript SDK generator. Run `pnpm sdk:generate` to write it under `clients/typescript/generated`.
+
+## Preview locally
+
+Preview through the root package script:
+
+```bash
+pnpm docs:dev
+```
+
+The local preview uses Fern hot reload. Some hosted features, including search and SEO metadata, may behave differently locally.
+
+## Validate
+
+Run Fern validation before publishing:
+
+```bash
+pnpm docs:check
+```
+
+The script regenerates `fern/openapi/openapi.json` before running `fern-api check`.
+
+## Publish
+
+Publishing uses the configured `instances` entry in `fern/docs.yml`:
+
+```bash
+pnpm docs:publish
+```
+
+For CI, create a Fern token, store it as `FERN_TOKEN`, then run `pnpm docs:check` and `pnpm docs:publish`.
+
+## Writing rules
+
+- Keep host-owned behavior separate from broker-owned behavior.
+- Prefer concrete request and deployment examples.
+- Keep safety, authentication, workspace, and bundle boundaries explicit.
+- Update docs in the same change as behavior or API changes.
+- Use diagrams when they clarify a flow, but keep the surrounding text complete.
+- Keep pages under 1000 lines.

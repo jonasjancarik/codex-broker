@@ -1,0 +1,78 @@
+---
+title: "API overview"
+description: "How the generated Codex Broker API reference fits with host integrations, event streaming, auth, and bundles."
+---
+
+# API overview
+
+Codex Broker exposes an internal HTTP API for host backends and job workers. The checked-in OpenAPI document feeds Fern's generated API reference.
+
+Source of truth:
+
+```text
+src/codex_broker/http_api.py
+```
+
+Checked-in generated document:
+
+```text
+fern/openapi/openapi.json
+```
+
+Regenerate it with:
+
+```bash
+pnpm openapi:generate
+```
+
+## What the API covers
+
+The API includes endpoints for:
+
+- health and readiness
+- metrics
+- OpenAPI discovery
+- user/Codex-profile auth status, probe, device auth, API-key auth, runtime invalidation, and logout
+- user-scoped audit logs
+- broker thread creation, lookup, and archive
+- turn creation, lookup, steering, and interruption
+- Server-Sent Events streaming
+- host-resolved interactions
+- inline bundle acceptance
+
+## Authentication
+
+Product routes require one of these headers:
+
+```http
+Authorization: Bearer <CODEX_BROKER_INTERNAL_KEY>
+X-Codex-Broker-Key: <CODEX_BROKER_INTERNAL_KEY>
+```
+
+`GET /healthz` and `GET /readyz` are unauthenticated. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the explicit development override is enabled.
+
+## Base URL
+
+Default local broker URL:
+
+```text
+http://127.0.0.1:3400
+```
+
+Common probes:
+
+```text
+GET /healthz
+GET /readyz
+GET /openapi.json
+```
+
+## Generated reference
+
+Use the generated API reference in this tab for endpoint shapes, parameters, responses, and schemas. Use the guide pages for host integration intent, event semantics, bundle boundaries, and deployment policy.
+
+## API and host app relationship
+
+The host backend is the public product API. The broker is the internal Codex runtime API.
+
+Do not expose the broker key or broker SSE stream directly to browsers. Product UIs should call host-owned routes that authenticate product users and proxy or translate broker events.

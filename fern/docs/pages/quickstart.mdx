@@ -1,0 +1,197 @@
+---
+title: "Quickstart"
+description: "Start Codex Broker with Docker Compose, check readiness, and make the first broker API calls."
+---
+
+# Quickstart
+
+Codex Broker is normally added as a service inside the host app's Docker Compose stack. The host backend and workers call it over the Compose network; browser clients keep calling the host app.
+
+This quickstart uses the repo's example Compose files as a standalone local stack. It keeps the same data, workspace, bundle, and secret layout you should copy into a host-app deployment.
+
+## Prerequisites
+
+- Docker with Compose support.
+- A checked-out Codex Broker repo.
+- Codex credentials or an OpenAI API key when you want real Codex turns.
+
+Python and `uv` are only needed for native development.
+
+## Start the local example
+
+Run from the repository root:
+
+```bash
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.local.yml \
+  up --build
+```
+
+`examples/docker-compose.yml` is the broker service slice you would fold into a real app stack. It uses persistent `/data`, reviewed bundles mounted at `/bundles`, host workspaces mounted under `/workspaces`, and the broker key loaded from a Docker secret.
+
+`examples/docker-compose.local.yml` publishes `127.0.0.1:3400` so you can call the broker from your shell while testing.
+
+The example secret file contains the development key used below:
+
+```text
+dev-only-key
+```
+
+Replace `examples/secrets/codex_broker_key.example` with a real secret file for any shared environment.
+
+## Add it to an app stack
+
+In a real product deployment, copy the `codex-broker` service shape into the app's existing `docker-compose.yml` instead of running this repo's example stack by itself.
+
+Keep these pieces:
+
+- a persistent `/data` volume
+- workspace mounts under `/workspaces` or another allowed root
+- reviewed bundle mounts under `/bundles`
+- a Docker secret or secret file for `CODEX_BROKER_INTERNAL_KEY_FILE`
+- network access from the host backend or worker to `http://codex-broker:3400`
+
+Only publish `3400` to the host machine for local debugging. In production-style Compose stacks, leave the broker on the internal Compose network and have the host app call it server-side.
+
+## Check readiness
+
+Health and readiness:
+
+```bash
+curl -sS http://127.0.0.1:3400/healthz
+curl -sS http://127.0.0.1:3400/readyz
+```
+
+`/readyz` checks the internal key, SQLite state store, Codex binary, configured workspace roots, bundle roots, and auth-root writability.
+
+## Check user auth
+
+Use a stable product user id or service-account id as `ownerId`:
+
+```bash
+BROKER=http://127.0.0.1:3400
+BROKER_KEY=dev-only-key
+OWNER=service-account-1
+
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/status"
+```
+
+Omitting `profile` uses the default Codex auth profile. Pass `profile` only when that user or service account has more than one Codex auth profile.
+
+For service-account style deployments, store an API key in the service account's Codex auth profile:
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"apiKey":"'"$OPENAI_API_KEY"'"}' \
+  "$BROKER/v1/owners/$OWNER/auth/api-key"
+```
+
+If you use device auth instead, start and submit the device flow through the auth endpoints. Keep browser login and product UI auth outside the broker.
+
+## Create a thread
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "threadId": "chat-123",
+    "hostApp": "chat-app",
+    "bundleId": "example-chat-v1",
+    "configProfile": "default",
+    "cwd": "/workspaces/app"
+  }' \
+  "$BROKER/v1/owners/$OWNER/threads"
+```
+
+Repeated creates with the same user or service account and `threadId` return the existing broker thread.
+
+## Submit a turn
+
+```bash
+THREAD_ID=chat-123
+
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": [
+      { "type": "text", "text": "Summarize the evidence for this user question." }
+    ],
+    "hostApp": "chat-app",
+    "bundleId": "example-chat-v1",
+    "configProfile": "default",
+    "mode": "queue",
+    "productCorrelationId": "chat-123:message-456",
+    "idempotencyKey": "chat-123:message-456"
+  }' \
+  "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/turns"
+```
+
+The response includes `turnId`, `status`, and a relative `streamUrl`.
+
+## Stream events
+
+```bash
+TURN_ID=turn_...
+
+curl -N \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/events?turnId=$TURN_ID&after=0"
+```
+
+Browser clients should not call the broker directly because the stream requires server-side broker authentication. Product UIs should consume a host-owned stream that proxies broker events.
+
+## Stop the stack
+
+```bash
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.local.yml \
+  down
+```
+
+Broker state persists in the `codex-broker-data` volume unless you remove that volume.
+
+## Native development
+
+Use native `uv` runs when changing broker code or running targeted tests outside Docker:
+
+```bash
+export CODEX_BROKER_HOST=127.0.0.1
+export CODEX_BROKER_PORT=3400
+export CODEX_BROKER_DATA_DIR=.data
+export CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS=/path/to/workspaces
+export CODEX_BROKER_ALLOWED_BUNDLE_ROOTS=/path/to/bundles
+export CODEX_BROKER_ALLOWED_TOOL_COMMANDS=python,node
+export CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES=http://127.0.0.1,http://localhost,http://host.docker.internal
+export CODEX_BROKER_INTERNAL_KEY=dev-only-key
+export CODEX_BIN=codex
+export CODEX_CREDENTIAL_STORE=file
+
+uv run codex-broker
+```
+
+For a quick unauthenticated development run, you can set `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true` instead of `CODEX_BROKER_INTERNAL_KEY`. Do not use that in a shared environment.
+
+## Preview these docs
+
+The Fern source lives in `fern/`:
+
+```bash
+pnpm docs:dev
+```
+
+Run a docs validation pass with:
+
+```bash
+pnpm docs:check
+```

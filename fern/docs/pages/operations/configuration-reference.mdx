@@ -1,0 +1,225 @@
+---
+title: "Configuration reference"
+description: "Environment variables, configuration profiles, request options, bundle manifest fields, and Docker build arguments."
+---
+
+# Configuration reference
+
+Environment variables are read once at process startup by `BrokerConfig.from_env()`.
+
+## Parsing rules
+
+| Value type | Parsing |
+| --- | --- |
+| Boolean | `1`, `true`, `yes`, and `on` are true, case-insensitive. Any other set value is false. |
+| Integer | Parsed with `int()`. Empty values use the default. |
+| Float seconds | Parsed with `float()`. |
+| CSV | Comma-separated, trimmed, empty items ignored. |
+| Path list | Colon-separated, expanded with `~`, resolved to absolute paths, empty items ignored. |
+| JSON | Parsed as UTF-8 JSON object. Invalid shape fails startup or request handling. |
+| `CODEX_BIN` | Parsed with shell-like splitting, then broker appends Codex subcommands. |
+
+## Server and authentication
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_BROKER_HOST` | `127.0.0.1` | Host interface for the HTTP server. Docker sets `0.0.0.0`. |
+| `CODEX_BROKER_PORT` | `3400` | HTTP server port. |
+| `CODEX_BROKER_INTERNAL_KEY` | unset | Shared internal API key. Required unless unauthenticated dev mode is enabled. |
+| `CODEX_BROKER_INTERNAL_KEY_FILE` | unset | File containing the internal API key. Used only when `CODEX_BROKER_INTERNAL_KEY` is not set. |
+| `CODEX_BROKER_ALLOW_UNAUTHENTICATED` | `false` | Development escape hatch. When true and no key is configured, product routes accept unauthenticated requests. |
+| `CODEX_BROKER_OWNER_HASH_KEY` | internal key when set, otherwise unset | HMAC key for user hashes. Without it, `ownerId` values are hashed with plain SHA-256. |
+
+Only `GET /healthz` and `GET /readyz` are unauthenticated by design. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the development override is active.
+
+## Filesystem and policy roots
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_BROKER_DATA_DIR` | `.data` | Persistent broker data root. Contains SQLite state, auth homes, inline bundles, and overlays. |
+| `CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS` | current working directory | Colon-separated host workspace roots. Request `cwd` values and bundle `allowedPaths` must be inside these roots unless the broker overlay root is used. |
+| `CODEX_BROKER_ALLOWED_BUNDLE_ROOTS` | current working directory | Colon-separated reviewed bundle roots. Mounted bundle files, mounted skills, and mounted prompts must be inside these roots. |
+
+Derived paths under `CODEX_BROKER_DATA_DIR`:
+
+| Path | Purpose |
+| --- | --- |
+| `state/broker.sqlite` | SQLite state store. |
+| `auth/owners/<owner-hash>/profiles/<profile>/codex-home` | Per-user/per-Codex-auth-profile Codex home. The directory still uses `owners` because the API field is `ownerId`. |
+| `bundles/inline/<digest>/bundle.json` | Accepted inline bundle content. |
+| `workspaces/overlays/<turn-id>` | Per-turn generated files, symlinks, MCP config, and hosted-tool config. |
+
+## Codex command and credentials
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_BIN` | `codex` | Codex CLI command. May include arguments because the value is split with `shlex.split()`. |
+| `CODEX_CREDENTIAL_STORE` | `file` | Value written to each user/Codex-profile `config.toml` as `cli_auth_credentials_store` and passed to Codex children. |
+| `CODEX_BROKER_PASSTHROUGH_ENV` | empty | CSV allowlist of exact environment variable names copied into app-server child processes in addition to the safe base environment. |
+
+The broker always sets `CODEX_HOME`, `CODEX_CREDENTIAL_STORE`, and `HOME` for Codex auth commands and app-server children. The child process environment is otherwise scrubbed.
+
+## Turn execution and pooling
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_BROKER_MAX_ACTIVE_TURNS` | `0` | Global active-turn cap. `0` means unlimited; same-thread locking still applies. |
+| `CODEX_BROKER_POOL_IDLE_TTL_SECONDS` | `900` | Idle app-server children older than this are closed. Set `0` to disable idle sweeping. |
+| `CODEX_BROKER_REQUEST_TIMEOUT_SECONDS` | `60` | Timeout for JSON-RPC request/response calls to an app-server child. |
+| `CODEX_BROKER_TURN_TIMEOUT_SECONDS` | `0` | Maximum wall time for a Codex turn. `0` disables broker-level turn timeout. |
+| `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS` | `30` | Time an app-server approval, permission request, user-input prompt, or MCP elicitation waits for host resolution before fallback. |
+
+For user-input prompts, Codex may provide `autoResolutionMs`; the broker uses the smaller positive value between that prompt timeout and `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`.
+
+## Bundles, MCP, and hosted tools
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_BROKER_ALLOWED_TOOL_COMMANDS` | empty | CSV allowlist for bundle-declared MCP server commands. Entries may be command names such as `node`, or exact absolute executable paths. |
+| `CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES` | `http://127.0.0.1,http://localhost,http://host.docker.internal` | CSV allowlist for broker-hosted HTTP tool endpoints. Match is by parsed scheme and host, with optional explicit port and path prefix. |
+| `CODEX_BROKER_ENABLE_INLINE_BUNDLES` | `false` | Enables `POST /v1/bundles/inline`. |
+| `CODEX_BROKER_INLINE_BUNDLE_MAX_BYTES` | `262144` | Maximum serialized inline bundle payload size. |
+
+Inline bundles are stored by content digest. Re-sending the same payload is idempotent. A mounted bundle id cannot be shadowed by an inline bundle, and an accepted inline bundle id cannot later be reused with different content.
+
+## Logging, events, and shutdown
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_BROKER_DEBUG_RAW_EVENTS` | `false` | When true, persists redacted raw app-server method and params beside normalized events. |
+| `CODEX_BROKER_RAW_EVENT_RETENTION_SECONDS` | `604800` | Startup pruning window for raw app-server method/params fields. Normalized events are preserved. |
+| `CODEX_BROKER_JSON_LOGS` | `true` | Emits structured JSON logs to stderr. Set false to suppress broker JSON logs. |
+| `CODEX_BROKER_SHUTDOWN_MODE` | `interrupt` | `interrupt` or `drain`. Invalid values behave as `interrupt`. |
+| `CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` | `30` | Drain wait before interrupting leftovers when shutdown mode is `drain`. |
+
+Logs and raw event payloads are redacted for common API key, token, bearer, password, secret, credential, and cookie fields.
+
+## Configuration profiles
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_BROKER_CONFIG_PROFILES_JSON` | unset | JSON object keyed by `configProfile` name. Takes precedence over the file variable. |
+| `CODEX_BROKER_CONFIG_PROFILES_FILE` | unset | File containing the same JSON object. Used only when the JSON variable is unset and the file exists. |
+
+When no configuration profiles are configured, any request `configProfile` name is accepted and no profile defaults are applied. When profiles are configured, every request profile must exist in the configured object.
+
+## Configuration profile shape
+
+```json
+{
+  "default": {
+    "model": "gpt-5",
+    "approvalPolicy": "on-request",
+    "sandbox": "workspace-write",
+    "enabledBundles": ["example-chat-v1"],
+    "allowedWorkspaceRoots": ["/workspaces/app"]
+  },
+  "background-review": {
+    "model": "gpt-5",
+    "effort": "high",
+    "summary": "auto",
+    "webSearch": "enabled",
+    "modelVerbosity": "low",
+    "features": {
+      "image_generation": false
+    },
+    "enabledBundles": ["document-jobs-v1"],
+    "allowedWorkspaceRoots": ["/workspaces/app", "/host-data/jobs"]
+  }
+}
+```
+
+Supported keys:
+
+| Key | Applies to | Description |
+| --- | --- | --- |
+| `approvalPolicy` | Codex thread | Passed to `thread/start` or `thread/resume` unless overridden by request options. |
+| `sandbox` | Codex thread | Default sandbox string. Request options win, then bundle sandbox, then profile sandbox. |
+| `model` | Codex thread and turn | Passed to thread and turn calls unless overridden. |
+| `personality` | Codex thread and turn | Passed to thread and turn calls unless overridden. |
+| `serviceTier` | Codex turn | Passed to `turn/start`. |
+| `effort`, `reasoningEffort` | Codex turn and process config | Reasoning effort aliases. |
+| `summary`, `reasoningSummary` | Codex turn | Reasoning summary aliases. |
+| `outputSchema`, `output_schema` | Codex turn | JSON Schema for the final assistant message. |
+| `webSearch`, `web_search` | Process config | Mapped to `-c web_search=<value>`. |
+| `modelVerbosity`, `model_verbosity` | Process config | Mapped to `-c model_verbosity=<value>`. |
+| `imageGeneration`, `features.image_generation` | Process feature config | Mapped to `features.image_generation=<value>`. |
+| `features` | Process feature config | Object of feature names to values. |
+| `enabledBundles`, `bundleIds`, `bundles` | Broker policy | Bundle allowlist for this profile. |
+| `allowedWorkspaceRoots`, `workspaceRoots` | Broker policy | Per-profile cwd allowlist checked after global workspace or bundle validation. |
+
+### Model and reasoning selection
+
+A turn can override profile defaults without modifying the profile:
+
+```json
+{
+  "input": [{ "type": "text", "text": "Review these changes." }],
+  "codexOptions": {
+    "model": "gpt-5.6-sol",
+    "effort": "high"
+  }
+}
+```
+
+Selection precedence is the turn's `codexOptions`, then the selected configuration profile, then Codex's current recommended model and model-specific reasoning default. `reasoningEffort` is accepted as an alias for `effort`. Model availability and supported effort values come from Codex and may differ by account, provider, and selected model.
+
+## Request-level options
+
+Thread create accepts:
+
+| Field | Description |
+| --- | --- |
+| `threadId` | Optional caller-supplied stable broker thread id. Reusing the same user/thread id returns the existing thread. |
+| `profile` | User's Codex auth profile. Defaults to `default`; returned value is canonicalized. |
+| `configProfile` | Configuration profile name. Defaults to `default`. |
+| `runtimeProfile` | Deprecated alias for `configProfile`. |
+| `hostApp` | Optional host app name for logs, metrics, and returned objects. |
+| `bundleId` | Optional task bundle id. |
+| `cwd` | Optional Codex working directory. Must be allowed by broker roots, bundle paths, and profile roots when configured. |
+
+Turn start accepts:
+
+| Field | Description |
+| --- | --- |
+| `input` | Required non-empty array of Codex input items. |
+| `mode` | `reject`, `queue`, or `steer`. Defaults to `reject`. |
+| `profile` | Overrides the thread's Codex auth profile for this turn. |
+| `configProfile` | Overrides the thread config profile for this turn. |
+| `runtimeProfile` | Deprecated alias for `configProfile`. |
+| `hostApp` | Overrides or inherits the thread host app. |
+| `bundleId` | Overrides or inherits the thread bundle id. |
+| `cwd` | Overrides or inherits the thread cwd. |
+| `codexOptions` | Canonical Codex option object. |
+| `runtime` | Deprecated alias merged before `codexOptions`; `codexOptions` wins on conflicts. |
+| `idempotencyKey` | Prevents duplicate work for retries on the same user/thread. |
+| `productCorrelationId` | Host trace id persisted on events and logs. |
+| `correlationId` | Alias for `productCorrelationId`. |
+| `stream` | Present in OpenAPI for compatibility; current broker always persists events and returns `streamUrl`. |
+
+## Docker build arguments
+
+| Build arg | Default | Description |
+| --- | --- | --- |
+| `CODEX_VERSION` | `0.144.0` | Codex CLI release version without the `rust-v` prefix. |
+| `TARGETARCH` | supplied by BuildKit | `amd64` maps to `x86_64`, `arm64` maps to `aarch64`. Other values fail the build. |
+
+## Minimal local example
+
+```env
+CODEX_BROKER_HOST=127.0.0.1
+CODEX_BROKER_PORT=3400
+CODEX_BROKER_DATA_DIR=.data
+CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS=/path/to/workspaces
+CODEX_BROKER_ALLOWED_BUNDLE_ROOTS=/path/to/bundles
+CODEX_BROKER_ALLOWED_TOOL_COMMANDS=python,node
+CODEX_BROKER_INTERNAL_KEY=dev-only-key
+CODEX_BIN=codex
+CODEX_CREDENTIAL_STORE=file
+```
+
+Run with:
+
+```bash
+uv run codex-broker
+```

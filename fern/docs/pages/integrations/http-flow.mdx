@@ -1,0 +1,202 @@
+---
+title: "HTTP flow"
+description: "The minimal request sequence for auth checks, thread creation, turn submission, event streaming, and polling."
+---
+
+# HTTP flow
+
+This is the practical request sequence for host code that interacts with Codex Broker.
+
+Set examples to match your deployment:
+
+```bash
+BROKER=http://127.0.0.1:3400
+BROKER_KEY=dev-only-key
+OWNER=service-account-1
+```
+
+If an `ownerId`, `threadId`, or `turnId` contains `/`, spaces, or other reserved characters, URL-encode that path segment. The bundled Python and TypeScript clients do this for you.
+
+These examples use the default Codex auth profile. Omit `profile` to use `default`; pass `profile` only when a user or service account has multiple Codex auth profiles.
+
+## Check auth status
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/status"
+```
+
+`authFingerprint` changes when the user/Codex-profile auth file changes. App-server children are keyed by that fingerprint so refreshed auth starts fresh runtime processes.
+
+## Run an active probe
+
+Use a probe for manual checks or low-frequency health workflows, not frequent polling:
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "$BROKER/v1/owners/$OWNER/auth/probe"
+```
+
+If Codex reports token invalidation, the broker stores `refresh_failed` and closes stale pooled app-server children for that user/Codex-profile pair.
+
+## Store an API key
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"apiKey":"'"$OPENAI_API_KEY"'"}' \
+  "$BROKER/v1/owners/$OWNER/auth/api-key"
+```
+
+## Invalidate runtime auth
+
+If an administrator refreshes shared auth outside the broker, close that Codex auth profile's pooled app-server children before retrying failed work:
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "$BROKER/v1/owners/$OWNER/auth/runtime/invalidate"
+```
+
+## Create or reuse a thread
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "threadId": "chat-123",
+    "hostApp": "chat-app",
+    "bundleId": "example-chat-v1",
+    "configProfile": "default",
+    "cwd": "/workspaces/app"
+  }' \
+  "$BROKER/v1/owners/$OWNER/threads"
+```
+
+Response:
+
+```json
+{
+  "threadId": "chat-123",
+  "codexThreadId": null,
+  "profile": "default",
+  "configProfile": "default",
+  "hostApp": "chat-app",
+  "bundleId": "example-chat-v1",
+  "cwd": "/workspaces/app",
+  "status": "active",
+  "createdAt": "2026-06-28T12:00:00Z",
+  "updatedAt": "2026-06-28T12:00:00Z"
+}
+```
+
+## Submit a turn
+
+```bash
+THREAD_ID=chat-123
+
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": [
+      { "type": "text", "text": "Summarize the evidence for this user question." }
+    ],
+    "hostApp": "chat-app",
+    "bundleId": "example-chat-v1",
+    "configProfile": "default",
+    "codexOptions": {
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    },
+    "mode": "queue",
+    "productCorrelationId": "chat-123:message-456",
+    "idempotencyKey": "chat-123:message-456"
+  }' \
+  "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/turns"
+```
+
+Each turn can choose a model with `codexOptions.model` and reasoning effort with `codexOptions.effort`. Request values override the selected `configProfile`; profile values override Codex's own defaults. If neither layer sets a value, the broker lets Codex choose its current recommended model and model-specific reasoning default. The `reasoningEffort` alias is also accepted, and supported effort values depend on the selected model.
+
+Response:
+
+```json
+{
+  "threadId": "chat-123",
+  "turnId": "turn_...",
+  "codexTurnId": null,
+  "profile": "default",
+  "configProfile": "default",
+  "hostApp": "chat-app",
+  "bundleId": "example-chat-v1",
+  "cwd": "/workspaces/app",
+  "mode": "queue",
+  "productCorrelationId": "chat-123:message-456",
+  "status": "queued",
+  "error": null,
+  "errorCode": null,
+  "publicMessage": null,
+  "adminMessage": null,
+  "createdAt": "2026-06-28T12:00:01Z",
+  "startedAt": null,
+  "completedAt": null,
+  "updatedAt": "2026-06-28T12:00:01Z",
+  "streamUrl": "/v1/owners/service-account-1/threads/chat-123/events?turnId=turn_..."
+}
+```
+
+`streamUrl` is relative to the broker base URL and already filters to the submitted turn. It does not include the auth header.
+
+## Stream events
+
+```bash
+TURN_ID=turn_...
+
+curl -N \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/events?turnId=$TURN_ID&after=0"
+```
+
+Use `after=<last-event-id>` to resume without replaying already processed events.
+
+## Poll the turn
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/turns/$TURN_ID"
+```
+
+Terminal statuses are `completed`, `failed`, `timed_out`, and `interrupted`. Nonterminal statuses are `starting`, `queued`, and `running`.
+
+## Error handling
+
+Broker HTTP errors use JSON:
+
+```json
+{ "error": "Thread not found." }
+```
+
+Common statuses:
+
+| Status | Meaning |
+| --- | --- |
+| 400 | Invalid request body, invalid mode, invalid bundle, invalid `cwd`, or policy validation failure. |
+| 401 | Missing or invalid broker key. |
+| 404 | Unknown route, thread, turn, or stream filter target. |
+| 409 | Active turn conflict, archived thread, shutdown, or other conflict. |
+| 502 | Codex app-server request failed. |
+| 500 | Unexpected broker error. |

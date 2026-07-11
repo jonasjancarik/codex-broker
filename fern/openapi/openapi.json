@@ -1,0 +1,1930 @@
+{
+  "components": {
+    "parameters": {
+      "action": {
+        "in": "query",
+        "name": "action",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "after": {
+        "in": "query",
+        "name": "after",
+        "required": false,
+        "schema": {
+          "default": 0,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "interactionId": {
+        "in": "path",
+        "name": "interactionId",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "limit": {
+        "in": "query",
+        "name": "limit",
+        "required": false,
+        "schema": {
+          "default": 100,
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "ownerId": {
+        "in": "path",
+        "name": "ownerId",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "profile": {
+        "in": "query",
+        "name": "profile",
+        "required": false,
+        "schema": {
+          "default": "default",
+          "type": "string"
+        }
+      },
+      "status": {
+        "in": "query",
+        "name": "status",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "threadId": {
+        "in": "path",
+        "name": "threadId",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "threadIdQuery": {
+        "in": "query",
+        "name": "threadId",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "turnId": {
+        "in": "path",
+        "name": "turnId",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "turnIdQuery": {
+        "in": "query",
+        "name": "turnId",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "ApiKeyLoginRequest": {
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "profile": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "apiKey"
+        ],
+        "type": "object"
+      },
+      "AuditLog": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "ownerHash": {
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turnId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "ownerHash",
+          "action",
+          "payload",
+          "createdAt"
+        ],
+        "type": "object"
+      },
+      "AuditLogList": {
+        "properties": {
+          "auditLogs": {
+            "items": {
+              "$ref": "#/components/schemas/AuditLog"
+            },
+            "type": "array"
+          },
+          "ownerHash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ownerHash",
+          "auditLogs"
+        ],
+        "type": "object"
+      },
+      "AuthCommandResult": {
+        "properties": {
+          "authFingerprint": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "exitCode": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          },
+          "ownerHash": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ownerHash",
+          "profile",
+          "state",
+          "exitCode",
+          "output"
+        ],
+        "type": "object"
+      },
+      "AuthProbeResult": {
+        "properties": {
+          "adminMessage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authFilePresent": {
+            "type": "boolean"
+          },
+          "authFingerprint": {
+            "type": "string"
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "completedAt": {
+            "type": "string"
+          },
+          "durationMs": {
+            "type": "number"
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output": {
+            "type": "string"
+          },
+          "ownerHash": {
+            "type": "string"
+          },
+          "previousAuthFingerprint": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "publicMessage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "missing",
+              "authenticated",
+              "refresh_failed",
+              "invalid",
+              "failed"
+            ]
+          }
+        },
+        "required": [
+          "ownerHash",
+          "profile",
+          "state",
+          "authFilePresent",
+          "authFingerprint",
+          "previousAuthFingerprint",
+          "command",
+          "startedAt",
+          "completedAt",
+          "durationMs",
+          "output"
+        ],
+        "type": "object"
+      },
+      "AuthStatus": {
+        "properties": {
+          "authFilePresent": {
+            "type": "boolean"
+          },
+          "authFingerprint": {
+            "type": "string"
+          },
+          "deviceAuth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceAuthSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loginStatusExitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "loginStatusOutput": {
+            "type": "string"
+          },
+          "ownerHash": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "missing",
+              "present_unverified",
+              "authenticated",
+              "refresh_failed",
+              "invalid",
+              "failed",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "ownerHash",
+          "profile",
+          "state",
+          "authFilePresent"
+        ],
+        "type": "object"
+      },
+      "BrokerEvent": {
+        "properties": {
+          "ambiguous": {
+            "type": "boolean"
+          },
+          "codexThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codexTurnId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "ownerHash": {
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "productCorrelationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rawMethod": {
+            "type": "string"
+          },
+          "rawParams": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "threadId",
+          "createdAt",
+          "payload",
+          "ambiguous"
+        ],
+        "type": "object"
+      },
+      "BundleAccepted": {
+        "properties": {
+          "bundleId": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bundleId",
+          "digest",
+          "source"
+        ],
+        "type": "object"
+      },
+      "CodexOptions": {
+        "additionalProperties": true,
+        "properties": {
+          "approvalPolicy": {
+            "type": "string"
+          },
+          "effort": {
+            "description": "Reasoning effort for this turn. Supported values depend on the selected Codex model.",
+            "type": "string"
+          },
+          "imageGeneration": {
+            "type": "boolean"
+          },
+          "model": {
+            "description": "Codex model for this turn. Overrides the selected configuration profile; when omitted, the profile or Codex default applies.",
+            "type": "string"
+          },
+          "modelVerbosity": {
+            "type": "string"
+          },
+          "outputSchema": {
+            "additionalProperties": true,
+            "description": "JSON Schema used to constrain the final assistant message for the turn.",
+            "type": "object"
+          },
+          "personality": {
+            "type": "string"
+          },
+          "reasoningEffort": {
+            "description": "Alias for effort.",
+            "type": "string"
+          },
+          "reasoningSummary": {
+            "type": "string"
+          },
+          "sandbox": {
+            "type": "string"
+          },
+          "serviceTier": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "webSearch": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "DeviceAuthSession": {
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "loginUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "userCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sessionId",
+          "state",
+          "profile",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
+      "DeviceCodeSubmitRequest": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "const": "ok"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "InputItem": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "Interaction": {
+        "properties": {
+          "codexThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codexTurnId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fallbackResponse": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "interactionId": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "approval",
+              "permissions",
+              "userInput",
+              "mcpElicitation",
+              "serverRequest"
+            ]
+          },
+          "method": {
+            "type": "string"
+          },
+          "productCorrelationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "resolutionSource": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolvedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "interactionId",
+          "threadId",
+          "turnId",
+          "kind",
+          "method",
+          "status",
+          "request",
+          "fallbackResponse",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "InteractionList": {
+        "properties": {
+          "interactions": {
+            "items": {
+              "$ref": "#/components/schemas/Interaction"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "interactions"
+        ],
+        "type": "object"
+      },
+      "InteractionResolveRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "_meta": {},
+          "action": {
+            "enum": [
+              "accept",
+              "decline",
+              "cancel"
+            ]
+          },
+          "answers": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "content": {},
+          "decision": {},
+          "permissions": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "response": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "scope": {
+            "enum": [
+              "turn",
+              "session"
+            ]
+          },
+          "strictAutoReview": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ProfileRequest": {
+        "properties": {
+          "deleteProfile": {
+            "default": false,
+            "type": "boolean"
+          },
+          "profile": {
+            "default": "default",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Readiness": {
+        "properties": {
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "not_ready"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "RuntimeInvalidationResult": {
+        "properties": {
+          "invalidated": {
+            "type": "boolean"
+          },
+          "ownerHash": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ownerHash",
+          "profile",
+          "invalidated"
+        ],
+        "type": "object"
+      },
+      "TaskBundle": {
+        "additionalProperties": true,
+        "properties": {
+          "allowedPaths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "instructions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mcpServers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "prompts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "sandbox": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "skills": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "tools": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "Thread": {
+        "properties": {
+          "bundleId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codexThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "configProfile": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hostApp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profile": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId",
+          "profile",
+          "configProfile",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "ThreadCreateRequest": {
+        "properties": {
+          "bundleId": {
+            "type": "string"
+          },
+          "configProfile": {
+            "default": "default",
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "hostApp": {
+            "type": "string"
+          },
+          "profile": {
+            "default": "default",
+            "type": "string"
+          },
+          "runtimeProfile": {
+            "deprecated": true,
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Turn": {
+        "properties": {
+          "adminMessage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bundleId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codexTurnId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "configProfile": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "execution": {
+            "properties": {
+              "brokerVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "bundleDigest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requestFingerprint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resolvedOptions": {
+                "additionalProperties": true,
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "requestFingerprint",
+              "bundleDigest",
+              "resolvedOptions",
+              "brokerVersion"
+            ],
+            "type": "object"
+          },
+          "hostApp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "type": "string"
+          },
+          "productCorrelationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profile": {
+            "type": "string"
+          },
+          "publicMessage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "streamUrl": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId",
+          "turnId",
+          "profile",
+          "configProfile",
+          "mode",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "TurnStartRequest": {
+        "properties": {
+          "bundleId": {
+            "type": "string"
+          },
+          "codexOptions": {
+            "$ref": "#/components/schemas/CodexOptions",
+            "description": "Per-turn Codex options. Values override the selected configuration profile without modifying it."
+          },
+          "configProfile": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "hostApp": {
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "input": {
+            "items": {
+              "$ref": "#/components/schemas/InputItem"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "mode": {
+            "default": "reject",
+            "enum": [
+              "reject",
+              "queue",
+              "steer"
+            ]
+          },
+          "productCorrelationId": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/CodexOptions"
+          },
+          "runtimeProfile": {
+            "deprecated": true,
+            "type": "string"
+          },
+          "stream": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "input"
+        ],
+        "type": "object"
+      },
+      "TurnSteerRequest": {
+        "properties": {
+          "input": {
+            "items": {
+              "$ref": "#/components/schemas/InputItem"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "input"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "bearerFormat": "API key",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "brokerKey": {
+        "in": "header",
+        "name": "X-Codex-Broker-Key",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "title": "Codex Broker",
+    "version": "0.5.5"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/healthz": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Healthy"
+          }
+        },
+        "security": []
+      }
+    },
+    "/metrics": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Prometheus metrics"
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OpenAPI document"
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            },
+            "description": "Ready"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            },
+            "description": "Not ready"
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/bundles/inline": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBundle"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BundleAccepted"
+                }
+              }
+            },
+            "description": "Inline bundle accepted"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/audit-logs": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/profile"
+          },
+          {
+            "$ref": "#/components/parameters/action"
+          },
+          {
+            "$ref": "#/components/parameters/threadIdQuery"
+          },
+          {
+            "$ref": "#/components/parameters/turnIdQuery"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLogList"
+                }
+              }
+            },
+            "description": "Owner-scoped audit logs"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/api-key": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthCommandResult"
+                }
+              }
+            },
+            "description": "API key stored in owner auth home"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/device/start": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceAuthSession"
+                }
+              }
+            },
+            "description": "Device auth started"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/device/submit": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceCodeSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceAuthSession"
+                }
+              }
+            },
+            "description": "Device code submitted"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/logout": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthCommandResult"
+                }
+              }
+            },
+            "description": "Owner profile logged out"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/probe": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthProbeResult"
+                }
+              }
+            },
+            "description": "Active auth probe result"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/runtime/invalidate": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeInvalidationResult"
+                }
+              }
+            },
+            "description": "Owner profile runtime invalidated"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/status": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/profile"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatus"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreadCreateRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            },
+            "description": "Thread created"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/archive": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            },
+            "description": "Thread archived"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/events": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          },
+          {
+            "$ref": "#/components/parameters/turnIdQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrokerEvent"
+                }
+              }
+            },
+            "description": "SSE event stream of BrokerEvent JSON payloads"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/interactions": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "$ref": "#/components/parameters/turnIdQuery"
+          },
+          {
+            "$ref": "#/components/parameters/status"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InteractionList"
+                }
+              }
+            },
+            "description": "Thread interactions"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/turns": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Turn"
+                }
+              }
+            },
+            "description": "Turn accepted"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "$ref": "#/components/parameters/turnId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Turn"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "$ref": "#/components/parameters/turnId"
+          },
+          {
+            "$ref": "#/components/parameters/status"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InteractionList"
+                }
+              }
+            },
+            "description": "Turn interactions"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "$ref": "#/components/parameters/turnId"
+          },
+          {
+            "$ref": "#/components/parameters/interactionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Interaction"
+                }
+              }
+            },
+            "description": "Interaction"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "$ref": "#/components/parameters/turnId"
+          },
+          {
+            "$ref": "#/components/parameters/interactionId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InteractionResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Interaction"
+                }
+              }
+            },
+            "description": "Interaction resolved"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interrupt": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "$ref": "#/components/parameters/turnId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Turn"
+                }
+              }
+            },
+            "description": "Turn interrupted"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/steer": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "$ref": "#/components/parameters/turnId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnSteerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Turn"
+                }
+              }
+            },
+            "description": "Turn steered"
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    },
+    {
+      "brokerKey": []
+    }
+  ]
+}

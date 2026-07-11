@@ -1,0 +1,12 @@
+{
+  "name": "codex-broker-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "scripts": {
+    "openapi:generate": "uv run python scripts/export_openapi.py",
+    "sdk:generate": "pnpm openapi:generate && npx -y fern-api@5.35.4 generate --group typescript-sdk",
+    "docs:dev": "pnpm openapi:generate && npx -y fern-api@5.35.4 docs dev",
+    "docs:check": "pnpm openapi:generate && npx -y fern-api@5.35.4 check",
+    "docs:publish": "pnpm openapi:generate && npx -y fern-api@5.35.4 generate --docs"
+  }
+}

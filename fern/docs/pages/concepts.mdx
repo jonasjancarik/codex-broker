@@ -1,0 +1,86 @@
+---
+title: "Core concepts"
+description: "The main nouns in Codex Broker: users, Codex auth profiles, broker threads, turns, bundles, events, interactions, and configuration profiles."
+---
+
+# Core concepts
+
+These terms name the stable records and boundaries host apps use when they call Codex Broker.
+
+## Host app
+
+The product using the broker. It owns product identity, permissions, database records, UI, prompt construction, job queues, artifacts, and app-specific tool behavior.
+
+The broker should not know what a product evidence hit means or whether a user is allowed to access a product record. The host app keeps those checks.
+
+## User
+
+An `ownerId` is the API field for the product user or service account whose Codex credentials should be used. In prose, think of this as the broker user.
+
+The broker never uses raw `ownerId` values in paths. It hashes them before creating user/Codex-profile auth homes or writing user-scoped logs.
+
+## Codex auth profile
+
+A Codex auth profile is a named Codex credential set for a user or service account. The API field is `profile`, and `default` is enough for many apps. Multiple Codex auth profiles let one user use separate Codex login states for different deployments or workflows.
+
+Codex auth profile ids are canonicalized before use in filesystem paths. Characters outside `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-` are replaced with `_`.
+
+## Broker thread
+
+A broker thread is the broker's durable handle for one host conversation, job, or long-running work item. Host apps may supply a stable `threadId` when creating a thread, or omit it and let the broker generate one.
+
+Store the returned broker `threadId` next to the host chat, job, or task record.
+
+## Codex thread id
+
+The Codex thread id is the raw id returned by `codex app-server`. The broker stores it so host apps do not need to manage app-server resume details.
+
+## Turn
+
+A turn is one unit of Codex work submitted to a broker thread. It may be queued, running, completed, failed, timed out, or interrupted.
+
+The broker enforces one active turn at a time per broker thread. The turn `mode` controls what happens when a second turn arrives:
+
+| Mode | Behavior |
+| --- | --- |
+| `reject` | Return a conflict when another turn is active. |
+| `queue` | Wait until the active turn finishes, then run. |
+| `steer` | Send input into the active Codex turn when possible; otherwise behave like `reject`. |
+
+Use `idempotencyKey` for host retries. A repeated request with the same user, thread, and idempotency key returns the original turn.
+
+## Bundle
+
+A bundle is a reviewed task manifest selected by `bundleId`. It declares Codex-facing context and capabilities for a class of host work:
+
+- instructions
+- mounted skills
+- mounted prompt files
+- mounted MCP servers
+- broker-hosted HTTP tool adapters
+- additional allowed workspace paths
+- sandbox defaults
+
+Bundles do not contain host business logic, user state, queues, artifacts, or final authorization decisions.
+
+## Configuration profile
+
+A configuration profile is different from a Codex auth profile. It is a named set of broker-side defaults and policy for model, sandbox, approval behavior, workspace roots, and enabled bundles.
+
+Requests select one with `configProfile`. When profiles are configured, unknown profile names are rejected.
+
+## Event
+
+Events are normalized records derived from Codex app-server notifications and broker lifecycle changes. They are persisted in SQLite and streamed from:
+
+```text
+GET /v1/owners/{ownerId}/threads/{threadId}/events?turnId=<turnId>&after=<event-id>
+```
+
+Host apps map events into their own UI streams, job logs, database records, or artifacts.
+
+## Interaction
+
+An interaction is a host-resolved app-server request, such as an approval, permission request, user-input prompt, or MCP elicitation.
+
+The broker persists the request before answering Codex. The host can resolve it through the interaction API. If the host does not answer before `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`, the broker uses a fail-closed fallback.

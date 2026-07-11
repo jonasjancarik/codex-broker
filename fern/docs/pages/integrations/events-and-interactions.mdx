@@ -1,0 +1,104 @@
+---
+title: "Events and interactions"
+description: "How the broker streams normalized Codex events and mediates approvals, user input, permissions, and MCP elicitations."
+---
+
+# Events and interactions
+
+The broker persists normalized events in SQLite and streams them as Server-Sent Events. Host apps consume those events and map them to product UIs, job logs, artifacts, or database records.
+
+## SSE contract
+
+The `/events` endpoint returns `text/event-stream`. Each broker event is sent as:
+
+```text
+id: 12
+event: message.delta
+data: {"id":12,"type":"message.delta","threadId":"thr_...","turnId":"turn_...","payload":{"delta":"hi"},"ambiguous":false}
+
+```
+
+The JSON `data` object has this stable envelope:
+
+```json
+{
+  "id": 12,
+  "type": "message.delta",
+  "ownerHash": "owner_hash_...",
+  "threadId": "thr_...",
+  "turnId": "turn_...",
+  "productCorrelationId": "chat-123:message-456",
+  "codexThreadId": "codex_thread_...",
+  "codexTurnId": "codex_turn_...",
+  "createdAt": "2026-06-28T12:00:02Z",
+  "payload": {},
+  "ambiguous": false
+}
+```
+
+Use `after=<last-event-id>` to resume a stream. Use `turnId=<turn-id>` to filter a thread stream to one turn.
+
+The broker validates `threadId` and optional `turnId` before opening the SSE response. Unknown ids return JSON 404 instead of a partial stream.
+
+## Common event types
+
+| Type | Payload |
+| --- | --- |
+| `thread.started`, `thread.resumed`, `thread.status.changed`, `thread.settings.updated` | Codex thread lifecycle and settings. |
+| `turn.started`, `turn.completed`, `turn.failed`, `turn.interrupted` | Turn lifecycle. Treat completed, failed, and interrupted as terminal for streaming loops. |
+| `message.delta` | Assistant output deltas. Steering also emits `message.delta` with `steered` metadata. |
+| `message.completed` | Completed Codex agent message item. |
+| `reasoning.summary.started`, `reasoning.summary.delta`, `reasoning.completed` | Reasoning summary lifecycle and deltas. |
+| `tool.started`, `tool.output.delta`, `tool.completed`, `tool.requested` | Tool lifecycle and output. |
+| `approval.requested`, `approval.resolved` | Approval request lifecycle. |
+| `user_input.requested`, `user_input.resolved` | User-input prompt lifecycle. |
+| `mcp.elicitation.requested`, `mcp.elicitation.resolved` | MCP elicitation lifecycle. |
+| `plan.updated`, `plan.delta`, `goal.updated`, `goal.cleared`, `review.entered`, `review.exited` | Plan, goal, and review-mode surfaces normalized from Codex app-server notifications. |
+| `error` | Normalized Codex app-server error payload. |
+
+When `ambiguous` is `true`, the broker attached an early app-server notification to the best known active context before all Codex metadata was available. Host consumers may display the event, but should avoid treating the Codex ids on that event as authoritative.
+
+## Host-resolved interactions
+
+Approvals, permission requests, user-input prompts, and MCP elicitations are persisted as broker interactions before the broker answers Codex.
+
+Host apps can list them for a thread:
+
+```http
+GET /v1/owners/{ownerId}/threads/{threadId}/interactions
+```
+
+Or for a turn:
+
+```http
+GET /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions
+```
+
+Request events include `interactionId`. To answer a request:
+
+```http
+POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve
+```
+
+The resolve body mirrors the app-server response shape for the original method:
+
+| Interaction | Resolve shape |
+| --- | --- |
+| Command or file approval | `{"decision":"accept"}` or another generated decision value. |
+| Permission request | `permissions` plus optional `scope` and `strictAutoReview`. |
+| User input | `answers`. |
+| MCP elicitation | `action`, `content`, and optional `_meta`. |
+
+## Fallback behavior
+
+If the host does not resolve an interaction before `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`, the broker answers Codex with a safe fallback:
+
+| Interaction | Fallback |
+| --- | --- |
+| Command or file approval | Decline. |
+| Legacy approval | Deny. |
+| Permission request | Grant no extra permissions for the turn. |
+| User input | Empty answers object. |
+| MCP elicitation | Decline. |
+
+Pending interactions are also failed with fallback responses during broker restart recovery so host UIs do not keep showing stale prompts.

@@ -1,0 +1,4 @@
+services:
+  codex-broker:
+    ports:
+      - "3400:3400"

@@ -1,0 +1,178 @@
+---
+title: "Architecture"
+description: "The broker process boundaries, storage layout, app-server pool, bundle overlays, event streaming, and shutdown behavior."
+---
+
+# Architecture
+
+Codex Broker is an internal HTTP service that runs next to a host application. It manages Codex auth homes, `codex app-server` child processes, durable broker thread and turn state, bundle mounting, and normalized event streaming.
+
+## Concrete example
+
+Say a support app has an agent chat that can ask Codex to inspect a customer's account notes and draft a response.
+
+The support app still decides when Codex should run. It authenticates the support agent, checks that the agent may access the customer, builds the product-specific prompt, chooses the `ownerId`, reuses the support conversation id as `threadId`, selects a `bundleId` that exposes the approved evidence-search tool, and sends a turn to the broker.
+
+The broker starts after that decision. It uses the right user/Codex-profile auth home, starts or reuses a `codex app-server` child, maps the broker thread to the underlying Codex thread, prevents another turn from racing on the same support conversation, mounts the bundle, persists normalized events, and streams those events back to the app.
+
+The support app then renders the stream, stores the final draft, and enforces any product review rules. The broker does not decide who the support agent is, which customer records are allowed, or what a good support response looks like.
+
+## Runtime shape
+
+```text
+host app backend or worker
+  |
+  | HTTP JSON requests
+  | SSE event stream
+  v
+codex-broker process
+  |
+  +-- HTTP API
+  |     authenticates broker-key requests
+  |     exposes health, readiness, OpenAPI, metrics, auth, threads, turns, events
+  |
+  +-- AuthManager
+  |     hashes owner ids
+  |     creates user/Codex-profile CODEX_HOME directories
+  |     runs codex login/status/logout commands
+  |
+  +-- TurnScheduler
+  |     creates broker threads and turns
+  |     enforces one active turn per broker thread
+  |     runs reject, queue, and steer behavior
+  |     normalizes Codex app-server notifications into broker events
+  |
+  +-- AppServerPool
+  |     starts long-lived codex app-server children
+  |     routes JSON-RPC requests, responses, notifications, and server requests
+  |     reuses or closes children by pool key
+  |
+  +-- BundleRegistry
+  |     resolves mounted and inline task bundles
+  |     validates workspace paths, MCP commands, and hosted-tool endpoints
+  |     materializes per-turn overlays
+  |
+  +-- StateStore
+        persists SQLite tables for Codex auth profiles, threads, turns, events,
+        bundle digests, app-server processes, audit logs, and interactions
+```
+
+The implementation uses the Python standard library HTTP server and `subprocess`. The console entry point is `codex_broker.__main__:main`, which builds `BrokerConfig.from_env()` and starts the HTTP server.
+
+## Source map
+
+| Module | Responsibility |
+| --- | --- |
+| `src/codex_broker/__main__.py` | Console entry point. |
+| `src/codex_broker/config.py` | Environment parsing and derived filesystem paths. |
+| `src/codex_broker/http_api.py` | HTTP routes, auth header checks, readiness, metrics, SSE, OpenAPI. |
+| `src/codex_broker/auth.py` | User hashing, Codex auth profile normalization, `CODEX_HOME` creation, Codex login/status/logout. |
+| `src/codex_broker/scheduler.py` | Thread and turn lifecycle, same-thread gates, config profiles, Codex request params, metrics. |
+| `src/codex_broker/app_server.py` | `codex app-server` process pool, JSON-RPC transport, interaction mediation. |
+| `src/codex_broker/bundles.py` | Mounted and inline bundle lookup, validation, overlays, MCP config, hosted-tool declarations. |
+| `src/codex_broker/tool_adapter_mcp.py` | Local MCP server that forwards broker-hosted tool calls to host-owned HTTP endpoints. |
+| `src/codex_broker/state.py` | SQLite schema, persistence, restart recovery, event and audit queries. |
+| `src/codex_broker/events.py` | Codex app-server notification to broker event normalization. |
+| `src/codex_broker/interactions.py` | Validation and fallback response shapes for approvals, permissions, user input, and MCP elicitations. |
+| `src/codex_broker/client.py` | Python client for host services and workers. |
+
+## Startup
+
+On startup, the broker:
+
+1. Reads environment into `BrokerConfig`.
+2. Ensures `data_dir`, `auth_root`, `inline_bundle_root`, and `overlay_root` exist.
+3. Opens the SQLite state store.
+4. Marks abandoned `starting`, `queued`, and `running` turns as failed.
+5. Marks pending interactions failed with fallback responses.
+6. Prunes persisted raw app-server event fields when raw capture retention is enabled.
+7. Constructs auth, bundle, app-server pool, and scheduler services.
+8. Starts `ThreadingHTTPServer` on `CODEX_BROKER_HOST:CODEX_BROKER_PORT`.
+
+Only `GET /healthz` and `GET /readyz` are unauthenticated. Every product route, `/metrics`, `/openapi.json`, and `/v1/bundles/inline` requires the broker key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
+
+## Data layout
+
+```text
+<data_dir>/
+  state/
+    broker.sqlite
+  auth/
+    owners/
+      <owner-hash>/
+        profiles/
+          <profile>/
+            codex-home/
+              auth.json
+              config.toml
+  bundles/
+    inline/
+      <sha256-digest>/
+        bundle.json
+  workspaces/
+    overlays/
+      <turn-id>/
+        AGENTS.md
+        .agents/skills/<skill-name> -> mounted skill directory
+        .codex/config.toml
+        prompts/<prompt-name>.<ext> -> mounted prompt file
+        tool-adapters.json
+```
+
+The default data directory is `.data`; Docker deployments usually set it to `/data`.
+
+## SQLite state
+
+`StateStore` creates and migrates tables for:
+
+- user Codex auth profiles and auth status
+- broker threads
+- turns
+- normalized events and optional redacted raw app-server fields
+- bundle digests
+- app-server process diagnostics
+- user-scoped audit logs
+- pending interactions
+
+Restart recovery is conservative. Turns that were in progress before process death are failed because the app-server child that owned them is gone. Pending interactions are resolved with fallback responses so host UIs do not show stale prompts.
+
+## App-server pool
+
+`AppServerPool` starts children lazily with:
+
+```text
+<CODEX_BIN> app-server --listen stdio://
+```
+
+The pool key includes user hash, Codex auth profile, auth fingerprint, `configProfile`, Codex command/version, credential-store mode, client identity fields, process-level Codex config, mounted MCP declarations, and hashes of resolved MCP `env:VAR` values.
+
+Idle children are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`. Closed or crashed children are removed and restarted lazily on later work. Children with active turn contexts are not swept.
+
+Turns that use broker-hosted HTTP adapters close their app-server child after finalization because adapter config includes per-turn overlay context.
+
+## Security model
+
+The broker is not a public API. It assumes a trusted host backend or worker calls it with an internal key.
+
+Main controls:
+
+- broker-key authentication for product routes
+- user/Codex-profile auth home isolation
+- hashed user paths and user hashes in logs
+- scrubbed child process environments
+- explicit pass-through environment allowlists
+- reviewed bundle roots
+- workspace root validation
+- MCP command allowlisting
+- hosted-tool URL allowlisting
+- `env:VAR` indirection for secret-looking headers and MCP environment values
+- redaction for logs and optional raw event persistence
+
+## Shutdown
+
+On process shutdown, the server stops accepting work and calls scheduler shutdown:
+
+- `CODEX_BROKER_SHUTDOWN_MODE=interrupt` interrupts active turns and finalizes them as interrupted.
+- `CODEX_BROKER_SHUTDOWN_MODE=drain` rejects new turns, waits up to `CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS`, then interrupts leftovers.
+
+After scheduler shutdown, the pool closes all app-server children and the state store is closed.

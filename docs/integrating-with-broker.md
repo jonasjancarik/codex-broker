@@ -136,12 +136,18 @@ curl -sS \
     "hostApp": "chat-app",
     "bundleId": "example-chat-v1",
     "configProfile": "default",
+    "codexOptions": {
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    },
     "mode": "queue",
     "productCorrelationId": "chat-123:message-456",
     "idempotencyKey": "chat-123:message-456"
   }' \
   "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/turns"
 ```
+
+Each turn can select a Codex model with `codexOptions.model` and reasoning effort with `codexOptions.effort`. Request values override the selected `configProfile`; profile values override Codex's own defaults. If neither layer sets a value, the broker lets Codex choose its current recommended model and model-specific reasoning default. The `reasoningEffort` alias is also accepted, and supported effort values depend on the selected model.
 
 Use `codexOptions.outputSchema` in the turn body when the host needs the final assistant message constrained by a JSON Schema, such as a background job that expects a machine-readable result object.
 

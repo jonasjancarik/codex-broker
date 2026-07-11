@@ -1,0 +1,47 @@
+---
+title: "App-server modes"
+description: "The Codex app-server protocol surfaces the broker currently normalizes for turns, plans, goals, review, approvals, user input, and MCP elicitations."
+---
+
+# App-server modes
+
+This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.144.0`:
+
+```bash
+codex app-server generate-ts --out /private/tmp/codex-app-server-ts-0.144.0
+codex app-server generate-json-schema --out /private/tmp/codex-app-server-json-schema-0.144.0
+```
+
+The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `default` and `plan`. Goal tracking, review, approvals, user-input prompts, and MCP elicitations are separate app-server capabilities.
+
+| Capability | 0.144.0 app-server surface | Broker support | Host-facing surface |
+| --- | --- | --- | --- |
+| Default chat/work turns | `thread/start`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt` | Implemented | Thread and turn HTTP APIs; `message.*`, `reasoning.*`, `tool.*`, and `turn.*` events |
+| Plan collaboration mode | `ModeKind = "default" \| "plan"`, `ThreadSettings.collaborationMode`, `turn/plan/updated`, `item/plan/delta` | Event normalization implemented | `thread.settings.updated`, `plan.updated`, `plan.delta` events |
+| Goal tracking | `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`, `thread/goal/updated`, `thread/goal/cleared` | Event normalization implemented; direct broker goal API not yet implemented | `goal.updated`, `goal.cleared` events |
+| Review mode | `review/start`, `enteredReviewMode`, `exitedReviewMode`, auto-approval review notifications | Event normalization implemented; direct broker review API not yet implemented | `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed` events |
+| Tool/file/permission approvals | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/permissions/requestApproval`, legacy `applyPatchApproval`, `execCommandApproval` | Implemented with pending interaction storage, host resolve API, and safe fallbacks | `tool.requested`, `approval.requested`, `approval.resolved`, interaction APIs, owner audit entries |
+| User input prompts | `item/tool/requestUserInput` | Implemented with pending interaction storage, host resolve API, and safe empty-answer fallback | `user_input.requested`, `user_input.resolved`, interaction APIs |
+| MCP elicitations | `mcpServer/elicitation/request`; initialize capability `mcpServerOpenaiFormElicitation` | Implemented with pending interaction storage, host resolve API, and safe decline fallback | `mcp.elicitation.requested`, `mcp.elicitation.resolved`, interaction APIs |
+
+## API direction
+
+The broker currently treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. This keeps host integrations compatible with the generated protocol without inventing app-server methods that are not exposed.
+
+Future product APIs should follow these boundaries:
+
+- Plan mode: expose current collaboration state and plan updates from events. Add a setter only if a generated app-server method appears for updating `ThreadSettings.collaborationMode`, or if the broker implements a supported Codex command path for switching modes.
+- Goal tracking: add broker goal APIs once the broker can safely run `thread/goal/*` methods against a loaded Codex thread outside an active turn.
+- Review: add a review API around `review/start` once response and delivery semantics are mapped to broker turn state.
+- Approvals, user input, and MCP elicitations: keep pending interaction records, resolve APIs, and fallback response shapes in sync with generated app-server schemas.
+
+The broker must always fall back on timeout or child loss so an app-server child is never left waiting indefinitely for a host UI.
+
+## Updating this matrix
+
+When updating for a new Codex version:
+
+1. Regenerate the TypeScript and JSON schema artifacts.
+2. Compare `ModeKind`, `ClientRequest`, `ServerRequest`, and response types.
+3. Update event normalization and interaction fallback logic as needed.
+4. Update this page in the same change.

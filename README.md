@@ -8,7 +8,7 @@ A host app still owns its product behavior: users, permissions, database records
 
 You can run one broker for more than one app if you deliberately want a shared internal service, but that is not the main mental model. Start with one broker container for one product app.
 
-The project spec lives in [codex-broker-spec.md](codex-broker-spec.md). For implementation-level documentation, start with [docs/architecture.md](docs/architecture.md) and [docs/configuration.md](docs/configuration.md).
+The project spec lives in [codex-broker-spec.md](codex-broker-spec.md). The Fern documentation site source lives in [fern/](fern/); preview it with `pnpm docs:dev` and validate it with `pnpm docs:check`. For implementation-level Markdown documentation, start with [docs/architecture.md](docs/architecture.md) and [docs/configuration.md](docs/configuration.md).
 
 ## Why This Exists
 
@@ -44,7 +44,7 @@ The product app owns the queue, job records, input/output files, artifacts, and 
 
 Example: an app where each product user brings their own Codex login.
 
-The host app decides who the product user is and whether they may use Codex. The broker creates a separate owner/profile auth home, runs device auth or API-key auth, and keeps credentials out of host app databases.
+The host app decides who the product user is and whether they may use Codex. The broker creates a separate per-user/per-Codex-auth-profile auth home, runs device auth or API-key auth, and keeps credentials out of host app databases.
 
 ### Reusable Bundles
 
@@ -57,7 +57,7 @@ The broker validates and mounts the bundle. The host app still owns what its too
 The broker owns generic Codex infrastructure:
 
 - `codex app-server` child processes and pooling,
-- per-owner and per-profile `CODEX_HOME` directories,
+- per-user and per-Codex-auth-profile `CODEX_HOME` directories,
 - Codex login status, active auth probe, device auth, API-key auth, and logout,
 - broker-thread to Codex-thread mappings,
 - turn creation, turn status, interruption, steering, and archive behavior,
@@ -85,8 +85,8 @@ This split is important. The broker should not know what a product evidence hit 
 ## Important Terms
 
 - **Host app**: the product using the broker.
-- **Owner**: the stable product identity that owns Codex credentials. Usually this is a user id or service-account id supplied by the host app.
-- **Profile**: a named Codex auth profile under an owner. `default` is enough for many apps.
+- **User**: the product user or service account whose Codex credentials should be used. The API field is `ownerId`.
+- **Codex auth profile**: a named Codex credential set for a user. The API field is `profile`, and `default` is enough for many apps.
 - **Broker thread**: the broker's durable thread id. Host apps submit turns to this id. Host apps may supply this id when creating a thread, or omit it and let the broker generate one.
 - **Codex thread id**: the raw thread id returned by `codex app-server`. The broker stores it so host apps do not need to manage app-server details.
 - **Turn**: one unit of Codex work submitted to a broker thread.
@@ -99,7 +99,7 @@ A typical host integration follows this shape.
 
 1. The host app authenticates its own user.
 2. The host app chooses an `ownerId`, usually the product user id or a service-account id.
-3. The host app checks or starts Codex auth for that owner/profile.
+3. The host app checks or starts Codex auth for that user and Codex auth profile.
 4. The host app creates or reuses a broker thread, optionally with a caller-supplied `threadId`.
 5. The host app submits a turn to the broker thread.
 6. The host app streams normalized broker events from `/events`.
@@ -117,7 +117,7 @@ Example thread create:
 }
 ```
 
-If the same owner creates a thread with the same `threadId` again, the broker returns the existing broker thread.
+If the same user or service account creates a thread with the same `threadId` again, the broker returns the existing broker thread.
 
 Example turn create:
 
@@ -139,7 +139,7 @@ Example turn create:
 }
 ```
 
-Use `idempotencyKey` when a host may retry the same request. A repeated turn create with the same owner, broker thread, and idempotency key returns the original broker turn instead of starting duplicate Codex work.
+Use `idempotencyKey` when a host may retry the same request. A repeated turn create with the same user or service account, broker thread, and idempotency key returns the original broker turn instead of starting duplicate Codex work.
 
 ## Same-Thread Turn Behavior
 
@@ -184,7 +184,7 @@ Core endpoints:
 - `GET /readyz`
 - `GET /metrics`
 - `GET /openapi.json`
-- `GET /v1/owners/{ownerId}/auth/status?profile=default`
+- `GET /v1/owners/{ownerId}/auth/status`
 - `POST /v1/owners/{ownerId}/auth/probe`
 - `POST /v1/owners/{ownerId}/auth/device/start`
 - `POST /v1/owners/{ownerId}/auth/device/submit`
@@ -203,7 +203,7 @@ Core endpoints:
 
 Requests other than health and readiness require `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`. This includes `/metrics` and `/openapi.json`.
 
-Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the owner/profile auth file. `GET /auth/status` is a cheap local check. `POST /auth/probe` runs a tiny real Codex request for the owner/profile and persists `refresh_failed` when token refresh is invalidated. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled app-server children that were started with the old auth.
+Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the user/Codex-profile auth file. `GET /auth/status` is a cheap local check. `POST /auth/probe` runs a tiny real Codex request for the user/Codex-profile pair and persists `refresh_failed` when token refresh is invalidated. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the Codex auth profile to close pooled app-server children that were started with the old auth.
 
 Set `CODEX_BROKER_INTERNAL_KEY` or `CODEX_BROKER_INTERNAL_KEY_FILE`. Unauthenticated mode is only for local development and requires `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
 
@@ -283,7 +283,7 @@ Still outside this repo:
 
 Implemented in this repo:
 
-- owner/profile auth homes with hashed owner paths,
+- user/Codex-profile auth homes with hashed user paths,
 - API-key, device-auth, status, active probe, logout, and explicit profile deletion flows,
 - app-server stdio pooling with lazy restart after child failure,
 - profile defaults and policy checks for model, approval, sandbox, enabled bundles, and workspace roots,
@@ -295,12 +295,13 @@ Implemented in this repo:
 - normalized event persistence and SSE streaming with product correlation and Codex ids,
 - optional caller-supplied broker `threadId` values for host chat or job ids,
 - optional raw app-server event capture with recursive secret redaction and bounded raw-field retention,
-- owner-scoped audit log API for auth, turn, approval, interrupt, and logout events,
+- user-scoped audit log API for auth, turn, approval, interrupt, and logout events,
 - durable app-server child process lifecycle records for operational diagnosis,
 - app-server 0.144.0 mode/capability event coverage for plan, goal, review, approvals, user input, and MCP elicitations,
 - host-mediated approval, user-input, and MCP elicitation interaction records with resolve APIs and fail-closed fallback,
 - mounted bundles, inline bundle validation, skills/prompt overlays, mounted MCP, and broker-hosted tool adapters,
 - readiness checks, Prometheus-style metrics, structured JSON logs, and schema-backed `/openapi.json`.
+- a typed TypeScript client under `clients/typescript`, plus Fern configuration for regenerating a full SDK from the OpenAPI contract.
 
 ## Tests
 
@@ -312,6 +313,13 @@ For warning-sensitive verification:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 uv run python -W always::ResourceWarning -m unittest discover -s tests
+```
+
+Regenerate the API contract and typed TypeScript SDK with:
+
+```bash
+pnpm openapi:generate
+pnpm sdk:generate
 ```
 
 ## More Reading

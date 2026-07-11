@@ -1,0 +1,128 @@
+---
+title: "Deployment"
+description: "How to run Codex Broker as an internal Docker service next to a host app, including mounts, secrets, readiness, and operations behavior."
+---
+
+# Deployment
+
+Codex Broker is shipped as an internal Docker image that a host app runs next to its backend or worker services. In most deployments, it is one service inside the host app's existing Docker Compose project, not a separate public stack.
+
+## Image
+
+The Dockerfile installs the official Codex CLI Linux musl release from `openai/codex` and then installs the broker Python package.
+
+Build-time args:
+
+| Arg | Default | Description |
+| --- | --- | --- |
+| `CODEX_VERSION` | `0.144.0` | Codex CLI release version without the `rust-v` prefix. |
+| `TARGETARCH` | supplied by BuildKit | `amd64` maps to `x86_64`; `arm64` maps to `aarch64`. |
+
+GitHub Actions publishes multi-architecture images to `ghcr.io/jonasjancarik/codex-broker`. Pushes to `main` publish `edge`, and `v*` tags publish both `latest` and the matching version tag. Pull requests build the image without pushing it.
+
+## Extend the broker image
+
+Build a derived image when Codex needs extra OS packages, language runtimes, native libraries, OCR data, or common CLI tools inside the broker container.
+
+Example `.codex-broker/Dockerfile`:
+
+```dockerfile
+ARG CODEX_BROKER_IMAGE=ghcr.io/jonasjancarik/codex-broker:edge
+FROM ${CODEX_BROKER_IMAGE}
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+USER broker
+```
+
+Example Compose service:
+
+```yaml
+services:
+  codex-broker:
+    build:
+      context: .
+      dockerfile: .codex-broker/Dockerfile
+      args:
+        CODEX_BROKER_IMAGE: ghcr.io/jonasjancarik/codex-broker:edge
+    image: my-app-codex-broker:local
+```
+
+Prefer build-time installs over startup install scripts. For production, publish the derived image and pull it from the target host instead of rebuilding during every deploy.
+
+## Docker mounts
+
+Use one persistent `/data` volume for broker SQLite state, auth homes, inline bundles, and overlays.
+
+Mount:
+
+- host workspaces under `/workspaces`
+- reviewed bundles under `/bundles`
+- host-owned job data under a separate path such as `/host-data`
+
+The example Compose file is a broker service slice. Copy its service, volumes, secrets, and mounts into the host app's Compose stack, then point the host backend at `http://codex-broker:3400` on the Compose network.
+
+The broker should usually expose `3400` only to the Compose network. Add a local override with `ports: ["3400:3400"]` only when host-machine access is intentional.
+
+When enabling the example chat bundle, the broker container must share a Docker network or route with the host app service named by the bundle endpoint, currently:
+
+```text
+http://app:3000/internal/codex/tools/evidence-search
+```
+
+Set `CODEX_HOST_TOOL_KEY` in both the broker process and the host app.
+
+## Secrets
+
+Set `CODEX_BROKER_INTERNAL_KEY_FILE` to a Docker secret path. The broker reports not-ready without an internal key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true` is set for local development.
+
+Do not pass auth files, API keys, or access tokens as bundle content. User Codex credentials are stored under hashed user/Codex-profile paths in `/data/auth`.
+
+Codex app-server children start with a scrubbed process environment. Secret-looking variables are not passed through by default. If a reviewed deployment needs a helper inside Codex to read specific environment variables, set `CODEX_BROKER_PASSTHROUGH_ENV` to exact variable names:
+
+```env
+CODEX_BROKER_PASSTHROUGH_ENV=ESTF_ARCHIVER_API_URL,ESTF_ARCHIVER_API_KEY
+```
+
+## Configuration profiles
+
+Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` to define named runtime and policy profiles. API requests select one with `configProfile`.
+
+Profiles can set app-server defaults such as `model`, `approvalPolicy`, `sandbox`, `personality`, `serviceTier`, `effort`, `summary`, `webSearch`, `modelVerbosity`, and `imageGeneration`, plus policy fields such as `enabledBundles` and `allowedWorkspaceRoots`.
+
+When profiles are configured, unknown `configProfile` values are rejected.
+
+## Readiness
+
+`GET /readyz` checks:
+
+- SQLite state store access
+- Codex binary presence
+- configured workspace roots are readable/searchable directories
+- configured bundle roots are readable/searchable directories
+- auth data directory writability
+- internal API key presence unless unauthenticated development mode is enabled
+
+## Process lifecycle
+
+- App-server children start lazily. The pool key includes user hash, Codex auth profile, auth fingerprint, config profile, Codex command/version, credential-store mode, mounted MCP config, and resolved MCP env hashes.
+- Idle children close after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`.
+- Turns using broker-hosted adapters close their app-server child after finalization because adapter config is tied to the turn overlay.
+- If a child crashes, its active turns fail and the pool starts a new child for later work.
+
+## Restart and shutdown
+
+- On startup, the broker marks abandoned `starting`, `queued`, and `running` turns failed.
+- Pending interactions are marked failed with fallback responses during restart recovery.
+- During shutdown, `interrupt` interrupts active turns.
+- With `drain`, the broker rejects new turns, waits for accepted work, then interrupts leftovers.
+
+## Observability
+
+- `/metrics` includes in-memory counters, HTTP request counts/durations, SSE disconnects, turn durations, auth counters, and audit-derived counters.
+- Runtime Codex auth refresh failures are classified as `codex_auth_requires_admin`.
+- Missing Codex rollout/session failures are classified as `session_not_resumable`.
+- Structured JSON logs are enabled by default with `CODEX_BROKER_JSON_LOGS=true`.

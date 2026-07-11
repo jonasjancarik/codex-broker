@@ -4,6 +4,80 @@ export interface CodexBrokerClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface BrokerThread {
+  threadId: string;
+  codexThreadId: string | null;
+  profile: string;
+  configProfile: string;
+  hostApp: string | null;
+  bundleId: string | null;
+  cwd: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TurnExecution {
+  requestFingerprint: string | null;
+  bundleDigest: string | null;
+  resolvedOptions: Record<string, unknown> | null;
+  brokerVersion: string | null;
+}
+
+export interface BrokerTurn {
+  threadId: string;
+  turnId: string;
+  codexTurnId: string | null;
+  profile: string;
+  configProfile: string;
+  hostApp: string | null;
+  bundleId: string | null;
+  cwd: string | null;
+  mode: "reject" | "queue" | "steer";
+  productCorrelationId: string | null;
+  status: "starting" | "queued" | "running" | "completed" | "failed" | "timed_out" | "interrupted";
+  error: string | null;
+  errorCode: string | null;
+  publicMessage: string | null;
+  adminMessage: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+  streamUrl?: string;
+  execution: TurnExecution;
+}
+
+export interface BrokerInteraction {
+  interactionId: string;
+  threadId: string;
+  turnId: string;
+  kind: string;
+  method: string;
+  status: string;
+  request: Record<string, unknown>;
+  response: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InteractionList {
+  ownerHash: string;
+  threadId: string;
+  turnId?: string;
+  interactions: BrokerInteraction[];
+}
+
+export interface AuditLogList {
+  ownerHash: string;
+  auditLogs: Array<{
+    id: number;
+    action: string;
+    payload: Record<string, unknown>;
+    createdAt: string;
+  }>;
+}
+
 export class CodexBrokerClient {
   private readonly baseUrl: string;
   private readonly internalKey?: string;
@@ -44,39 +118,39 @@ export class CodexBrokerClient {
     });
   }
 
-  listAuditLogs(ownerId: string, query: Record<string, string | number | undefined> = {}): Promise<Record<string, unknown>> {
+  listAuditLogs(ownerId: string, query: Record<string, string | number | undefined> = {}): Promise<AuditLogList> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/audit-logs${queryString(query)}`);
   }
 
-  createThread(ownerId: string, body: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  createThread(ownerId: string, body: Record<string, unknown> = {}): Promise<BrokerThread> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/threads`, body);
   }
 
-  getThread(ownerId: string, threadId: string): Promise<Record<string, unknown>> {
+  getThread(ownerId: string, threadId: string): Promise<BrokerThread> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}`);
   }
 
-  archiveThread(ownerId: string, threadId: string): Promise<Record<string, unknown>> {
+  archiveThread(ownerId: string, threadId: string): Promise<BrokerThread> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/archive`, {});
   }
 
-  startTurn(ownerId: string, threadId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  startTurn(ownerId: string, threadId: string, body: Record<string, unknown>): Promise<BrokerTurn> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/turns`, body);
   }
 
-  getTurn(ownerId: string, threadId: string, turnId: string): Promise<Record<string, unknown>> {
+  getTurn(ownerId: string, threadId: string, turnId: string): Promise<BrokerTurn> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/turns/${enc(turnId)}`);
   }
 
-  steerTurn(ownerId: string, threadId: string, turnId: string, input: Array<Record<string, unknown>>): Promise<Record<string, unknown>> {
+  steerTurn(ownerId: string, threadId: string, turnId: string, input: Array<Record<string, unknown>>): Promise<BrokerTurn> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/turns/${enc(turnId)}/steer`, { input });
   }
 
-  interruptTurn(ownerId: string, threadId: string, turnId: string): Promise<Record<string, unknown>> {
+  interruptTurn(ownerId: string, threadId: string, turnId: string): Promise<BrokerTurn> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/turns/${enc(turnId)}/interrupt`, {});
   }
 
-  listInteractions(ownerId: string, threadId: string, query: Record<string, string | number | undefined> = {}): Promise<Record<string, unknown>> {
+  listInteractions(ownerId: string, threadId: string, query: Record<string, string | number | undefined> = {}): Promise<InteractionList> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/interactions${queryString(query)}`);
   }
 
@@ -86,7 +160,7 @@ export class CodexBrokerClient {
     turnId: string,
     interactionId: string,
     body: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<BrokerInteraction> {
     return this.request(
       "POST",
       `/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/turns/${enc(turnId)}/interactions/${enc(interactionId)}/resolve`,
@@ -101,7 +175,11 @@ export class CodexBrokerClient {
     return `${this.baseUrl}/v1/owners/${enc(ownerId)}/threads/${enc(threadId)}/events${suffix}`;
   }
 
-  private async request(method: string, path: string, body?: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async request<T = Record<string, unknown>>(
+    method: string,
+    path: string,
+    body?: Record<string, unknown>,
+  ): Promise<T> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (this.internalKey) headers.Authorization = `Bearer ${this.internalKey}`;
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -115,7 +193,7 @@ export class CodexBrokerClient {
     if (!response.ok) {
       throw new Error(`Codex broker ${response.status}: ${text}`);
     }
-    return JSON.parse(text) as Record<string, unknown>;
+    return JSON.parse(text) as T;
   }
 }
 

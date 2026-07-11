@@ -1,0 +1,232 @@
+---
+title: "Bundles and hosted tools"
+description: "How task bundles expose skills, prompts, MCP servers, workspace policy, and host-owned HTTP tools to Codex."
+---
+
+# Bundles and hosted tools
+
+Bundles are reviewed task manifests selected by `bundleId`. They declare the skills, prompts, MCP servers, workspace paths, and hosted HTTP tools Codex gets for a turn. They do not install binaries, carry host state, store secrets, own queues, or decide product authorization.
+
+The host app still implements tool behavior and final permission checks.
+
+## Bundle lookup
+
+Mounted bundles are resolved from each `CODEX_BROKER_ALLOWED_BUNDLE_ROOTS` entry in this order:
+
+1. `<root>/<bundleId>/bundle.json`
+2. `<root>/<bundleId>.json`
+3. `<root>/<bundleId>`
+4. Any recursive `bundle.json` under the root whose JSON `id` equals `bundleId`
+
+Inline bundles are accepted only when `CODEX_BROKER_ENABLE_INLINE_BUNDLES=true`.
+
+## Manifest shape
+
+```json
+{
+  "id": "example-chat-v1",
+  "version": "1.0.0",
+  "instructions": [
+    "Use host.evidence.search when the user asks about product evidence."
+  ],
+  "skills": [],
+  "prompts": [],
+  "mcpServers": [],
+  "tools": [],
+  "allowedPaths": ["/workspaces/app"],
+  "sandbox": {
+    "mode": "workspace-write"
+  }
+}
+```
+
+Base fields:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | yes | Bundle id selected by request `bundleId`. |
+| `version` | no | Informational version string. |
+| `instructions` | no | Strings injected before host input and written to overlay `AGENTS.md`. |
+| `skills` | no | Mounted skill entries. |
+| `prompts` | no | Mounted prompt entries injected before host input. |
+| `mcpServers` | no | Structured MCP server declarations. |
+| `tools` | no | Broker-hosted HTTP adapter declarations. |
+| `allowedPaths` | no | Additional cwd roots for this bundle; each must be inside global workspace roots. |
+| `sandbox.mode` | no | Bundle default sandbox when request options do not set one. |
+
+## Overlays
+
+For each turn that uses a bundle, the broker materializes a temporary overlay:
+
+```text
+<data_dir>/workspaces/overlays/<turn-id>/
+  AGENTS.md
+  .agents/skills/<skill-name> -> mounted skill directory
+  .codex/config.toml
+  prompts/<prompt-name>.<ext> -> mounted prompt file
+  tool-adapters.json
+```
+
+When a bundle turn omits `cwd`, the broker runs Codex from the overlay. Explicit host `cwd` values must still be under configured workspace roots or bundle `allowedPaths`.
+
+## Skills
+
+```json
+{
+  "name": "normalize-citations",
+  "source": {
+    "type": "mount",
+    "path": "/bundles/document-jobs-v1/skills/normalize-citations"
+  }
+}
+```
+
+Only mounted skills are supported. The path must be under an allowed bundle root and must either be a `SKILL.md` file or a directory containing `SKILL.md`.
+
+## Prompts
+
+```json
+{
+  "name": "legacy-review-prompt",
+  "source": {
+    "type": "mount",
+    "path": "/bundles/review/prompts/legacy-review.md"
+  }
+}
+```
+
+Prompt paths must be files under an allowed bundle root. The broker links them into the overlay and injects their text before the host turn input. Prefer skills for reusable workflow behavior; use prompts for legacy instructions that still need direct text injection.
+
+## MCP servers
+
+```json
+{
+  "name": "host-files",
+  "command": "node",
+  "args": ["/bundles/tools/host-files-mcp.js"],
+  "env": {
+    "HOST_FILES_TOKEN": "env:HOST_FILES_TOKEN"
+  },
+  "cwd": "/bundles/tools"
+}
+```
+
+Rules:
+
+- `name` and `command` are required.
+- `command` must match `CODEX_BROKER_ALLOWED_TOOL_COMMANDS` by command name or exact absolute path.
+- `args` are passed as strings.
+- `cwd`, when set, must be inside an allowed bundle root or workspace root.
+- Secret-looking env keys must use `env:VAR` indirection.
+- `env:VAR` values are resolved from the broker process environment and passed to the app-server child environment.
+- Literal env values are written into generated Codex MCP config.
+
+## Broker-hosted tools
+
+Broker-hosted tools become a local MCP adapter that forwards calls to host-owned HTTP endpoints.
+
+```json
+{
+  "name": "host.evidence.search",
+  "type": "broker-hosted",
+  "description": "Search host-owned product evidence.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string" },
+      "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+    },
+    "required": ["query"]
+  },
+  "context": {
+    "capability": "evidence-search"
+  },
+  "policy": {
+    "approval": "on-request",
+    "scope": "profile"
+  },
+  "networkPolicy": {
+    "mode": "host-allowlist"
+  },
+  "http": {
+    "url": "http://app:3000/internal/codex/tools/evidence-search",
+    "headers": {
+      "X-Codex-Tool-Key": "env:CODEX_HOST_TOOL_KEY"
+    },
+    "timeoutSeconds": 30
+  }
+}
+```
+
+The broker validates the declaration and transports calls. The host endpoint must authenticate the request and enforce product authorization.
+
+## Hosted tool request
+
+The adapter sends `POST` with:
+
+```http
+Content-Type: application/json
+Accept: application/json
+X-Codex-Broker-Tool: host.evidence.search
+```
+
+Request body:
+
+```json
+{
+  "tool": "host.evidence.search",
+  "arguments": {
+    "query": "refund policy",
+    "limit": 5
+  },
+  "context": {
+    "broker": {
+      "ownerHash": "owner_hash_...",
+      "profile": "default",
+      "threadId": "thr_...",
+      "turnId": "turn_...",
+      "hostApp": "chat-app",
+      "configProfile": "default",
+      "productCorrelationId": "chat-123:message-456"
+    },
+    "tool": {
+      "capability": "evidence-search"
+    },
+    "policy": {
+      "approvalPolicy": "on-request",
+      "scope": "profile",
+      "networkPolicy": {
+        "mode": "host-allowlist",
+        "matchedPrefix": "http://app:3000"
+      }
+    }
+  }
+}
+```
+
+Do not treat `ownerHash` alone as proof that a product user may access data.
+
+## Hosted tool response
+
+Host endpoints may return ordinary JSON or text. Ordinary JSON is formatted and exposed to Codex as text.
+
+Return an MCP tool result shape when the host needs structured output, artifacts, or metadata to survive the adapter boundary:
+
+```json
+{
+  "content": [
+    { "type": "text", "text": "Found 3 matching evidence records." }
+  ],
+  "isError": false,
+  "structuredContent": {
+    "records": [
+      { "id": "ev_1", "title": "Refund policy", "score": 0.91 }
+    ]
+  },
+  "_meta": {
+    "source": "host-app"
+  }
+}
+```
+
+HTTP error responses become tool errors for Codex. The response body is exposed as the error text.

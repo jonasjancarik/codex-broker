@@ -64,6 +64,10 @@ The JSON body below is the turn creation payload:
   "hostApp": "chat-app",
   "bundleId": "example-chat-v1",
   "configProfile": "default",
+  "codexOptions": {
+    "model": "gpt-5.6-sol",
+    "effort": "high"
+  },
   "cwd": "/workspaces/app",
   "mode": "reject",
   "productCorrelationId": "chat-turn-123",
@@ -75,7 +79,9 @@ Use `mode=reject` or `mode=steer` for live chat and `mode=queue` for job workers
 
 Use `productCorrelationId` to trace one host action through broker events and logs. Use `idempotencyKey` for host retries. A repeated turn create with the same owner, broker `threadId`, and idempotency key returns the original broker turn without creating a second Codex turn.
 
-`configProfile` is the canonical profile field. The broker also accepts the legacy `runtimeProfile` field as an alias for host integrations that were written against earlier broker drafts. `codexOptions` is the canonical per-request Codex options object. The broker also accepts `runtime` as an alias and normalizes common option aliases such as `reasoningEffort` to `effort` and `reasoningSummary` to `summary`. Use `codexOptions.outputSchema` when a job worker needs Codex to return a final assistant message constrained by a JSON Schema.
+`configProfile` is the canonical profile field. The broker also accepts the legacy `runtimeProfile` field as an alias for host integrations that were written against earlier broker drafts. `codexOptions` is the canonical per-request Codex options object. For model and reasoning selection, request-level `codexOptions.model` and `codexOptions.effort` win over the selected configuration profile. If neither the request nor the profile sets a value, the broker omits it and Codex uses its current recommended model and model-specific reasoning default. A turn-level choice does not modify the configuration profile. Supported effort values depend on the selected model.
+
+The broker also accepts `runtime` as an alias for `codexOptions` and normalizes common option aliases such as `reasoningEffort` to `effort` and `reasoningSummary` to `summary`. Use `codexOptions.outputSchema` when a job worker needs Codex to return a final assistant message constrained by a JSON Schema.
 
 Some Codex options affect the app-server child process rather than a single `turn/start` request. The broker launches and pools app-server children separately when `webSearch`, `modelVerbosity`, `imageGeneration`, or reasoning-effort process config differs, so one host turn cannot accidentally reuse a child started with incompatible runtime settings.
 
@@ -173,7 +179,7 @@ When inline bundles are enabled, `POST /v1/bundles/inline` stores the bundle by 
 
 Bundle-declared `tools` with `type: "broker-hosted"` become a broker-hosted MCP adapter that forwards tool calls to host-owned HTTP endpoints. The broker validates the declaration and transports calls; it does not implement app-specific evidence behavior or business logic. Hosted tool URLs must match `CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES` by parsed scheme and host, with optional explicit port and path-prefix restrictions. Broker-hosted HTTP tools support the `host-allowlist` network policy in v1; unsupported policy modes are rejected.
 
-Hosted tool endpoints may return ordinary JSON, which the adapter exposes to Codex as formatted text. If an endpoint returns a valid MCP tool result shape with `content`, optional `isError`, optional `structuredContent`, and optional `_meta`, the adapter passes that result through directly. Use this for host-owned tools that need to expose artifact metadata, resource content, or file paths without the broker flattening them into a JSON text blob.
+Hosted tool endpoints may return ordinary JSON, which the adapter exposes to Codex as formatted text. The adapter never follows redirects and caps response bodies at `maxResponseBytes` or the broker default. If an endpoint returns a valid MCP tool result shape with `content`, optional `isError`, optional `structuredContent`, and optional `_meta`, the adapter passes that result through directly.
 
 Adapters are transport shims. They may declare HTTP headers and opaque tool context. Secret-looking headers such as `Authorization`, cookies, tokens, keys, and secrets must use `env:VAR` indirection so secrets come from the broker process environment rather than bundle files. The broker also includes broker context such as `ownerHash`, profile, broker `threadId`, broker `turnId`, `hostApp`, `configProfile`, and `productCorrelationId`, plus the validated hosted-tool `approvalPolicy`, `scope`, and `networkPolicy`. Host endpoints should use those opaque fields to map back to their own authorization, identity, and data models.
 
@@ -182,3 +188,5 @@ Hosted tools may declare `approvalPolicy` as `never`, `on-request`, or `always`,
 Bundle-declared `mcpServers` are mounted into the Codex process only when their command name or exact absolute command path is allowlisted by broker configuration. Reviewed bundle roots do not automatically make every executable under them usable as an MCP command.
 
 Secret-looking MCP env keys must use `env:VAR` indirection. The broker resolves those values into the app-server process environment and omits them from generated Codex config, avoiding secret values in mounted bundle files and command-line config.
+
+The synthetic MCP server for broker-hosted tools uses the same indirection path. Hosted-tool header secrets reach the adapter without requiring broad `CODEX_BROKER_PASSTHROUGH_ENV` access.

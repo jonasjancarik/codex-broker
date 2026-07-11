@@ -1,0 +1,104 @@
+# yaml-language-server: $schema=https://schema.buildwithfern.dev/docs-yml.json
+
+instances:
+  - url: codex-broker.docs.buildwithfern.com
+
+title: Codex Broker
+
+layout:
+  searchbar-placement: header
+  page-width: full
+  tabs-placement: header
+
+tabs:
+  guide:
+    display-name: Guide
+    icon: fa-duotone fa-book-open
+  reference:
+    display-name: Reference
+    icon: fa-duotone fa-code
+
+navigation:
+  - tab: guide
+    layout:
+      - section: Start here
+        contents:
+          - page: Overview
+            path: docs/pages/index.mdx
+            icon: fa-duotone fa-house
+          - page: Quickstart
+            path: docs/pages/quickstart.mdx
+            icon: fa-duotone fa-terminal
+          - page: Core concepts
+            path: docs/pages/concepts.mdx
+            icon: fa-duotone fa-diagram-project
+      - section: Integrations
+        contents:
+          - page: Host integration
+            path: docs/pages/integrations/host-integration.mdx
+            icon: fa-duotone fa-plug
+          - page: HTTP flow
+            path: docs/pages/integrations/http-flow.mdx
+            icon: fa-duotone fa-route
+          - page: Events and interactions
+            path: docs/pages/integrations/events-and-interactions.mdx
+            icon: fa-duotone fa-comments
+      - section: Bundles
+        contents:
+          - page: Bundles and hosted tools
+            path: docs/pages/bundles/bundles-and-hosted-tools.mdx
+            icon: fa-duotone fa-cube
+      - section: Runtime
+        contents:
+          - page: Architecture
+            path: docs/pages/runtime/architecture.mdx
+            icon: fa-duotone fa-sitemap
+          - page: App-server modes
+            path: docs/pages/runtime/app-server-modes.mdx
+            icon: fa-duotone fa-robot
+      - section: Operations
+        contents:
+          - page: Deployment
+            path: docs/pages/operations/deployment.mdx
+            icon: fa-duotone fa-server
+          - page: Configuration reference
+            path: docs/pages/operations/configuration-reference.mdx
+            icon: fa-duotone fa-sliders
+
+  - tab: reference
+    layout:
+      - section: API
+        contents:
+          - page: API overview
+            path: docs/pages/reference/api.mdx
+            icon: fa-duotone fa-circle-info
+          - api: Codex Broker API
+      - section: Reference
+        contents:
+          - page: Clients
+            path: docs/pages/reference/clients.mdx
+            icon: fa-duotone fa-code
+          - page: Contributing to docs
+            path: docs/pages/docs-workflow.mdx
+            icon: fa-duotone fa-pen-to-square
+
+navbar-links:
+  - type: github
+    value: https://github.com/jonasjancarik/codex-broker
+
+colors:
+  accent-primary:
+    dark: "#95e6b7"
+    light: "#145d56"
+  background:
+    dark: "#0f1110"
+    light: "#fbfbf7"
+
+theme:
+  page-actions: toolbar
+  footer-nav: minimal
+
+css: styles.css
+
+metadata:
+  og:dynamic: true

@@ -110,7 +110,7 @@ The default data directory is `.data`; Docker deployments usually set it to `/da
         tool-adapters.json
 ```
 
-The broker never uses raw `ownerId` values in paths. `AuthManager.hash_owner()` hashes them with `CODEX_BROKER_OWNER_HASH_KEY` when configured, otherwise with plain SHA-256. Profile ids are canonicalized by replacing characters outside `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-` with `_`.
+The broker never uses raw `ownerId` values in paths. `AuthManager.hash_owner()` uses an explicit owner-hash key or a broker-generated persistent key stored separately from the internal API key. Rotating the API key therefore does not orphan existing state. Profile ids are canonicalized; dot-segment ids are rejected, and deletion is containment-checked before touching disk.
 
 ## SQLite State
 
@@ -120,14 +120,14 @@ The broker never uses raw `ownerId` values in paths. `AuthManager.hash_owner()` 
 | --- | --- |
 | `owner_profiles` | Auth status, auth type, and auth fingerprint by owner hash and profile. |
 | `threads` | Broker thread ids, Codex thread ids, profile/config profile, host app, bundle, cwd, status. |
-| `turns` | Broker turns, Codex turn ids, input JSON, idempotency key, correlation id, status, error fields. |
+| `turns` | Broker turns, Codex turn ids, input JSON, idempotency key, correlation id, status, errors, request fingerprint, bundle digest, resolved options, and broker version. |
 | `events` | Normalized stream events plus optional redacted raw app-server method/params. |
 | `bundle_digests` | Mounted or inline bundle id, digest, source, and path records. |
 | `app_server_processes` | Durable start/close records for app-server child diagnostics. |
 | `audit_logs` | Owner-scoped auth, turn, approval, interrupt, logout, and runtime failure actions. |
 | `pending_interactions` | Host-mediated approvals, permissions, user input, and MCP elicitation requests. |
 
-Restart recovery is intentionally conservative. Turns that were in progress before process death are failed because the app-server child that owned them is gone. Pending interactions are also resolved with their fallback responses so host UIs do not show stale prompts.
+The database carries a schema version and rejects databases created by a newer broker. Restart recovery is conservative: in-progress turns are failed, pending interactions receive fallback responses, stale process rows become `orphaned`, and abandoned overlays are removed. Terminal turn state and its terminal event are committed together.
 
 ## Auth Boundary
 
@@ -154,8 +154,8 @@ A normal turn follows this path:
 2. Host submits a turn with `POST /v1/owners/{ownerId}/threads/{threadId}/turns`.
 3. The scheduler validates input, profile, config profile, bundle, and cwd.
 4. The scheduler records the turn as `starting` or `queued`.
-5. A worker thread waits for the global concurrency semaphore when configured.
-6. A per-thread gate enforces one active turn for the owner/thread pair.
+5. A bounded executor starts accepted work up to the configured active-turn limit, or a conservative worker bound when the limit is `0`.
+6. An explicit per-thread FIFO queue enforces one active turn for the owner/thread pair.
 7. The bundle registry materializes a per-turn overlay when a bundle is selected.
 8. The app-server pool returns a matching child or starts a new one.
 9. The scheduler starts or resumes the Codex thread, then starts the Codex turn.
@@ -171,7 +171,7 @@ Same-thread behavior is controlled by the turn `mode`:
 | `queue` | Wait for the active turn to finish, then run. |
 | `steer` | Send input into the active Codex turn when possible; otherwise fall back to `reject`. |
 
-Different broker threads can run concurrently. `CODEX_BROKER_MAX_ACTIVE_TURNS` optionally caps total active turn workers across all owners and threads.
+Different broker threads can run concurrently. `CODEX_BROKER_MAX_ACTIVE_TURNS` caps active workers and `CODEX_BROKER_MAX_QUEUED_TURNS` bounds waiting work. Idempotency lookup, creation, and scheduling share one critical section, so concurrent retries start one worker.
 
 ## App-Server Pool
 
@@ -195,7 +195,7 @@ The pool key includes:
 - mounted MCP server declarations,
 - hashes of resolved MCP `env:VAR` values.
 
-Idle children are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`. Closed or crashed children are removed and restarted lazily on later work. Children with active turn contexts are not swept by the idle TTL.
+Idle children are closed by a background sweeper after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`. Child startup happens outside the pool-wide lock behind a per-key creation lock, so one slow launch does not block unrelated keys. Active children are never TTL-swept.
 
 App-server child environments are scrubbed by default. Secret-looking variables are not passed through unless their exact names are listed in `CODEX_BROKER_PASSTHROUGH_ENV`. MCP `env:VAR` values are resolved separately and included in the child environment so Codex can launch that MCP server without writing the secret value to generated config.
 
@@ -221,7 +221,9 @@ The broker does not implement product tool behavior. Broker-hosted tools are exp
 
 ## Events And Interactions
 
-The app-server client reads JSON-RPC messages from stdout. Responses are routed to request waiters; notifications are routed to the active turn context by Codex turn id, Codex thread id, or the only active context when necessary.
+The app-server client reads JSON-RPC messages from stdout. Responses are routed to request waiters; notifications are routed to the active turn context by Codex turn id, Codex thread id, or the only active context when necessary. Server-initiated approval and input requests run in independent handlers, so one host wait cannot stall unrelated responses sharing that child.
+
+SSE readers wait on a state-store event signal rather than polling SQLite four times per second. Durable history is pruned by age and per-turn count at startup; audit metrics read a maintained summary table instead of grouping the complete log on each scrape.
 
 Normalized events are stored in SQLite and streamed from:
 

@@ -1,0 +1,179 @@
+---
+title: "Clients"
+description: "Python and TypeScript client usage patterns for host services and workers."
+---
+
+# Clients
+
+Host services can call the broker directly over HTTP, or use the lightweight clients included in this repository.
+
+## Python client
+
+Use the bundled Python client when host code can import this package:
+
+```python
+from codex_broker.client import CodexBrokerClient
+
+broker = CodexBrokerClient(
+    "http://127.0.0.1:3400",
+    internal_key="dev-only-key",
+    timeout_seconds=60,
+)
+
+owner_id = "service-account-1"
+
+thread = broker.create_thread(
+    owner_id,
+    {
+        "threadId": "chat-123",
+        "hostApp": "chat-app",
+        "bundleId": "example-chat-v1",
+        "configProfile": "default",
+        "cwd": "/workspaces/app",
+    },
+)
+
+turn = broker.start_turn(
+    owner_id,
+    thread["threadId"],
+    {
+        "input": [{"type": "text", "text": "Summarize the evidence."}],
+        "mode": "queue",
+        "productCorrelationId": "chat-123:message-456",
+        "idempotencyKey": "chat-123:message-456",
+    },
+)
+
+for event in broker.stream_events(owner_id, thread["threadId"], turn_id=turn["turnId"]):
+    event_type = event["type"]
+    payload = event.get("payload", {})
+
+    if event_type == "message.delta":
+        print(payload.get("delta") or "", end="", flush=True)
+
+    if event_type in {"turn.completed", "turn.failed", "turn.interrupted"}:
+        break
+
+final_turn = broker.get_turn(owner_id, thread["threadId"], turn["turnId"])
+print(final_turn["status"])
+```
+
+The Python client returns plain dictionaries and raises `CodexBrokerClientError` for HTTP errors.
+
+## TypeScript client
+
+The repository includes a lightweight TypeScript source client at:
+
+```text
+clients/typescript/codex-broker-client.ts
+```
+
+It is a source file, not an npm package.
+
+```ts
+import { CodexBrokerClient } from "./codex-broker-client";
+
+const broker = new CodexBrokerClient({
+  baseUrl: "http://127.0.0.1:3400",
+  internalKey: "dev-only-key",
+});
+
+const ownerId = "service-account-1";
+
+const thread = await broker.createThread(ownerId, {
+  threadId: "chat-123",
+  hostApp: "chat-app",
+  bundleId: "example-chat-v1",
+  configProfile: "default",
+  cwd: "/workspaces/app",
+});
+
+const turn = await broker.startTurn(ownerId, String(thread["threadId"]), {
+  input: [{ type: "text", text: "Summarize the evidence." }],
+  mode: "queue",
+  productCorrelationId: "chat-123:message-456",
+  idempotencyKey: "chat-123:message-456",
+});
+```
+
+## Streaming in Node
+
+In Node or server runtimes, stream SSE with `fetch` so the request can send the broker auth header:
+
+```ts
+async function* streamBrokerEvents(
+  baseUrl: string,
+  streamPath: string,
+  internalKey: string,
+): AsyncGenerator<Record<string, unknown>> {
+  const response = await fetch(`${baseUrl}${streamPath}`, {
+    headers: {
+      Accept: "text/event-stream",
+      Authorization: `Bearer ${internalKey}`,
+    },
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Broker stream failed: ${response.status} ${await response.text()}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    for (;;) {
+      const boundary = buffer.indexOf("\n\n");
+      if (boundary === -1) break;
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+
+      let id: string | undefined;
+      let event: string | undefined;
+      const data: string[] = [];
+
+      for (const line of frame.split("\n")) {
+        if (!line || line.startsWith(":")) continue;
+        const colon = line.indexOf(":");
+        const field = colon === -1 ? line : line.slice(0, colon);
+        const valueText = colon === -1 ? "" : line.slice(colon + 1).trimStart();
+        if (field === "id") id = valueText;
+        if (field === "event") event = valueText;
+        if (field === "data") data.push(valueText);
+      }
+
+      if (data.length) {
+        const payload = JSON.parse(data.join("\n")) as Record<string, unknown>;
+        if (id && payload["id"] === undefined) payload["id"] = Number(id);
+        if (event && payload["type"] === undefined) payload["type"] = event;
+        yield payload;
+      }
+    }
+  }
+}
+```
+
+Consume the stream:
+
+```ts
+for await (const event of streamBrokerEvents(
+  "http://127.0.0.1:3400",
+  String(turn["streamUrl"]),
+  "dev-only-key",
+)) {
+  if (event["type"] === "message.delta") {
+    const payload = event["payload"] as { delta?: string };
+    process.stdout.write(payload.delta ?? "");
+  }
+
+  if (["turn.completed", "turn.failed", "turn.interrupted"].includes(String(event["type"]))) {
+    break;
+  }
+}
+```
+
+Browser clients should not call the broker stream directly because browser `EventSource` cannot send the required auth header. Proxy or translate the stream through the host backend.

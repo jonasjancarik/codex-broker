@@ -1,0 +1,28 @@
+:root {
+  --broker-ink: #f7f4ea;
+  --broker-muted: #b7b09c;
+  --broker-green: #95e6b7;
+  --broker-teal: #2a8d8d;
+}
+
+::selection {
+  background: rgba(149, 230, 183, 0.28);
+}
+
+body {
+  font-feature-settings:
+    "cv02" 1,
+    "cv03" 1,
+    "cv04" 1;
+}
+
+body.dark {
+  background:
+    radial-gradient(circle at 18% 8%, rgba(149, 230, 183, 0.10), transparent 24rem),
+    radial-gradient(circle at 82% 4%, rgba(42, 141, 141, 0.14), transparent 26rem),
+    #0f1110;
+}
+
+a {
+  text-underline-offset: 0.18em;
+}

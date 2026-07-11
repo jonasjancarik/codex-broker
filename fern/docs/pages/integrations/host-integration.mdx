@@ -1,0 +1,126 @@
+---
+title: "Host integration"
+description: "How product backends and job workers call Codex Broker without exposing it as a public product API."
+---
+
+# Host integration
+
+Product backends and job workers call the broker over HTTP. Browser clients keep calling the host app. The host app calls the broker with the internal key.
+
+Your backend remains the public product API. The broker is private infrastructure behind it.
+
+## Boundary
+
+The host app is still responsible for:
+
+- product authentication and authorization
+- user, chat, job, and artifact records
+- UI streaming and rendering
+- prompt construction and product memory
+- evidence search and domain-specific tools
+- final authorization checks inside hosted tool endpoints
+
+The broker handles:
+
+- Codex auth homes per user and Codex auth profile
+- app-server process pooling and JSON-RPC routing
+- broker thread and turn lifecycle
+- one-active-turn-at-a-time locking
+- normalized event persistence and streaming
+- bundle materialization for skills, prompts, MCP servers, and broker-hosted adapters
+
+## Stable ids
+
+Choose stable product ids and send them consistently:
+
+| Field | Purpose |
+| --- | --- |
+| `ownerId` | Product user id or service-account id whose Codex credentials should be used. |
+| `profile` | Codex auth profile for that user or service account. Defaults to `default`; this is separate from `configProfile`. |
+| `threadId` | Broker thread id. You may supply a stable chat or job id on create. |
+| `turnId` | Broker turn id returned from turn creation. |
+| `productCorrelationId` | Optional host trace id for events and logs. |
+| `idempotencyKey` | Host retry key for a retriable turn request. |
+
+Avoid raw secrets as owner ids. Use a service-account id when per-user auth is not needed.
+
+## Chat apps
+
+Chat integrations usually follow this flow:
+
+1. Resolve the logged-in product user to a stable `ownerId`.
+2. Create or reuse a broker thread for the host chat.
+3. Submit chat messages with `mode=queue` when same-chat turns should serialize, or `mode=steer` when the UI intentionally appends input to an active turn.
+4. Stream `/events` from the host backend and map normalized events to the product stream protocol.
+5. Keep evidence search and product tools as host-owned HTTP endpoints or MCP servers declared by a bundle.
+
+The host keeps chat records, product prompts, evidence behavior, and UI streaming. The broker handles auth, pooling, thread locks, and bundle mounting.
+
+## Job workers
+
+Worker integrations usually follow this flow:
+
+1. Use the job's product user id or a service account as `ownerId`.
+2. Store the broker `threadId` alongside the job.
+3. Submit initial and follow-up work with `mode=queue`.
+4. Poll the turn or stream events into job logs and artifacts.
+5. Use `codexOptions.outputSchema` when the final assistant message must match a JSON Schema.
+
+The worker keeps queue records, generated files, artifact storage, and review rows. The broker runs the Codex side of the job.
+
+## Model and reasoning per turn
+
+Set model and reasoning choices in the turn body:
+
+```json
+{
+  "input": [{ "type": "text", "text": "Review these changes." }],
+  "codexOptions": {
+    "model": "gpt-5.6-sol",
+    "effort": "high"
+  }
+}
+```
+
+Selection precedence is the turn's `codexOptions`, then the selected `configProfile`, then Codex's current recommended model and model-specific reasoning default. A turn-level choice does not modify the profile. `reasoningEffort` is accepted as an alias for `effort`, and supported effort values depend on the selected model.
+
+## Auth model
+
+All product API routes require one of these headers:
+
+```http
+Authorization: Bearer <CODEX_BROKER_INTERNAL_KEY>
+X-Codex-Broker-Key: <CODEX_BROKER_INTERNAL_KEY>
+```
+
+Only `GET /healthz` and `GET /readyz` are unauthenticated. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the broker is running with `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
+
+Keep the broker key server-side. Browser `EventSource` cannot set the required auth header, so product UIs should consume a host-owned proxy stream.
+
+## Auth states
+
+`GET /auth/status` is a cheap local check. `POST /auth/probe` runs a tiny real Codex request and persists `refresh_failed` when token refresh is invalidated.
+
+Auth status can be:
+
+- `missing`
+- `present_unverified`
+- `authenticated`
+- `invalid`
+- `refresh_failed`
+- `failed`
+- `unknown`
+
+Failed turns include `errorCode`, `publicMessage`, and `adminMessage`. Host UIs should show `publicMessage` or `error` to end users and keep `adminMessage` for admin-only logs.
+
+## Production checklist
+
+- Call the broker only from trusted server-side code.
+- Store broker `threadId` next to product chat or job records.
+- Send caller-owned `threadId` values when idempotent host mapping matters.
+- Send `productCorrelationId` and `idempotencyKey` on retriable product actions.
+- Stream with `after=<last-event-id>` when reconnecting.
+- Handle terminal events and terminal turn statuses.
+- Validate hosted-tool secret headers in the host app.
+- Keep product authorization inside the host app, including hosted tool endpoints.
+- Prefer configuration profiles and reviewed bundles over ad hoc per-request behavior.
