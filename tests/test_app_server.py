@@ -169,7 +169,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 try:
                     results.append(
                         pool.get(
-                            owner_hash="owner",
+                            auth_principal_hash="owner",
                             profile="default",
                             codex_home=config.auth_root,
                             config_profile="default",
@@ -214,7 +214,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 codex_home = config.auth_root / "owner_hash" / "profiles" / "default" / "codex-home"
                 codex_home.mkdir(parents=True)
                 client = pool.get(
-                    owner_hash="owner_hash",
+                    auth_principal_hash="owner_hash",
                     profile="default",
                     codex_home=codex_home,
                     config_profile="default",
@@ -224,7 +224,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 records = state.list_app_server_processes()
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0]["status"], "running")
-                self.assertEqual(records[0]["owner_hash"], "owner_hash")
+                self.assertEqual(records[0]["auth_principal_hash"], "owner_hash")
                 self.assertEqual(records[0]["profile"], "default")
                 self.assertEqual(records[0]["config_profile"], "default")
                 self.assertEqual(records[0]["pid"], client._process.pid)
@@ -248,7 +248,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 codex_home = config.auth_root / "owner_hash" / "profiles" / "default" / "codex-home"
                 codex_home.mkdir(parents=True)
                 client = pool.get(
-                    owner_hash="owner_hash",
+                    auth_principal_hash="owner_hash",
                     profile="default",
                     codex_home=codex_home,
                     config_profile="default",
@@ -261,7 +261,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 other_home = config.auth_root / "other_hash" / "profiles" / "default" / "codex-home"
                 other_home.mkdir(parents=True)
                 other_client = pool.get(
-                    owner_hash="other_hash",
+                    auth_principal_hash="other_hash",
                     profile="default",
                     codex_home=other_home,
                     config_profile="default",
@@ -291,7 +291,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 with patch.dict(os.environ, {"FAKE_CODEX_VERSION": "fake-codex 1.0"}):
                     first_pool = AppServerPool(config, first_state)
                     first_client = first_pool.get(
-                        owner_hash="owner_hash",
+                        auth_principal_hash="owner_hash",
                         profile="default",
                         codex_home=codex_home,
                         config_profile="default",
@@ -300,7 +300,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 with patch.dict(os.environ, {"FAKE_CODEX_VERSION": "fake-codex 2.0"}):
                     second_pool = AppServerPool(config, second_state)
                     second_client = second_pool.get(
-                        owner_hash="owner_hash",
+                        auth_principal_hash="owner_hash",
                         profile="default",
                         codex_home=codex_home,
                         config_profile="default",
@@ -326,7 +326,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 codex_home = config.auth_root / "owner_hash" / "profiles" / "default" / "codex-home"
                 codex_home.mkdir(parents=True)
                 first_client = pool.get(
-                    owner_hash="owner_hash",
+                    auth_principal_hash="owner_hash",
                     profile="default",
                     codex_home=codex_home,
                     config_profile="default",
@@ -334,7 +334,7 @@ class AppServerRoutingTests(unittest.TestCase):
                     auth_fingerprint="sha256:first",
                 )
                 second_client = pool.get(
-                    owner_hash="owner_hash",
+                    auth_principal_hash="owner_hash",
                     profile="default",
                     codex_home=codex_home,
                     config_profile="default",
@@ -388,7 +388,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 codex_home.mkdir(parents=True)
                 with patch.dict(os.environ, {"MCP_SECRET_SOURCE": "first-secret"}):
                     first_client = pool.get(
-                        owner_hash="owner_hash",
+                        auth_principal_hash="owner_hash",
                         profile="default",
                         codex_home=codex_home,
                         config_profile="default",
@@ -396,7 +396,7 @@ class AppServerRoutingTests(unittest.TestCase):
                     )
                 with patch.dict(os.environ, {"MCP_SECRET_SOURCE": "rotated-secret"}):
                     second_client = pool.get(
-                        owner_hash="owner_hash",
+                        auth_principal_hash="owner_hash",
                         profile="default",
                         codex_home=codex_home,
                         config_profile="default",
@@ -456,7 +456,7 @@ class AppServerRoutingTests(unittest.TestCase):
                 codex_home.mkdir(parents=True)
                 with patch.dict(os.environ, {"FAKE_CODEX_HANG_ON_TURN_START_ONCE": "1"}):
                     client = pool.get(
-                        owner_hash="owner_hash",
+                        auth_principal_hash="owner_hash",
                         profile="default",
                         codex_home=codex_home,
                         config_profile="default",
@@ -486,14 +486,14 @@ class AppServerRoutingTests(unittest.TestCase):
                 default_home.mkdir(parents=True)
                 work_home.mkdir(parents=True)
                 default_client = pool.get(
-                    owner_hash="owner_hash",
+                    auth_principal_hash="owner_hash",
                     profile="default",
                     codex_home=default_home,
                     config_profile="default",
                     mcp_servers=(),
                 )
                 work_client = pool.get(
-                    owner_hash="owner_hash",
+                    auth_principal_hash="owner_hash",
                     profile="work",
                     codex_home=work_home,
                     config_profile="default",
@@ -513,7 +513,7 @@ class AppServerRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_raw:
             client = AppServerClient.__new__(AppServerClient)
             client.config = replace(config_for(Path(tmp_raw)), json_logs=True)
-            client.owner_hash = "owner_hash"
+            client.auth_principal_hash = "owner_hash"
             client.profile = "default"
             client.config_profile = "default"
             client.pool_key_hash = "pool_hash"
@@ -544,7 +544,7 @@ class AppServerRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_raw:
             client = AppServerClient.__new__(AppServerClient)
             client.config = replace(config_for(Path(tmp_raw)), json_logs=True)
-            client.owner_hash = "owner_hash"
+            client.auth_principal_hash = "owner_hash"
             client.profile = "default"
             client.config_profile = "default"
             client.pool_key_hash = "pool_hash"

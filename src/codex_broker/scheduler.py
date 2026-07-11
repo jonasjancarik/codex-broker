@@ -54,7 +54,7 @@ class BrokerTurnContext:
         *,
         state: StateStore,
         owner_hash: str,
-        auth_principal_hash: str | None = None,
+        auth_principal_hash: str,
         thread_id: str,
         turn_id: str,
         codex_thread_id: str | None,
@@ -63,7 +63,7 @@ class BrokerTurnContext:
     ) -> None:
         self.state = state
         self.owner_hash = owner_hash
-        self.auth_principal_hash = auth_principal_hash or owner_hash
+        self.auth_principal_hash = auth_principal_hash
         self.thread_id = thread_id
         self.turn_id = turn_id
         self.codex_thread_id = codex_thread_id
@@ -837,8 +837,6 @@ class TurnScheduler:
         thread: dict[str, Any],
         turn: dict[str, Any],
     ) -> None:
-        if thread.get("auth_binding_error"):
-            raise ConflictError("Legacy broker thread used multiple auth profiles; start a new broker thread.")
         for key in ("auth_principal_hash", "auth_profile_instance_id", "profile"):
             if turn.get(key) != thread.get(key):
                 raise ConflictError("Turn authentication binding does not match its broker thread.")

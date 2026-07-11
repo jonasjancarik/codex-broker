@@ -170,6 +170,7 @@ class BrokerTests(unittest.TestCase):
         session = DeviceAuthSession(
             session_id="session_1",
             owner_hash="owner_hash",
+            auth_principal_hash="principal_hash",
             profile="default",
             command=["codex", "login", "--device-auth"],
             started_at="2026-06-25T12:00:00Z",
@@ -425,6 +426,7 @@ class BrokerTests(unittest.TestCase):
             context = BrokerTurnContext(
                 state=state,
                 owner_hash="owner_hash",
+                auth_principal_hash="principal_hash",
                 thread_id="thread_1",
                 turn_id="turn_1",
                 codex_thread_id="codex_thread_1",
@@ -474,6 +476,7 @@ class BrokerTests(unittest.TestCase):
             context = BrokerTurnContext(
                 state=state,
                 owner_hash="owner_hash",
+                auth_principal_hash="principal_hash",
                 thread_id="thread_1",
                 turn_id="turn_1",
                 codex_thread_id="codex_thread_1",
@@ -513,6 +516,7 @@ class BrokerTests(unittest.TestCase):
             context = BrokerTurnContext(
                 state=state,
                 owner_hash="owner_hash",
+                auth_principal_hash="principal_hash",
                 thread_id="thread_1",
                 turn_id="turn_1",
                 codex_thread_id="codex_thread_1",
@@ -549,9 +553,12 @@ class BrokerTests(unittest.TestCase):
             tmp = Path(tmp_raw)
             config = config_for(tmp)
             state = StateStore(config.state_db_path)
+            profile = state.ensure_profile("principal_hash", "default")
             thread = state.create_thread(
                 "owner_hash",
                 thread_id=None,
+                auth_principal_hash="principal_hash",
+                auth_profile_instance_id=profile["instance_id"],
                 profile="default",
                 config_profile="default",
                 host_app=None,
@@ -562,6 +569,8 @@ class BrokerTests(unittest.TestCase):
             turn = state.create_turn(
                 "owner_hash",
                 thread["thread_id"],
+                auth_principal_hash="principal_hash",
+                auth_profile_instance_id=profile["instance_id"],
                 profile="default",
                 config_profile="default",
                 host_app=None,
@@ -617,12 +626,25 @@ class BrokerTests(unittest.TestCase):
                     owner_hash,
                     "turn.start",
                     {"bundleId": "bundle_1"},
+                    auth_principal_hash=owner_hash,
                     profile="work",
                     thread_id="thread_1",
                     turn_id="turn_1",
                 )
-                services.state.append_audit(owner_hash, "auth.logout", {}, profile="work")
-                services.state.append_audit(other_hash, "turn.start", {"bundleId": "other"}, thread_id="thread_1")
+                services.state.append_audit(
+                    owner_hash,
+                    "auth.logout",
+                    {},
+                    auth_principal_hash=owner_hash,
+                    profile="work",
+                )
+                services.state.append_audit(
+                    other_hash,
+                    "turn.start",
+                    {"bundleId": "other"},
+                    auth_principal_hash=other_hash,
+                    thread_id="thread_1",
+                )
 
                 captured: dict[str, Any] = {}
 
@@ -660,7 +682,7 @@ class BrokerTests(unittest.TestCase):
                 owner_hash = services.auth.hash_owner("owner/a")
                 codex_home = services.auth.profile_home(owner_hash, "work")
                 client = services.pool.get(
-                    owner_hash=owner_hash,
+                    auth_principal_hash=owner_hash,
                     profile="work",
                     codex_home=codex_home,
                     config_profile="default",
@@ -700,7 +722,7 @@ class BrokerTests(unittest.TestCase):
                 owner_hash = services.auth.hash_owner("owner/a")
                 codex_home = services.auth.profile_home(owner_hash, "work")
                 client = services.pool.get(
-                    owner_hash=owner_hash,
+                    auth_principal_hash=owner_hash,
                     profile="work",
                     codex_home=codex_home,
                     config_profile="default",

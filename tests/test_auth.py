@@ -140,7 +140,13 @@ class AuthProfileTests(unittest.TestCase):
                 self.assertEqual(result["state"], "authenticated")
 
                 owner_hash = services.auth.hash_owner("owner-a")
-                services.state.append_audit(owner_hash, "auth.device.failure", {}, profile="default")
+                services.state.append_audit(
+                    owner_hash,
+                    "auth.device.failure",
+                    {},
+                    auth_principal_hash=owner_hash,
+                    profile="default",
+                )
                 actions = [entry["action"] for entry in services.state.list_audit_logs(owner_hash)]
                 self.assertIn("auth.api_key.start", actions)
                 self.assertIn("auth.api_key.success", actions)

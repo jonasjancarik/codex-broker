@@ -50,7 +50,7 @@ Derived paths under `CODEX_BROKER_DATA_DIR`:
 | --- | --- |
 | `state/broker.sqlite` | SQLite state store. |
 | `state/owner-hash.key` | Mode-`0600` persistent owner-hash key. Back it up with the database and auth data. |
-| `auth/owners/<auth-principal-hash>/profiles/<profile>/codex-home` | Per-auth-principal/profile Codex home. The legacy `owners` directory name is preserved so existing installations need no filesystem move. |
+| `auth/principals/<auth-principal-hash>/profiles/<profile>/codex-home` | Per-auth-principal/profile Codex home. |
 | `bundles/inline/<digest>/bundle.json` | Accepted inline bundle content. |
 | `workspaces/overlays/<turn-id>` | Per-turn generated files, symlinks, MCP config, and hosted-tool config. |
 
@@ -233,7 +233,7 @@ Turn start accepts:
 
 Supported `codexOptions` keys match the configuration profile keys listed above, plus aliases. Options that affect app-server process config are included in the pool key. Options that affect a single thread or turn are sent in the corresponding app-server request.
 
-The broker persists the resolved auth-principal hash, canonical profile, and profile-instance id on every thread and turn. Existing schema-v2 installations migrate with `authPrincipalId = ownerId`. Legacy threads that historically used several turn profiles are marked unsafe and must be replaced instead of resumed.
+The broker persists the resolved auth-principal hash, canonical profile, and profile-instance id on every thread and turn. Databases with a different schema version are rejected; initialize a new data directory for this architecture.
 
 ## Bundle Manifest Shape
 

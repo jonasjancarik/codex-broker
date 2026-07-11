@@ -83,11 +83,11 @@ def normalize_profile(profile: str | None = None) -> str:
 class DeviceAuthSession:
     session_id: str
     owner_hash: str
+    auth_principal_hash: str
     profile: str
     command: list[str]
     started_at: str
     updated_at: str
-    auth_principal_hash: str | None = None
     state: str = "starting"
     completed_at: str | None = None
     login_url: str | None = None
@@ -683,7 +683,7 @@ class AuthManager:
         ]
 
     def _spawn_device_auth(self, session: DeviceAuthSession) -> None:
-        principal_hash = session.auth_principal_hash or session.owner_hash
+        principal_hash = session.auth_principal_hash
         home = self.profile_home(principal_hash, session.profile)
         process = subprocess.Popen(
             session.command,
@@ -726,7 +726,7 @@ class AuthManager:
 
     def _wait_auth_process(self, session: DeviceAuthSession) -> None:
         assert session.process is not None
-        principal_hash = session.auth_principal_hash or session.owner_hash
+        principal_hash = session.auth_principal_hash
         code = session.process.wait()
         if session.process.stdin:
             try:

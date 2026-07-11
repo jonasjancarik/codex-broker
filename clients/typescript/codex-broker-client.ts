@@ -151,22 +151,22 @@ export class CodexBrokerClient {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/profiles${queryString({ authPrincipalId })}`);
   }
 
-  authStatus(ownerId: string, selection: string | AuthSelection = "default"): Promise<Record<string, unknown>> {
+  authStatus(ownerId: string, selection: AuthSelection = {}): Promise<Record<string, unknown>> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/status${authSelectionQuery(selection)}`);
   }
 
-  accountUsage(ownerId: string, selection: string | AuthSelection = "default"): Promise<AccountUsageResponse> {
+  accountUsage(ownerId: string, selection: AuthSelection = {}): Promise<AccountUsageResponse> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/usage${authSelectionQuery(selection)}`);
   }
 
-  accountRateLimits(ownerId: string, selection: string | AuthSelection = "default"): Promise<AccountRateLimitsResponse> {
+  accountRateLimits(ownerId: string, selection: AuthSelection = {}): Promise<AccountRateLimitsResponse> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/rate-limits${authSelectionQuery(selection)}`);
   }
 
   consumeRateLimitResetCredit(
     ownerId: string,
     idempotencyKey: string,
-    selection: string | AuthSelection = "default",
+    selection: AuthSelection = {},
   ): Promise<RateLimitResetCreditConsumeResponse> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/rate-limit-reset-credit/consume`, {
       ...authSelectionBody(selection),
@@ -174,18 +174,18 @@ export class CodexBrokerClient {
     });
   }
 
-  probeAuth(ownerId: string, selection: string | AuthSelection = "default"): Promise<Record<string, unknown>> {
+  probeAuth(ownerId: string, selection: AuthSelection = {}): Promise<Record<string, unknown>> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/probe`, authSelectionBody(selection));
   }
 
-  startDeviceAuth(ownerId: string, selection: string | AuthSelection = "default"): Promise<Record<string, unknown>> {
+  startDeviceAuth(ownerId: string, selection: AuthSelection = {}): Promise<Record<string, unknown>> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/device/start`, authSelectionBody(selection));
   }
 
   submitDeviceCode(
     ownerId: string,
     code: string,
-    selection: string | AuthSelection = "default",
+    selection: AuthSelection = {},
     sessionId?: string,
   ): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = { code, ...authSelectionBody(selection) };
@@ -193,15 +193,15 @@ export class CodexBrokerClient {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/device/submit`, body);
   }
 
-  loginApiKey(ownerId: string, apiKey: string, selection: string | AuthSelection = "default"): Promise<Record<string, unknown>> {
+  loginApiKey(ownerId: string, apiKey: string, selection: AuthSelection = {}): Promise<Record<string, unknown>> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/api-key`, { apiKey, ...authSelectionBody(selection) });
   }
 
-  invalidateAuthRuntime(ownerId: string, selection: string | AuthSelection = "default"): Promise<Record<string, unknown>> {
+  invalidateAuthRuntime(ownerId: string, selection: AuthSelection = {}): Promise<Record<string, unknown>> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/runtime/invalidate`, authSelectionBody(selection));
   }
 
-  logout(ownerId: string, selection: string | AuthSelection = "default", deleteProfile = false): Promise<Record<string, unknown>> {
+  logout(ownerId: string, selection: AuthSelection = {}, deleteProfile = false): Promise<Record<string, unknown>> {
     return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/logout`, {
       ...authSelectionBody(selection),
       deleteProfile,
@@ -300,13 +300,12 @@ function queryString(query: Record<string, string | number | undefined>): string
   return text ? `?${text}` : "";
 }
 
-function authSelectionBody(selection: string | AuthSelection): Record<string, string> {
-  if (typeof selection === "string") return { profile: selection };
+function authSelectionBody(selection: AuthSelection): Record<string, string> {
   const body: Record<string, string> = { profile: selection.profile ?? "default" };
   if (selection.authPrincipalId) body.authPrincipalId = selection.authPrincipalId;
   return body;
 }
 
-function authSelectionQuery(selection: string | AuthSelection): string {
+function authSelectionQuery(selection: AuthSelection): string {
   return queryString(authSelectionBody(selection));
 }

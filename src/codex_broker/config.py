@@ -87,7 +87,7 @@ def _auth_principal_mappings() -> dict[str, str]:
     return mappings
 
 
-def _owner_hash_secret(data_dir: Path, internal_key: str | None) -> str | None:
+def _owner_hash_secret(data_dir: Path) -> str:
     explicit = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY")
     explicit_file = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY_FILE")
     if explicit and explicit_file:
@@ -108,14 +108,9 @@ def _owner_hash_secret(data_dir: Path, internal_key: str | None) -> str | None:
         if not value:
             raise ValueError(f"Persistent owner hash key file is empty: {path}")
         return value
-    database_exists = (data_dir / "state" / "broker.sqlite").exists()
-    if database_exists and not internal_key:
-        # Legacy unauthenticated installations used stable plain SHA-256 hashes.
-        return None
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(0o700)
-    # Preserve hashes for installations that previously derived this key from the API key.
-    value = internal_key if internal_key and database_exists else secrets.token_urlsafe(48)
+    value = secrets.token_urlsafe(48)
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -192,7 +187,7 @@ class BrokerConfig:
 
     @property
     def auth_root(self) -> Path:
-        return self.data_dir / "auth" / "owners"
+        return self.data_dir / "auth" / "principals"
 
     @property
     def inline_bundle_root(self) -> Path:
@@ -218,7 +213,7 @@ class BrokerConfig:
             data_dir=data_dir,
             internal_key=key or None,
             allow_unauthenticated=_bool_env("CODEX_BROKER_ALLOW_UNAUTHENTICATED", False),
-            owner_hash_secret=_owner_hash_secret(data_dir, key),
+            owner_hash_secret=_owner_hash_secret(data_dir),
             allowed_workspace_roots=_paths(os.environ.get("CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS"), str(Path.cwd())),
             allowed_bundle_roots=_paths(os.environ.get("CODEX_BROKER_ALLOWED_BUNDLE_ROOTS"), str(Path.cwd())),
             max_active_turns=_int_env("CODEX_BROKER_MAX_ACTIVE_TURNS", 0),

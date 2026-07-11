@@ -129,17 +129,15 @@ class StateStore:
         owner_hash: str,
         *,
         thread_id: str | None = None,
-        auth_principal_hash: str | None = None,
-        auth_profile_instance_id: str | None = None,
+        auth_principal_hash: str,
+        auth_profile_instance_id: str,
         profile: str,
         config_profile: str,
         host_app: str | None,
         bundle_id: str | None,
         cwd: str | None,
     ) -> dict[str, Any]:
-        auth_principal_hash = auth_principal_hash or owner_hash
         profile_row = self.ensure_profile(auth_principal_hash, profile)
-        auth_profile_instance_id = auth_profile_instance_id or str(profile_row["instance_id"])
         if profile_row.get("instance_id") != auth_profile_instance_id:
             raise ValueError("Auth profile instance changed while creating the broker thread.")
         now = utc_now()
@@ -214,8 +212,8 @@ class StateStore:
         owner_hash: str,
         thread_id: str,
         *,
-        auth_principal_hash: str | None = None,
-        auth_profile_instance_id: str | None = None,
+        auth_principal_hash: str,
+        auth_profile_instance_id: str,
         profile: str,
         config_profile: str,
         host_app: str | None,
@@ -234,8 +232,6 @@ class StateStore:
         thread = self.get_thread(owner_hash, thread_id)
         if not thread:
             raise ValueError("Thread not found while creating turn.")
-        auth_principal_hash = auth_principal_hash or str(thread["auth_principal_hash"])
-        auth_profile_instance_id = auth_profile_instance_id or str(thread["auth_profile_instance_id"])
         if (
             profile != thread["profile"]
             or auth_principal_hash != thread["auth_principal_hash"]
@@ -655,26 +651,22 @@ class StateStore:
         self,
         *,
         pool_key_hash: str,
-        auth_principal_hash: str | None = None,
-        owner_hash: str | None = None,
+        auth_principal_hash: str,
         profile: str,
         config_profile: str,
         pid: int | None,
     ) -> int:
-        principal_hash = auth_principal_hash or owner_hash
-        if not principal_hash:
-            raise ValueError("auth_principal_hash is required.")
         now = utc_now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 """
                 insert into app_server_processes(
-                  pool_key_hash, owner_hash, auth_principal_hash, profile, config_profile, pid, status,
+                  pool_key_hash, auth_principal_hash, profile, config_profile, pid, status,
                   started_at, last_seen_at
                 )
-                values (?, ?, ?, ?, ?, ?, 'running', ?, ?)
+                values (?, ?, ?, ?, ?, 'running', ?, ?)
                 """,
-                (pool_key_hash, principal_hash, principal_hash, profile, config_profile, pid, now, now),
+                (pool_key_hash, auth_principal_hash, profile, config_profile, pid, now, now),
             )
             return int(cursor.lastrowid)
 
@@ -704,7 +696,7 @@ class StateStore:
         action: str,
         payload: dict[str, Any] | None = None,
         *,
-        auth_principal_hash: str | None = None,
+        auth_principal_hash: str,
         profile: str | None = None,
         thread_id: str | None = None,
         turn_id: str | None = None,
@@ -714,7 +706,7 @@ class StateStore:
                 owner_hash,
                 action,
                 payload or {},
-                auth_principal_hash=auth_principal_hash or owner_hash,
+                auth_principal_hash=auth_principal_hash,
                 profile=profile,
                 thread_id=thread_id,
                 turn_id=turn_id,
@@ -727,7 +719,7 @@ class StateStore:
         action: str,
         payload: dict[str, Any],
         *,
-        auth_principal_hash: str | None = None,
+        auth_principal_hash: str,
         profile: str | None = None,
         thread_id: str | None = None,
         turn_id: str | None = None,
@@ -743,7 +735,7 @@ class StateStore:
             """,
             (
                 owner_hash,
-                auth_principal_hash or owner_hash,
+                auth_principal_hash,
                 profile,
                 thread_id,
                 turn_id,

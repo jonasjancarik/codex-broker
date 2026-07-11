@@ -130,11 +130,6 @@ def validate_thread_auth_binding(
     requested_profile: str,
 ) -> None:
     thread_id = str(thread["thread_id"])
-    if thread.get("auth_binding_error"):
-        raise ConflictError(
-            f"Broker thread {thread_id!r} used multiple auth profiles before auth bindings became immutable. "
-            "Start a new broker thread."
-        )
     if thread.get("auth_principal_hash") != scope.auth_principal_hash:
         raise ConflictError(
             f"Broker thread {thread_id!r} is bound to a different auth principal. Start a new broker thread."

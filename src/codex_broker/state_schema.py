@@ -10,10 +10,20 @@ SCHEMA_VERSION = 3
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
     version = int(connection.execute("pragma user_version").fetchone()[0])
-    if version > SCHEMA_VERSION:
+    if version not in {0, SCHEMA_VERSION}:
         raise RuntimeError(
-            f"State database schema version {version} is newer than this broker supports ({SCHEMA_VERSION})."
+            f"State database schema version {version} is incompatible with this broker "
+            f"(expected {SCHEMA_VERSION}); start with an empty data directory."
         )
+    if version == 0:
+        existing_tables = connection.execute(
+            "select name from sqlite_master where type = 'table' and name not like 'sqlite_%'"
+        ).fetchall()
+        if existing_tables:
+            raise RuntimeError(
+                "Unversioned state database is incompatible with this broker; "
+                "start with an empty data directory."
+            )
     connection.execute("pragma journal_mode = wal")
     connection.executescript(
         """
@@ -34,7 +44,6 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
           thread_id text not null,
           auth_principal_hash text not null,
           auth_profile_instance_id text not null,
-          auth_binding_error text,
           profile text not null,
           codex_thread_id text,
           config_profile text not null default 'default',
@@ -67,6 +76,10 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
           error_code text,
           public_message text,
           admin_message text,
+          request_fingerprint text,
+          bundle_digest text,
+          resolved_options_json text,
+          broker_version text,
           created_at text not null,
           started_at text,
           completed_at text,
@@ -102,7 +115,6 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         create table if not exists app_server_processes (
           id integer primary key autoincrement,
           pool_key_hash text not null,
-          owner_hash text not null,
           auth_principal_hash text not null,
           profile text not null,
           config_profile text not null,
@@ -151,20 +163,14 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
           on events(owner_hash, thread_id, turn_id, id);
         create index if not exists idx_audit_owner_cursor
           on audit_logs(owner_hash, id);
+        create index if not exists idx_audit_owner_principal_cursor
+          on audit_logs(owner_hash, auth_principal_hash, id);
         create table if not exists audit_action_counts (
           action text primary key,
           count integer not null
         );
         """
     )
-    _ensure_legacy_columns(connection)
-    connection.execute(
-        "create index if not exists idx_audit_owner_principal_cursor "
-        "on audit_logs(owner_hash, auth_principal_hash, id)"
-    )
-    if version < SCHEMA_VERSION:
-        _migrate_auth_profiles(connection)
-        _backfill_auth_bindings(connection)
     connection.execute("delete from audit_action_counts")
     connection.execute(
         "insert into audit_action_counts(action, count) select action, count(*) from audit_logs group by action"
@@ -179,189 +185,3 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         (now, now),
     )
     connection.execute(f"pragma user_version = {SCHEMA_VERSION}")
-
-
-def _ensure_legacy_columns(connection: sqlite3.Connection) -> None:
-    _ensure_columns(
-        connection,
-        "threads",
-        {
-            "host_app": "text",
-            "config_profile": "text not null default 'default'",
-            "auth_principal_hash": "text",
-            "auth_profile_instance_id": "text",
-            "auth_binding_error": "text",
-        },
-    )
-    _copy_column_if_present(connection, "threads", "runtime_profile", "config_profile")
-    _ensure_columns(
-        connection,
-        "turns",
-        {
-            "product_correlation_id": "text",
-            "config_profile": "text not null default 'default'",
-            "request_fingerprint": "text",
-            "bundle_digest": "text",
-            "resolved_options_json": "text",
-            "broker_version": "text",
-            "host_app": "text",
-            "error_code": "text",
-            "public_message": "text",
-            "admin_message": "text",
-            "auth_principal_hash": "text",
-            "auth_profile_instance_id": "text",
-        },
-    )
-    _copy_column_if_present(connection, "turns", "runtime_profile", "config_profile")
-    _ensure_columns(
-        connection,
-        "app_server_processes",
-        {
-            "config_profile": "text not null default 'default'",
-            "auth_principal_hash": "text",
-        },
-    )
-    _copy_column_if_present(connection, "app_server_processes", "runtime_profile", "config_profile")
-    _ensure_columns(connection, "audit_logs", {"auth_principal_hash": "text"})
-    _ensure_columns(
-        connection,
-        "events",
-        {
-            "product_correlation_id": "text",
-            "codex_thread_id": "text",
-            "codex_turn_id": "text",
-        },
-    )
-
-
-def _migrate_auth_profiles(connection: sqlite3.Connection) -> None:
-    if _table_exists(connection, "owner_profiles"):
-        _ensure_columns(connection, "owner_profiles", {"auth_fingerprint": "text"})
-        connection.execute(
-            """
-            insert or ignore into auth_profiles(
-              auth_principal_hash, profile, instance_id, auth_type, auth_status,
-              auth_fingerprint, created_at, updated_at
-            )
-            select owner_hash, profile, 'ap_' || lower(hex(randomblob(16))), auth_type,
-              auth_status, auth_fingerprint, created_at, updated_at
-            from owner_profiles
-            """
-        )
-        connection.execute("drop table owner_profiles")
-
-
-def _backfill_auth_bindings(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        "update threads set auth_principal_hash = owner_hash where auth_principal_hash is null or auth_principal_hash = ''"
-    )
-    connection.execute(
-        """
-        insert or ignore into auth_profiles(
-          auth_principal_hash, profile, instance_id, auth_status, created_at, updated_at
-        )
-        select auth_principal_hash, profile, 'ap_' || lower(hex(randomblob(16))),
-          'unknown', min(created_at), max(updated_at)
-        from threads
-        group by auth_principal_hash, profile
-        """
-    )
-    connection.execute(
-        """
-        update threads
-        set auth_profile_instance_id = (
-          select instance_id from auth_profiles
-          where auth_profiles.auth_principal_hash = threads.auth_principal_hash
-            and auth_profiles.profile = threads.profile
-        )
-        where auth_profile_instance_id is null or auth_profile_instance_id = ''
-        """
-    )
-    connection.execute(
-        """
-        update turns
-        set auth_principal_hash = coalesce(
-          (select threads.auth_principal_hash from threads
-           where threads.owner_hash = turns.owner_hash and threads.thread_id = turns.thread_id),
-          owner_hash
-        )
-        where auth_principal_hash is null or auth_principal_hash = ''
-        """
-    )
-    connection.execute(
-        """
-        insert or ignore into auth_profiles(
-          auth_principal_hash, profile, instance_id, auth_status, created_at, updated_at
-        )
-        select auth_principal_hash, profile, 'ap_' || lower(hex(randomblob(16))),
-          'unknown', min(created_at), max(updated_at)
-        from turns
-        group by auth_principal_hash, profile
-        """
-    )
-    connection.execute(
-        """
-        update turns
-        set auth_profile_instance_id = (
-          select instance_id from auth_profiles
-          where auth_profiles.auth_principal_hash = turns.auth_principal_hash
-            and auth_profiles.profile = turns.profile
-        )
-        where auth_profile_instance_id is null or auth_profile_instance_id = ''
-        """
-    )
-    connection.execute(
-        """
-        update threads
-        set auth_binding_error = 'legacy_mixed_auth_profiles'
-        where auth_binding_error is null and exists (
-          select 1 from turns
-          where turns.owner_hash = threads.owner_hash
-            and turns.thread_id = threads.thread_id
-            and (
-              turns.profile != threads.profile
-              or turns.auth_principal_hash != threads.auth_principal_hash
-              or turns.auth_profile_instance_id != threads.auth_profile_instance_id
-            )
-        )
-        """
-    )
-    connection.execute(
-        """
-        update app_server_processes
-        set auth_principal_hash = owner_hash
-        where auth_principal_hash is null or auth_principal_hash = ''
-        """
-    )
-    connection.execute(
-        """
-        update audit_logs
-        set auth_principal_hash = owner_hash
-        where auth_principal_hash is null or auth_principal_hash = ''
-        """
-    )
-
-
-def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
-    return connection.execute(
-        "select 1 from sqlite_master where type = 'table' and name = ?",
-        (table,),
-    ).fetchone() is not None
-
-
-def _ensure_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
-    existing = {str(row["name"]) for row in connection.execute(f"pragma table_info({table})").fetchall()}
-    for name, declaration in columns.items():
-        if name not in existing:
-            connection.execute(f"alter table {table} add column {name} {declaration}")
-
-
-def _copy_column_if_present(
-    connection: sqlite3.Connection,
-    table: str,
-    source: str,
-    target: str,
-) -> None:
-    existing = {str(row["name"]) for row in connection.execute(f"pragma table_info({table})").fetchall()}
-    if source in existing and target in existing:
-        connection.execute(f"update {table} set {target} = {source} where {source} is not null")

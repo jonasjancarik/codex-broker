@@ -64,7 +64,7 @@ The implementation intentionally uses the Python standard library HTTP server an
 | `src/codex_broker/bundles.py` | Mounted and inline bundle lookup, validation, overlays, MCP config, hosted-tool declarations. |
 | `src/codex_broker/tool_adapter_mcp.py` | Local MCP server that forwards broker-hosted tool calls to host-owned HTTP endpoints. |
 | `src/codex_broker/state.py` | SQLite persistence, restart recovery, event and audit queries. |
-| `src/codex_broker/state_schema.py` | Transactional schema creation and backward-compatible migrations. |
+| `src/codex_broker/state_schema.py` | Transactional schema creation and strict schema-version validation. |
 | `src/codex_broker/events.py` | Codex app-server notification to broker event normalization. |
 | `src/codex_broker/interactions.py` | Validation and fallback response shapes for approvals, permissions, user input, and MCP elicitations. |
 | `src/codex_broker/client.py` | Small Python client for host services and workers. |
@@ -118,7 +118,7 @@ The broker never uses raw `ownerId` or `authPrincipalId` values in paths. Both u
 
 ## SQLite State
 
-`StateStore` creates and migrates these tables:
+`StateStore` creates these tables:
 
 | Table | Purpose |
 | --- | --- |
@@ -131,14 +131,14 @@ The broker never uses raw `ownerId` or `authPrincipalId` values in paths. Both u
 | `audit_logs` | Owner-scoped auth, turn, approval, interrupt, logout, and runtime failure actions. |
 | `pending_interactions` | Host-mediated approvals, permissions, user input, and MCP elicitation requests. |
 
-The database carries a schema version and rejects databases created by a newer broker. Restart recovery is conservative: in-progress turns are failed, pending interactions receive fallback responses, stale process rows become `orphaned`, and abandoned overlays are removed. Terminal turn state and its terminal event are committed together.
+The database carries an exact schema version and rejects databases from any other version. Restart recovery is conservative: in-progress turns are failed, pending interactions receive fallback responses, stale process rows become `orphaned`, and abandoned overlays are removed. Terminal turn state and its terminal event are committed together.
 
 ## Auth Boundary
 
 The host app chooses an `ownerId`. Trusted configuration resolves an auth principal, defaulting to the same id, and requests may only assert that configured value. The broker hashes both identities and creates the Codex home at:
 
 ```text
-<data_dir>/auth/owners/<auth-principal-hash>/profiles/<profile>/codex-home
+<data_dir>/auth/principals/<auth-principal-hash>/profiles/<profile>/codex-home
 ```
 
 Codex login commands run with:
@@ -150,7 +150,7 @@ Codex login commands run with:
 
 The broker supports cheap profile lists and status checks, explicit active auth probes, device auth start/submit, API-key login, runtime invalidation, logout, and explicit profile deletion. Owner state and audits remain isolated even when several owners share one principal. The App Server pool uses principal/profile credentials; processes with mounted MCP servers remain owner-isolated because an MCP server may carry tenant state.
 
-Creating a thread stores the resolved principal hash, canonical profile, and profile-instance id. Turn requests inherit this binding; supplied identity fields are assertions only. Deleting a profile removes its instance, so old and queued threads cannot resume after an account replacement. Schema-v2 installations default principal hash to owner hash, and historically mixed-profile threads are marked unsafe instead of silently resumed.
+Creating a thread stores the resolved principal hash, canonical profile, and profile-instance id. Turn requests inherit this binding; supplied identity fields are assertions only. Deleting a profile removes its instance, so old and queued threads cannot resume after an account replacement.
 
 ## Thread And Turn Flow
 

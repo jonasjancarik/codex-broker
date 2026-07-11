@@ -1,6 +1,6 @@
 # Deployment Notes
 
-read_when: deploying the broker, changing trusted owner/auth-principal policy, migrating persistent data, or operating shared Codex accounts.
+read_when: deploying the broker, changing trusted owner/auth-principal policy, replacing persistent data, or operating shared Codex accounts.
 
 The broker is designed as one internal Docker image that a host app can run next to its own backend or worker services.
 
@@ -81,7 +81,7 @@ Only `GET /healthz` and `GET /readyz` are intended for unauthenticated orchestra
 
 Use `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` or `CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE` to map owner ids to shared Codex account identities. This mapping is deployment policy and must be controlled by the trusted host. A request `authPrincipalId` is accepted only when it matches policy; it does not grant clients a general account selector. Distinct principals require the authenticated broker-key path and are not available as an unauthenticated development feature.
 
-Existing databases migrate with each thread and profile bound to `authPrincipalId = ownerId`, so the on-disk `auth/owners/<hash>` layout remains valid. Back up `state/broker.sqlite`, `state/owner-hash.key`, and `auth/` together before rollout.
+This architecture does not migrate databases or auth homes from earlier releases. Deploy it with a new data directory; schema-version mismatches fail at startup instead of rewriting persisted state.
 
 ## Configuration Profiles
 

@@ -124,7 +124,7 @@ The default data directory is `.data`; Docker deployments usually set it to `/da
 
 ## SQLite state
 
-`StateStore` creates and migrates tables for:
+`StateStore` creates tables for:
 
 - user Codex auth profiles and auth status
 - broker threads
@@ -147,7 +147,7 @@ Restart recovery is conservative. Turns that were in progress before process dea
 
 The pool key includes auth-principal hash, Codex auth profile, auth fingerprint, `configProfile`, Codex command/version, credential-store mode, client identity fields, and process-level Codex config. Compatible children can serve isolated owner contexts. Mounted MCP declarations add owner scope because an MCP process may retain tenant state. Explicit unknown upstream thread or turn ids are never routed by single-context guessing.
 
-Threads persist an immutable principal/profile/profile-instance binding. Deleting a profile changes the instance and fences old or queued work. Schema-v2 rows migrate with principal=owner; historical mixed-profile threads fail closed and require replacement.
+Threads persist an immutable principal/profile/profile-instance binding. Deleting a profile changes the instance and fences old or queued work. Databases with a different schema version are rejected rather than migrated.
 
 Idle children are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`. Closed or crashed children are removed and restarted lazily on later work. Children with active turn contexts are not swept.
 

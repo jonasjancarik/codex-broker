@@ -141,7 +141,7 @@ Broker-managed auth layout:
             codex-home/
 ```
 
-The broker should hash or HMAC owner and auth-principal ids before persistence or filesystem use. The legacy `auth/owners` directory contains auth-principal hashes after migration; raw ids should not appear in paths.
+The broker should HMAC owner and auth-principal ids before persistence or filesystem use. Auth-principal hashes live under `auth/principals`; raw ids should not appear in paths.
 
 Auth features:
 
@@ -211,7 +211,7 @@ Turn create example:
 
 The broker should return a `streamUrl` for turns so host apps can consume normalized events with SSE.
 
-`authPrincipalId` is an optional request assertion validated against trusted owner-to-principal configuration. It is never an arbitrary client-selected identity. A broker thread permanently binds the resolved principal hash, canonical profile, and profile instance. Turns inherit that binding and cannot override it. Deleting a profile changes its instance so old and queued threads fail closed; a replacement account must use a new broker thread id. Schema migration defaults existing installations to principal=owner and rejects legacy threads whose historical turns mixed profiles.
+`authPrincipalId` is an optional request assertion validated against trusted owner-to-principal configuration. It is never an arbitrary client-selected identity. A broker thread permanently binds the resolved principal hash, canonical profile, and profile instance. Turns inherit that binding and cannot override it. Deleting a profile changes its instance so old and queued threads fail closed; a replacement account must use a new broker thread id.
 
 ## Events
 

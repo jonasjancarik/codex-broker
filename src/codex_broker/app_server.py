@@ -109,8 +109,7 @@ class AppServerClient:
         self,
         config: BrokerConfig,
         *,
-        owner_hash: str | None = None,
-        auth_principal_hash: str | None = None,
+        auth_principal_hash: str,
         profile: str,
         codex_home: Path,
         config_profile: str,
@@ -119,13 +118,9 @@ class AppServerClient:
         mcp_servers: tuple[McpServerRef, ...] = (),
         codex_config_args: tuple[tuple[str, str], ...] = (),
     ) -> None:
-        principal_hash = auth_principal_hash or owner_hash
-        if not principal_hash:
-            raise ValueError("auth_principal_hash is required.")
         self.config = config
         self.state = state
-        self.auth_principal_hash = principal_hash
-        self.owner_hash = principal_hash  # Backward-compatible alias for embedders.
+        self.auth_principal_hash = auth_principal_hash
         self.profile = profile
         self.config_profile = config_profile
         self.pool_key_hash = pool_key_hash
@@ -178,7 +173,7 @@ class AppServerClient:
         if self.state:
             self._process_record_id = self.state.record_app_server_start(
                 pool_key_hash=pool_key_hash,
-                auth_principal_hash=principal_hash,
+                auth_principal_hash=auth_principal_hash,
                 profile=profile,
                 config_profile=config_profile,
                 pid=self._process.pid,
@@ -190,7 +185,7 @@ class AppServerClient:
         json_log(
             config.json_logs,
             "app_server.start",
-            authPrincipalHash=principal_hash,
+            authPrincipalHash=auth_principal_hash,
             profile=profile,
             configProfile=config_profile,
             pid=self._process.pid,
@@ -321,7 +316,7 @@ class AppServerClient:
         json_log(
             self.config.json_logs,
             "app_server.close",
-            authPrincipalHash=getattr(self, "auth_principal_hash", self.owner_hash),
+            authPrincipalHash=self.auth_principal_hash,
             profile=self.profile,
             configProfile=self.config_profile,
             pid=self._process.pid,
@@ -402,7 +397,7 @@ class AppServerClient:
             json_log(
                 self.config.json_logs,
                 f"app_server.{stream}",
-                authPrincipalHash=getattr(self, "auth_principal_hash", self.owner_hash),
+                authPrincipalHash=self.auth_principal_hash,
                 profile=self.profile,
                 configProfile=self.config_profile,
                 pid=getattr(self._process, "pid", None),
@@ -678,8 +673,7 @@ class AppServerPool:
     def get(
         self,
         *,
-        owner_hash: str | None = None,
-        auth_principal_hash: str | None = None,
+        auth_principal_hash: str,
         profile: str,
         codex_home: Path,
         config_profile: str,
@@ -688,11 +682,8 @@ class AppServerPool:
         codex_config_args: tuple[tuple[str, str], ...] = (),
         auth_fingerprint: str | None = None,
     ) -> AppServerClient:
-        principal_hash = auth_principal_hash or owner_hash
-        if not principal_hash:
-            raise ValueError("auth_principal_hash is required.")
         key = (
-            principal_hash,
+            auth_principal_hash,
             profile,
             auth_fingerprint or "unknown-auth",
             tenant_scope_hash if mcp_servers else None,
@@ -712,7 +703,7 @@ class AppServerPool:
             raise AppServerError("App Server pool is closed")
         self._sweep()
         if auth_fingerprint is not None:
-            self._close_idle_stale_auth(principal_hash, profile, key[2])
+            self._close_idle_stale_auth(auth_principal_hash, profile, key[2])
         with self._lock:
             client = self._clients.get(key)
             if client and not client.closed:
@@ -730,14 +721,14 @@ class AppServerPool:
                 json_log(
                     self.config.json_logs,
                     "app_server.restart",
-                    authPrincipalHash=principal_hash,
+                    authPrincipalHash=auth_principal_hash,
                     profile=profile,
                     configProfile=config_profile,
                     poolKeyHash=key_hash,
                 )
             client = AppServerClient(
                 self.config,
-                auth_principal_hash=principal_hash,
+                auth_principal_hash=auth_principal_hash,
                 profile=profile,
                 codex_home=codex_home,
                 config_profile=config_profile,
@@ -768,9 +759,6 @@ class AppServerPool:
                 gate.users -= 1
                 if gate.users == 0 and self._creation_locks.get(key) is gate:
                     self._creation_locks.pop(key, None)
-
-    def close_owner(self, owner_hash: str) -> None:
-        self.close_profile(owner_hash, None)
 
     def close_auth_principal(self, auth_principal_hash: str) -> None:
         self.close_profile(auth_principal_hash, None)
