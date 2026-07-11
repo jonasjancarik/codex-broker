@@ -21,6 +21,25 @@ class CodexBrokerClient:
     def auth_status(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
         return self._request("GET", f"/v1/owners/{quote(owner_id)}/auth/status", query={"profile": profile})
 
+    def account_usage(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
+        return self._request("GET", f"/v1/owners/{quote(owner_id)}/auth/usage", query={"profile": profile})
+
+    def account_rate_limits(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
+        return self._request("GET", f"/v1/owners/{quote(owner_id)}/auth/rate-limits", query={"profile": profile})
+
+    def consume_rate_limit_reset_credit(
+        self,
+        owner_id: str,
+        idempotency_key: str,
+        *,
+        profile: str = "default",
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/v1/owners/{quote(owner_id)}/auth/rate-limit-reset-credit/consume",
+            {"profile": profile, "idempotencyKey": idempotency_key},
+        )
+
     def probe_auth(self, owner_id: str, *, profile: str = "default") -> dict[str, Any]:
         return self._request("POST", f"/v1/owners/{quote(owner_id)}/auth/probe", {"profile": profile})
 

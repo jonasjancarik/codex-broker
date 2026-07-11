@@ -11,6 +11,9 @@ class OpenApiTests(unittest.TestCase):
         paths = document["paths"]
         for path in [
             "/v1/owners/{ownerId}/auth/status",
+            "/v1/owners/{ownerId}/auth/usage",
+            "/v1/owners/{ownerId}/auth/rate-limits",
+            "/v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume",
             "/v1/owners/{ownerId}/auth/probe",
             "/v1/owners/{ownerId}/auth/device/start",
             "/v1/owners/{ownerId}/auth/device/submit",
@@ -37,6 +40,10 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("brokerKey", components["securitySchemes"])
         for schema in [
             "AuthStatus",
+            "AccountUsageResponse",
+            "AccountRateLimitsResponse",
+            "RateLimitResetCreditConsumeRequest",
+            "RateLimitResetCreditConsumeResponse",
             "AuthProbeResult",
             "DeviceAuthSession",
             "AuditLog",

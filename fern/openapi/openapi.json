@@ -97,6 +97,46 @@
       }
     },
     "schemas": {
+      "AccountRateLimitsResponse": {
+        "properties": {
+          "ownerHash": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "rateLimits": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "ownerHash",
+          "profile",
+          "rateLimits"
+        ],
+        "type": "object"
+      },
+      "AccountUsageResponse": {
+        "properties": {
+          "ownerHash": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "ownerHash",
+          "profile",
+          "usage"
+        ],
+        "type": "object"
+      },
       "ApiKeyLoginRequest": {
         "properties": {
           "apiKey": {
@@ -761,6 +801,43 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "RateLimitResetCreditConsumeRequest": {
+        "properties": {
+          "idempotencyKey": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "profile": {
+            "default": "default",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "RateLimitResetCreditConsumeResponse": {
+        "properties": {
+          "ownerHash": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "resetCredit": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "ownerHash",
+          "profile",
+          "resetCredit"
+        ],
         "type": "object"
       },
       "Readiness": {
@@ -1483,6 +1560,61 @@
         }
       }
     },
+    "/v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume": {
+      "post": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RateLimitResetCreditConsumeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitResetCreditConsumeResponse"
+                }
+              }
+            },
+            "description": "Rate-limit reset credit consumed"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/rate-limits": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/profile"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountRateLimitsResponse"
+                }
+              }
+            },
+            "description": "Account rate limits"
+          }
+        }
+      }
+    },
     "/v1/owners/{ownerId}/auth/runtime/invalidate": {
       "post": {
         "parameters": [
@@ -1544,6 +1676,30 @@
               }
             },
             "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/usage": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/profile"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountUsageResponse"
+                }
+              }
+            },
+            "description": "Account usage"
           }
         }
       }

@@ -78,6 +78,24 @@ export interface AuditLogList {
   }>;
 }
 
+export interface AccountUsageResponse {
+  ownerHash: string;
+  profile: string;
+  usage: Record<string, unknown>;
+}
+
+export interface AccountRateLimitsResponse {
+  ownerHash: string;
+  profile: string;
+  rateLimits: Record<string, unknown>;
+}
+
+export interface RateLimitResetCreditConsumeResponse {
+  ownerHash: string;
+  profile: string;
+  resetCredit: Record<string, unknown>;
+}
+
 export class CodexBrokerClient {
   private readonly baseUrl: string;
   private readonly internalKey?: string;
@@ -91,6 +109,25 @@ export class CodexBrokerClient {
 
   authStatus(ownerId: string, profile = "default"): Promise<Record<string, unknown>> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/status?profile=${enc(profile)}`);
+  }
+
+  accountUsage(ownerId: string, profile = "default"): Promise<AccountUsageResponse> {
+    return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/usage?profile=${enc(profile)}`);
+  }
+
+  accountRateLimits(ownerId: string, profile = "default"): Promise<AccountRateLimitsResponse> {
+    return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/rate-limits?profile=${enc(profile)}`);
+  }
+
+  consumeRateLimitResetCredit(
+    ownerId: string,
+    idempotencyKey: string,
+    profile = "default",
+  ): Promise<RateLimitResetCreditConsumeResponse> {
+    return this.request("POST", `/v1/owners/${enc(ownerId)}/auth/rate-limit-reset-credit/consume`, {
+      profile,
+      idempotencyKey,
+    });
   }
 
   probeAuth(ownerId: string, profile = "default"): Promise<Record<string, unknown>> {

@@ -28,6 +28,31 @@ class FakeResponse:
 
 
 class CodexBrokerClientTests(unittest.TestCase):
+    def test_account_methods_scope_requests_to_owner_and_profile(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def fake_urlopen(req: Any, timeout: float) -> FakeResponse:
+            seen.append(
+                {
+                    "url": req.full_url,
+                    "method": req.get_method(),
+                    "body": json.loads(req.data.decode("utf-8")) if req.data else None,
+                }
+            )
+            return FakeResponse(b'{"ownerHash":"hash","profile":"work"}')
+
+        client = CodexBrokerClient("http://broker.internal")
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.account_usage("owner/a", profile="work")
+            client.account_rate_limits("owner/a", profile="work")
+            client.consume_rate_limit_reset_credit("owner/a", "reset-123", profile="work")
+
+        self.assertEqual([request["method"] for request in seen], ["GET", "GET", "POST"])
+        self.assertIn("/v1/owners/owner%2Fa/auth/usage?profile=work", seen[0]["url"])
+        self.assertIn("/v1/owners/owner%2Fa/auth/rate-limits?profile=work", seen[1]["url"])
+        self.assertIn("/v1/owners/owner%2Fa/auth/rate-limit-reset-credit/consume", seen[2]["url"])
+        self.assertEqual(seen[2]["body"], {"profile": "work", "idempotencyKey": "reset-123"})
+
     def test_start_turn_posts_authorized_json(self) -> None:
         seen: dict[str, Any] = {}
 
