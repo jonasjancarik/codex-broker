@@ -14,6 +14,11 @@ from test_broker import config_for, wait_turn
 
 
 class AuthProfileTests(unittest.TestCase):
+    def test_dot_segment_profile_ids_are_rejected(self) -> None:
+        for profile in (".", ".."):
+            with self.subTest(profile=profile), self.assertRaises(ValueError):
+                normalize_profile(profile)
+
     def test_token_invalidated_messages_are_codex_auth_failures(self) -> None:
         message = (
             "failed to refresh available models: unexpected status 401 Unauthorized: "

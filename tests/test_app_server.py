@@ -100,6 +100,79 @@ class FakeProcess:
 
 
 class AppServerRoutingTests(unittest.TestCase):
+    def test_pool_creation_lock_survives_failed_start_with_multiple_waiters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw)), pool_idle_ttl_seconds=0)
+            pool = AppServerPool(config)
+            first_started = threading.Event()
+            release_first = threading.Event()
+            second_started = threading.Event()
+            release_second = threading.Event()
+            calls = 0
+            calls_lock = threading.Lock()
+
+            class DummyClient:
+                closed = False
+
+                def close(self) -> None:
+                    self.closed = True
+
+            def create_client(*args: Any, **kwargs: Any) -> DummyClient:
+                nonlocal calls
+                with calls_lock:
+                    calls += 1
+                    call = calls
+                if call == 1:
+                    first_started.set()
+                    release_first.wait(2)
+                    raise AppServerError("first launch failed")
+                if call == 2:
+                    second_started.set()
+                    release_second.wait(2)
+                return DummyClient()
+
+            results: list[Any] = []
+            failures: list[BaseException] = []
+
+            def get_client() -> None:
+                try:
+                    results.append(
+                        pool.get(
+                            owner_hash="owner",
+                            profile="default",
+                            codex_home=config.auth_root,
+                            config_profile="default",
+                            mcp_servers=(),
+                        )
+                    )
+                except BaseException as exc:  # noqa: BLE001 - test records thread failures.
+                    failures.append(exc)
+
+            with patch.object(pool, "_codex_version", return_value="test"), patch(
+                "codex_broker.app_server.AppServerClient",
+                side_effect=create_client,
+            ):
+                first = threading.Thread(target=get_client)
+                second = threading.Thread(target=get_client)
+                first.start()
+                self.assertTrue(first_started.wait(1))
+                second.start()
+                release_first.set()
+                self.assertTrue(second_started.wait(1))
+                third = threading.Thread(target=get_client)
+                third.start()
+                time.sleep(0.05)
+                self.assertEqual(calls, 2)
+                release_second.set()
+                for worker in (first, second, third):
+                    worker.join(2)
+
+            self.assertEqual(calls, 2)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(len(failures), 1)
+            self.assertIs(results[0], results[1])
+            pool.close_all()
+
     def test_pool_records_app_server_process_lifecycle_in_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             tmp = Path(tmp_raw)

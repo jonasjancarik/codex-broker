@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import time
+import threading
 from contextlib import redirect_stderr
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -861,6 +862,94 @@ class BrokerTests(unittest.TestCase):
             done = wait_turn(services, "owner-a", thread["threadId"], first["turnId"])
             self.assertEqual(done["status"], "completed")
 
+    def test_invalid_reject_request_does_not_strand_thread_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))
+            try:
+                thread = services.scheduler.create_thread("owner-a", {"cwd": str(services.config.allowed_workspace_roots[0])})
+                with self.assertRaises(BundleError):
+                    services.scheduler.start_turn(
+                        "owner-a",
+                        thread["threadId"],
+                        {"input": [{"type": "text", "text": "bad"}], "cwd": "/etc"},
+                    )
+                turn = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "good"}]},
+                )
+                self.assertEqual(wait_turn(services, "owner-a", thread["threadId"], turn["turnId"])["status"], "completed")
+            finally:
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_concurrent_idempotent_submissions_schedule_one_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.1))
+            try:
+                thread = services.scheduler.create_thread("owner-a", {"cwd": str(services.config.allowed_workspace_roots[0])})
+                barrier = threading.Barrier(6)
+                results: list[dict[str, Any]] = []
+                failures: list[BaseException] = []
+
+                def submit() -> None:
+                    try:
+                        barrier.wait()
+                        results.append(
+                            services.scheduler.start_turn(
+                                "owner-a",
+                                thread["threadId"],
+                                {
+                                    "input": [{"type": "text", "text": "once"}],
+                                    "idempotencyKey": "same-request",
+                                },
+                            )
+                        )
+                    except BaseException as exc:  # noqa: BLE001 - test captures worker failures.
+                        failures.append(exc)
+
+                workers = [threading.Thread(target=submit) for _ in range(6)]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join()
+
+                self.assertEqual(failures, [])
+                self.assertEqual(len({result["turnId"] for result in results}), 1)
+                turn_id = results[0]["turnId"]
+                self.assertEqual(wait_turn(services, "owner-a", thread["threadId"], turn_id)["status"], "completed")
+                self.assertEqual(services.scheduler.metrics()["turns_started"], 1)
+            finally:
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_queue_capacity_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw), turn_delay=0.3), max_queued_turns=1)
+            services = BrokerServices.build(config)
+            try:
+                thread = services.scheduler.create_thread("owner-a", {"cwd": str(config.allowed_workspace_roots[0])})
+                first = services.scheduler.start_turn("owner-a", thread["threadId"], {"input": [{"type": "text", "text": "one"}]})
+                second = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "two"}], "mode": "queue"},
+                )
+                with self.assertRaises(ConflictError):
+                    services.scheduler.start_turn(
+                        "owner-a",
+                        thread["threadId"],
+                        {"input": [{"type": "text", "text": "three"}], "mode": "queue"},
+                    )
+                self.assertEqual(wait_turn(services, "owner-a", thread["threadId"], first["turnId"])["status"], "completed")
+                self.assertEqual(wait_turn(services, "owner-a", thread["threadId"], second["turnId"])["status"], "completed")
+            finally:
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
     def test_different_threads_run_concurrently_for_same_owner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.35))
@@ -1004,7 +1093,10 @@ class BrokerTests(unittest.TestCase):
                 first_client = next(iter(services.pool._clients.values()))
                 first_pid = first_client._process.pid
 
-                time.sleep(1.1)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and first_client._process.poll() is None:
+                    time.sleep(0.02)
+                self.assertIsNotNone(first_client._process.poll())
                 second_thread = services.scheduler.create_thread("owner-a", {"cwd": str(services.config.allowed_workspace_roots[0])})
                 second = services.scheduler.start_turn("owner-a", second_thread["threadId"], {"input": [{"type": "text", "text": "second"}]})
                 self.assertEqual(wait_turn(services, "owner-a", second_thread["threadId"], second["turnId"])["status"], "completed")

@@ -6,6 +6,7 @@ import os
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -56,6 +57,12 @@ class PendingServerInteraction:
     response: dict[str, Any] | None = None
     source: str | None = None
     completed_in_state: bool = False
+
+
+@dataclass
+class PoolCreationGate:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    users: int = 0
 
 
 class TurnContext(Protocol):
@@ -248,7 +255,7 @@ class AppServerClient:
             with self._stdin_lock:
                 self._stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
                 self._stdin.flush()
-        except BrokenPipeError as exc:
+        except (BrokenPipeError, OSError, ValueError) as exc:
             raise AppServerError("App Server stdin closed unexpectedly") from exc
 
     def register_context(self, context: TurnContext) -> None:
@@ -421,7 +428,12 @@ class AppServerClient:
             return
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         if message_id is not None:
-            self._handle_server_request(method, message_id, params)
+            threading.Thread(
+                target=self._handle_server_request,
+                args=(method, message_id, params),
+                name=f"app-server-request-{message_id}",
+                daemon=True,
+            ).start()
         else:
             self._handle_notification(method, params)
 
@@ -635,7 +647,14 @@ class AppServerPool:
         self.state = state
         self._lock = threading.RLock()
         self._clients: dict[tuple[Any, ...], AppServerClient] = {}
+        self._creation_locks: dict[tuple[Any, ...], PoolCreationGate] = {}
         self._restart_count = 0
+        self._closed = False
+        self._sweeper_stop = threading.Event()
+        self._sweeper_thread: threading.Thread | None = None
+        if config.pool_idle_ttl_seconds > 0:
+            self._sweeper_thread = threading.Thread(target=self._sweeper_loop, name="app-server-pool-sweeper", daemon=True)
+            self._sweeper_thread.start()
 
     def get(
         self,
@@ -664,16 +683,25 @@ class AppServerPool:
             self._mcp_env_fingerprint(mcp_servers),
         )
         key_hash = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()[:16]
+        if self._closed:
+            raise AppServerError("App Server pool is closed")
+        self._sweep()
+        if auth_fingerprint is not None:
+            self._close_idle_stale_auth(owner_hash, profile, key[2])
         with self._lock:
-            self._sweep_locked()
-            if auth_fingerprint is not None:
-                self._close_idle_stale_auth_locked(owner_hash, profile, key[2])
             client = self._clients.get(key)
             if client and not client.closed:
                 return client
+        with self._creation_gate(key):
+            with self._lock:
+                client = self._clients.get(key)
+                if client and not client.closed:
+                    return client
+                if client:
+                    self._clients.pop(key, None)
+                    self._restart_count += 1
             if client:
-                self._clients.pop(key, None)
-                self._restart_count += 1
+                client.close()
                 json_log(
                     self.config.json_logs,
                     "app_server.restart",
@@ -693,18 +721,41 @@ class AppServerPool:
                 mcp_servers=mcp_servers,
                 codex_config_args=codex_config_args,
             )
-            self._clients[key] = client
+            with self._lock:
+                closed_during_start = self._closed
+                if not closed_during_start:
+                    self._clients[key] = client
+            if closed_during_start:
+                client.close()
+                raise AppServerError("App Server pool closed during child startup")
             return client
+
+    @contextmanager
+    def _creation_gate(self, key: tuple[Any, ...]) -> Any:
+        with self._lock:
+            gate = self._creation_locks.setdefault(key, PoolCreationGate())
+            gate.users += 1
+        try:
+            with gate.lock:
+                yield
+        finally:
+            with self._lock:
+                gate.users -= 1
+                if gate.users == 0 and self._creation_locks.get(key) is gate:
+                    self._creation_locks.pop(key, None)
 
     def close_owner(self, owner_hash: str) -> None:
         self.close_profile(owner_hash, None)
 
     def close_profile(self, owner_hash: str, profile: str | None) -> None:
         with self._lock:
+            clients: list[AppServerClient] = []
             for key, client in list(self._clients.items()):
                 if key[0] == owner_hash and (profile is None or key[1] == profile):
                     self._clients.pop(key, None)
-                    client.close()
+                    clients.append(client)
+        for client in clients:
+            client.close()
 
     def close_client(self, client: AppServerClient) -> None:
         with self._lock:
@@ -721,30 +772,47 @@ class AppServerPool:
         return {"active_app_server_children": active_children, "app_server_restarts": restarts}
 
     def close_all(self) -> None:
+        self._sweeper_stop.set()
+        if self._sweeper_thread and self._sweeper_thread is not threading.current_thread():
+            self._sweeper_thread.join(timeout=1)
         with self._lock:
+            self._closed = True
             clients = list(self._clients.values())
             self._clients.clear()
         for client in clients:
             client.close()
 
-    def _sweep_locked(self) -> None:
+    def _sweeper_loop(self) -> None:
+        interval = max(0.1, min(self.config.pool_idle_ttl_seconds / 2, 60))
+        while not self._sweeper_stop.wait(interval):
+            self._sweep()
+
+    def _sweep(self) -> None:
         if self.config.pool_idle_ttl_seconds <= 0:
             return
         now = time.monotonic()
-        for key, client in list(self._clients.items()):
-            if client.closed:
-                self._clients.pop(key, None)
-                self._restart_count += 1
-                client.close()
-            elif not client.has_active_contexts and now - client.last_used_at > self.config.pool_idle_ttl_seconds:
-                self._clients.pop(key, None)
-                client.close()
+        stale: list[AppServerClient] = []
+        with self._lock:
+            for key, client in list(self._clients.items()):
+                if client.closed:
+                    self._clients.pop(key, None)
+                    self._restart_count += 1
+                    stale.append(client)
+                elif not client.has_active_contexts and now - client.last_used_at > self.config.pool_idle_ttl_seconds:
+                    self._clients.pop(key, None)
+                    stale.append(client)
+        for client in stale:
+            client.close()
 
-    def _close_idle_stale_auth_locked(self, owner_hash: str, profile: str, auth_fingerprint: str) -> None:
-        for key, client in list(self._clients.items()):
-            if key[0] == owner_hash and key[1] == profile and key[2] != auth_fingerprint and not client.has_active_contexts:
-                self._clients.pop(key, None)
-                client.close()
+    def _close_idle_stale_auth(self, owner_hash: str, profile: str, auth_fingerprint: str) -> None:
+        stale: list[AppServerClient] = []
+        with self._lock:
+            for key, client in list(self._clients.items()):
+                if key[0] == owner_hash and key[1] == profile and key[2] != auth_fingerprint and not client.has_active_contexts:
+                    self._clients.pop(key, None)
+                    stale.append(client)
+        for client in stale:
+            client.close()
 
     def _mcp_env_fingerprint(self, mcp_servers: tuple[McpServerRef, ...]) -> tuple[tuple[str, str, str, str], ...]:
         fingerprint: list[tuple[str, str, str, str]] = []

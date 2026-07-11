@@ -15,6 +15,37 @@ from test_broker import config_for
 
 
 class ConfigProfileTests(unittest.TestCase):
+    def test_missing_config_profile_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {
+                "CODEX_BROKER_DATA_DIR": tmp_raw,
+                "CODEX_BROKER_CONFIG_PROFILES_FILE": str(Path(tmp_raw) / "missing.json"),
+            },
+            clear=True,
+        ):
+            with self.assertRaises(FileNotFoundError):
+                BrokerConfig.from_env()
+
+    def test_generated_owner_hash_key_survives_internal_api_key_rotation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            with patch.dict(
+                os.environ,
+                {"CODEX_BROKER_DATA_DIR": tmp_raw, "CODEX_BROKER_INTERNAL_KEY": "first-api-key"},
+                clear=True,
+            ):
+                first = BrokerConfig.from_env()
+            with patch.dict(
+                os.environ,
+                {"CODEX_BROKER_DATA_DIR": tmp_raw, "CODEX_BROKER_INTERNAL_KEY": "rotated-api-key"},
+                clear=True,
+            ):
+                second = BrokerConfig.from_env()
+
+            self.assertEqual(first.owner_hash_secret, second.owner_hash_secret)
+            self.assertNotEqual(first.owner_hash_secret, "first-api-key")
+            self.assertEqual((Path(tmp_raw) / "state" / "owner-hash.key").stat().st_mode & 0o777, 0o600)
+
     def test_config_profiles_load_from_env_json(self) -> None:
         payload = {
             "review": {
@@ -24,16 +55,23 @@ class ConfigProfileTests(unittest.TestCase):
                 "enabledBundles": ["review-bundle"],
             }
         }
-        with patch.dict(os.environ, {"CODEX_BROKER_CONFIG_PROFILES_JSON": json.dumps(payload)}, clear=True):
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {"CODEX_BROKER_DATA_DIR": tmp_raw, "CODEX_BROKER_CONFIG_PROFILES_JSON": json.dumps(payload)},
+            clear=True,
+        ):
             config = BrokerConfig.from_env()
 
         self.assertEqual(config.config_profiles["review"]["model"], "gpt-5")
         self.assertEqual(config.config_profiles["review"]["enabledBundles"], ["review-bundle"])
 
     def test_passthrough_env_loads_from_env_csv(self) -> None:
-        with patch.dict(
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
             os.environ,
-            {"CODEX_BROKER_PASSTHROUGH_ENV": "ESTF_ARCHIVER_API_URL, ESTF_ARCHIVER_API_KEY"},
+            {
+                "CODEX_BROKER_DATA_DIR": tmp_raw,
+                "CODEX_BROKER_PASSTHROUGH_ENV": "ESTF_ARCHIVER_API_URL, ESTF_ARCHIVER_API_KEY",
+            },
             clear=True,
         ):
             config = BrokerConfig.from_env()

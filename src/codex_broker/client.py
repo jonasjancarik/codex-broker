@@ -58,6 +58,7 @@ class CodexBrokerClient:
         action: str | None = None,
         thread_id: str | None = None,
         turn_id: str | None = None,
+        after: int = 0,
         limit: int | None = None,
     ) -> dict[str, Any]:
         query: dict[str, str] = {}
@@ -69,6 +70,8 @@ class CodexBrokerClient:
             query["threadId"] = thread_id
         if turn_id is not None:
             query["turnId"] = turn_id
+        if after > 0:
+            query["after"] = str(after)
         if limit is not None:
             query["limit"] = str(limit)
         return self._request("GET", f"/v1/owners/{quote(owner_id)}/audit-logs", query=query)

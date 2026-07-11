@@ -102,17 +102,18 @@ def handle_exec(args: list[str]) -> int:
 
 def complete_turn(thread_id: str, turn_id: str) -> None:
     delay = float(os.environ.get("FAKE_CODEX_TURN_DELAY", "0.01"))
+    request_base = 9000 + int(turn_id.rsplit("_", 1)[-1]) * 10
     send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id}}})
     if os.environ.get("FAKE_CODEX_REQUEST_APPROVAL") == "1":
         request_server(
             "item/commandExecution/requestApproval",
-            9000,
+            request_base,
             {"threadId": thread_id, "turnId": turn_id, "command": "printf test"},
         )
     if os.environ.get("FAKE_CODEX_REQUEST_USER_INPUT") == "1":
         request_server(
             "item/tool/requestUserInput",
-            9001,
+            request_base + 1,
             {
                 "threadId": thread_id,
                 "turnId": turn_id,
@@ -124,7 +125,7 @@ def complete_turn(thread_id: str, turn_id: str) -> None:
     if os.environ.get("FAKE_CODEX_REQUEST_MCP_ELICITATION") == "1":
         request_server(
             "mcpServer/elicitation/request",
-            9002,
+            request_base + 2,
             {"threadId": thread_id, "turnId": turn_id, "serverName": "host", "mode": "form", "message": "Continue?"},
         )
     send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg1", "delta": "hello"}})

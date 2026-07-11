@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import re
 import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,30 +18,33 @@ from .config import BrokerConfig
 from .events import normalize_app_server_event
 from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, RuntimeErrorInfo, classify_app_server_error, classify_runtime_error
 from .scheduler_errors import ActiveTurnError, ConflictError, NotFoundError
-from . import scheduler_interactions
+from . import scheduler_config, scheduler_interactions
 from .state import StateStore
-from .util import json_log, redact_json, utc_now
+from .util import json_dumps, json_log, redact_json, utc_now
 
 
 def metric_key(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", value).strip("_").lower()
 
 
-def feature_config_key(value: str) -> str:
-    name = re.sub(r"[^A-Za-z0-9_.-]", "_", value).strip("._-")
-    if not name:
-        raise ValueError("Feature name must contain at least one alphanumeric character.")
-    return f"features.{name}"
-
-
 def optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
-
-
 @dataclass
 class ThreadGate:
-    lock: threading.Lock
     active_context: "BrokerTurnContext | None" = None
+    running: bool = False
+    queue: deque["QueuedTurn"] | None = None
+
+    def pending(self) -> deque["QueuedTurn"]:
+        if self.queue is None:
+            self.queue = deque()
+        return self.queue
+@dataclass(frozen=True)
+class QueuedTurn:
+    owner_hash: str
+    thread_id: str
+    turn_id: str
+    body: dict[str, Any]
 
 
 class BrokerTurnContext:
@@ -68,6 +74,11 @@ class BrokerTurnContext:
         self.public_message: str | None = None
         self.admin_message: str | None = None
         self.debug_raw_events = debug_raw_events
+        self.terminal_event_type: str | None = None
+        self.terminal_payload: dict[str, Any] | None = None
+        self.terminal_raw_method: str | None = None
+        self.terminal_raw_params: dict[str, Any] | None = None
+        self.terminal_ambiguous = False
         self._lock = threading.RLock()
 
     def register_thread(self, codex_thread_id: str) -> None:
@@ -92,8 +103,14 @@ class BrokerTurnContext:
             self._set_error_info(error_info)
             if error_info:
                 payload = payload | error_info.public_payload()
+            self.terminal_event_type = event_type
+            self.terminal_payload = payload
+            self.terminal_raw_method = method if self.debug_raw_events else None
+            self.terminal_raw_params = redact_json(params) if self.debug_raw_events else None
+            self.terminal_ambiguous = ambiguous
             self.completed_event.set()
-        self._append_event(event_type, payload, method, params, ambiguous=ambiguous)
+        else:
+            self._append_event(event_type, payload, method, params, ambiguous=ambiguous)
         if event_type in {"approval.requested", "approval.resolved"}:
             self.state.append_audit(
                 self.owner_hash,
@@ -138,16 +155,8 @@ class BrokerTurnContext:
             error_info = classify_runtime_error(message)
             self.final_status = status
             self._set_error_info(error_info)
-            self.state.append_event(
-                self.owner_hash,
-                self.thread_id,
-                self.turn_id,
-                event_type or ("turn.failed" if status != "interrupted" else "turn.interrupted"),
-                error_info.public_payload(),
-                product_correlation_id=self.product_correlation_id,
-                codex_thread_id=self.codex_thread_id,
-                codex_turn_id=self.codex_turn_id,
-            )
+            self.terminal_event_type = event_type or ("turn.failed" if status != "interrupted" else "turn.interrupted")
+            self.terminal_payload = error_info.public_payload()
             self.completed_event.set()
 
     def fail(self, message: str) -> None:
@@ -193,11 +202,13 @@ class TurnScheduler:
         self._gates_lock = threading.RLock()
         self._shutdown = threading.Event()
         self._shutdown_mode = "interrupt"
-        self._workers: set[threading.Thread] = set()
+        worker_limit = config.max_active_turns if config.max_active_turns > 0 else min(32, config.max_queued_turns)
+        self._worker_limit = worker_limit
+        self._outstanding_turns = 0
+        self._executor = ThreadPoolExecutor(max_workers=worker_limit, thread_name_prefix="codex-turn")
+        self._workers: set[Future[None]] = set()
+        self._future_work: dict[Future[None], QueuedTurn] = {}
         self._workers_lock = threading.RLock()
-        self._global_semaphore = (
-            threading.BoundedSemaphore(config.max_active_turns) if config.max_active_turns > 0 else None
-        )
         self._metrics_lock = threading.Lock()
         self._metrics = {
             "active_turns": 0,
@@ -282,18 +293,6 @@ class TurnScheduler:
                 public = self._public_turn(existing)
                 public["streamUrl"] = self._stream_url(owner_id, thread_id, existing["turn_id"])
                 return public
-        gate = self._gate(owner_hash, thread_id)
-        preacquired = False
-        if mode == "reject":
-            preacquired = gate.lock.acquire(blocking=False)
-            if not preacquired:
-                active = gate.active_context
-                if active and active.completed_event.is_set():
-                    preacquired = gate.lock.acquire(timeout=1)
-                if not preacquired:
-                    raise ActiveTurnError("active_turn_exists")
-        elif mode == "queue":
-            self._metric("queued_turns", 1)
         bundle_id = str(body.get("bundleId") or thread.get("bundle_id") or "") or None
         config_profile = self._request_config_profile(body, thread.get("config_profile") or "default")
         config_profile_config = self._config_profile_config(config_profile)
@@ -303,28 +302,57 @@ class TurnScheduler:
         bundle = self.bundles.resolve(bundle_id) if bundle_id else None
         cwd = self.bundles.validate_cwd(body.get("cwd") or thread.get("cwd"), bundle)
         self._validate_config_profile_cwd(cwd, config_profile_config)
-        turn = self.state.create_turn(
-            owner_hash,
-            thread_id,
-            profile=profile,
-            config_profile=config_profile,
-            host_app=host_app,
-            bundle_id=bundle_id,
-            cwd=str(cwd) if cwd else None,
-            mode=mode,
-            input_items=input_items,
-            idempotency_key=key if isinstance(key, str) and key else None,
-            product_correlation_id=correlation_id if isinstance(correlation_id, str) and correlation_id else None,
-            status="starting" if preacquired else "queued",
-        )
-        worker = threading.Thread(
-            target=self._run_turn,
-            args=(owner_hash, thread_id, turn["turn_id"], body, preacquired),
-            daemon=True,
-        )
-        with self._workers_lock:
-            self._workers.add(worker)
-        worker.start()
+        with self._gates_lock:
+            if isinstance(key, str) and key:
+                existing = self.state.find_turn_by_idempotency(owner_hash, thread_id, key)
+                if existing:
+                    public = self._public_turn(existing)
+                    public["streamUrl"] = self._stream_url(owner_id, thread_id, existing["turn_id"])
+                    return public
+            gate = self._gate_locked(owner_hash, thread_id)
+            busy = gate.running or bool(gate.pending())
+            if mode == "reject" and busy:
+                raise ActiveTurnError("active_turn_exists")
+            queued_count = sum(len(item.pending()) for item in self._gates.values())
+            if busy and queued_count >= self.config.max_queued_turns:
+                raise ConflictError("Turn queue is full.")
+            if self._outstanding_turns >= self._worker_limit + self.config.max_queued_turns:
+                raise ConflictError("Turn queue is full.")
+            turn = self.state.create_turn(
+                owner_hash,
+                thread_id,
+                profile=profile,
+                config_profile=config_profile,
+                host_app=host_app,
+                bundle_id=bundle_id,
+                cwd=str(cwd) if cwd else None,
+                mode=mode,
+                input_items=input_items,
+                idempotency_key=key if isinstance(key, str) and key else None,
+                product_correlation_id=correlation_id if isinstance(correlation_id, str) and correlation_id else None,
+                status="queued" if busy else "starting",
+                request_fingerprint=hashlib.sha256(json_dumps(body).encode("utf-8")).hexdigest(),
+                bundle_digest=bundle.digest if bundle else None,
+                resolved_options={
+                    "profile": profile,
+                    "configProfile": config_profile,
+                    "hostApp": host_app,
+                    "bundleId": bundle_id,
+                    "cwd": str(cwd) if cwd else None,
+                    "codexOptions": self._request_codex_options(body),
+                    "configProfileOptions": config_profile_config,
+                },
+                broker_version=self.config.client_version,
+            )
+            if turn.pop("_created", False):
+                self._outstanding_turns += 1
+                work = QueuedTurn(owner_hash, thread_id, turn["turn_id"], dict(body))
+                if busy:
+                    gate.pending().append(work)
+                    self._metric("queued_turns", 1)
+                else:
+                    gate.running = True
+                    self._submit_work(work)
         public = self._public_turn(turn)
         public["streamUrl"] = self._stream_url(owner_id, thread_id, turn["turn_id"])
         return public
@@ -373,9 +401,9 @@ class TurnScheduler:
                 params["turnId"] = active.codex_turn_id
             active.client.request("turn/interrupt", params)
         active.finish("interrupted", "Turn interrupted.", "turn.interrupted")
-        self.state.update_turn(owner_hash, thread_id, turn_id, status="interrupted", completed=True)
-        self.state.append_audit(owner_hash, "turn.interrupt", {}, thread_id=thread_id, turn_id=turn_id)
-        self._metric("turns_interrupted", 1)
+        if self._persist_context_terminal(active):
+            self.state.append_audit(owner_hash, "turn.interrupt", {}, thread_id=thread_id, turn_id=turn_id)
+            self._metric("turns_interrupted", 1)
         return self.get_turn(owner_id, thread_id, turn_id)
 
     def list_interactions(
@@ -469,11 +497,17 @@ class TurnScheduler:
         self._shutdown.set()
         json_log(self.config.json_logs, "broker.shutdown.start", mode=mode, timeoutSeconds=timeout_seconds)
         if mode == "interrupt":
+            self._cancel_pending_futures("Broker shutting down.")
+            self._cancel_queued_turns("Broker shutting down.")
             self._interrupt_active_contexts("Broker shutting down.")
         self._wait_for_workers(timeout_seconds)
         if mode == "drain" and self._worker_count() > 0:
+            self._shutdown_mode = "interrupt"
+            self._cancel_pending_futures("Broker shutdown drain timed out.")
+            self._cancel_queued_turns("Broker shutdown drain timed out.")
             self._interrupt_active_contexts("Broker shutdown drain timed out.")
             self._wait_for_workers(min(timeout_seconds, 5))
+        self._executor.shutdown(wait=False, cancel_futures=True)
         json_log(self.config.json_logs, "broker.shutdown.finish", mode=mode, remainingWorkers=self._worker_count())
 
     def _interrupt_active_contexts(self, message: str) -> None:
@@ -489,37 +523,131 @@ class TurnScheduler:
                 except AppServerError:
                     pass
             context.finish("interrupted", message, "turn.interrupted")
-            self.state.update_turn(context.owner_hash, context.thread_id, context.turn_id, status="interrupted", error=message, completed=True)
-            self.state.append_audit(context.owner_hash, "turn.interrupt", {"reason": "shutdown"}, thread_id=context.thread_id, turn_id=context.turn_id)
-            self._metric("turns_interrupted", 1)
+            if self._persist_context_terminal(
+                context,
+                audit_action="turn.interrupt",
+                audit_payload={"reason": "shutdown"},
+            ):
+                self._metric("turns_interrupted", 1)
 
     def _active_contexts(self) -> list[BrokerTurnContext]:
         with self._gates_lock:
             return [gate.active_context for gate in self._gates.values() if gate.active_context is not None]
 
     def _wait_for_workers(self, timeout_seconds: float) -> None:
-        deadline = time.monotonic() + max(timeout_seconds, 0)
-        while True:
-            with self._workers_lock:
-                workers = [worker for worker in self._workers if worker.is_alive()]
-                self._workers = set(workers)
-            if not workers:
-                return
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            for worker in workers:
-                worker.join(timeout=min(0.1, remaining))
+        with self._workers_lock:
+            workers = set(self._workers)
+        if workers:
+            wait(workers, timeout=max(timeout_seconds, 0))
 
     def _worker_count(self) -> int:
         with self._workers_lock:
-            self._workers = {worker for worker in self._workers if worker.is_alive()}
+            self._workers = {worker for worker in self._workers if not worker.done()}
             return len(self._workers)
 
-    def _run_turn(self, owner_hash: str, thread_id: str, turn_id: str, body: dict[str, Any], preacquired: bool) -> None:
+    def _submit_work(self, work: QueuedTurn) -> None:
+        future = self._executor.submit(self._execute_work, work)
+        with self._workers_lock:
+            self._workers.add(future)
+            self._future_work[future] = work
+        future.add_done_callback(self._work_done)
+
+    def _execute_work(self, work: QueuedTurn) -> None:
+        try:
+            self._run_turn(work.owner_hash, work.thread_id, work.turn_id, work.body)
+        finally:
+            self._advance_queue(work.owner_hash, work.thread_id)
+
+    def _work_done(self, future: Future[None]) -> None:
+        with self._workers_lock:
+            self._workers.discard(future)
+            self._future_work.pop(future, None)
+        with self._gates_lock:
+            self._outstanding_turns = max(0, self._outstanding_turns - 1)
+
+    def _advance_queue(self, owner_hash: str, thread_id: str) -> None:
+        with self._gates_lock:
+            gate = self._gate_locked(owner_hash, thread_id)
+            if self._shutdown.is_set() and self._shutdown_mode == "interrupt":
+                gate.running = False
+                return
+            pending = gate.pending()
+            if not pending:
+                gate.running = False
+                return
+            work = pending.popleft()
+            self._metric("queued_turns", -1)
+            self.state.update_turn(owner_hash, thread_id, work.turn_id, status="starting")
+            self._submit_work(work)
+
+    def _cancel_pending_futures(self, message: str) -> None:
+        with self._workers_lock:
+            scheduled = list(self._future_work.items())
+        for future, work in scheduled:
+            if not future.cancel():
+                continue
+            self._finalize_interrupted(work.owner_hash, work.thread_id, work.turn_id, message)
+            with self._gates_lock:
+                self._gate_locked(work.owner_hash, work.thread_id).running = False
+
+    def _cancel_queued_turns(self, message: str) -> None:
+        cancelled: list[QueuedTurn] = []
+        with self._gates_lock:
+            for gate in self._gates.values():
+                pending = gate.pending()
+                while pending:
+                    cancelled.append(pending.popleft())
+        if cancelled:
+            self._metric("queued_turns", -len(cancelled))
+        for work in cancelled:
+            self._finalize_interrupted(work.owner_hash, work.thread_id, work.turn_id, message)
+
+    def _finalize_interrupted(self, owner_hash: str, thread_id: str, turn_id: str, message: str) -> None:
+        finalized = self.state.finalize_turn(
+            owner_hash,
+            thread_id,
+            turn_id,
+            status="interrupted",
+            error=message,
+            event_type="turn.interrupted",
+            event_payload={"message": message},
+            audit_action="turn.interrupt",
+            audit_payload={"reason": "shutdown"},
+        )
+        if finalized:
+            self._metric("turns_interrupted", 1)
+
+    def _persist_context_terminal(
+        self,
+        context: BrokerTurnContext,
+        *,
+        audit_action: str | None = None,
+        audit_payload: dict[str, Any] | None = None,
+    ) -> bool:
+        status = context.final_status or "completed"
+        return self.state.finalize_turn(
+            context.owner_hash,
+            context.thread_id,
+            context.turn_id,
+            status=status,
+            error=context.error_text,
+            error_code=context.error_code,
+            public_message=context.public_message,
+            admin_message=context.admin_message,
+            event_type=context.terminal_event_type or ("turn.completed" if status == "completed" else "turn.failed"),
+            event_payload=context.terminal_payload or {},
+            product_correlation_id=context.product_correlation_id,
+            codex_thread_id=context.codex_thread_id,
+            codex_turn_id=context.codex_turn_id,
+            raw_method=context.terminal_raw_method,
+            raw_params=context.terminal_raw_params,
+            ambiguous=context.terminal_ambiguous,
+            audit_action=audit_action,
+            audit_payload=audit_payload,
+        )
+
+    def _run_turn(self, owner_hash: str, thread_id: str, turn_id: str, body: dict[str, Any]) -> None:
         gate = self._gate(owner_hash, thread_id)
-        acquired_global = False
-        acquired_gate = preacquired
         active_metric_incremented = False
         overlay: Path | None = None
         context: BrokerTurnContext | None = None
@@ -530,13 +658,9 @@ class TurnScheduler:
         duration_bundle_id: str | None = None
         duration_host_app: str | None = None
         try:
-            if self._global_semaphore:
-                self._global_semaphore.acquire()
-                acquired_global = True
-            if not preacquired:
-                gate.lock.acquire()
-                acquired_gate = True
-                self._metric("queued_turns", -1)
+            if self._shutdown.is_set() and self._shutdown_mode == "interrupt":
+                self._finalize_interrupted(owner_hash, thread_id, turn_id, "Broker shutting down.")
+                return
             self._metric("active_turns", 1)
             active_metric_incremented = True
             self._metric("turns_started", 1)
@@ -544,8 +668,6 @@ class TurnScheduler:
             thread = self.state.get_thread(owner_hash, thread_id)
             if not turn or not thread:
                 raise NotFoundError("Turn or thread not found.")
-            if self._shutdown.is_set() and self._shutdown_mode == "interrupt":
-                raise RuntimeError("Broker shutting down.")
             turn_started_at = time.monotonic()
             duration_bundle_id = turn.get("bundle_id")
             duration_host_app = turn.get("host_app")
@@ -621,7 +743,8 @@ class TurnScheduler:
                 debug_raw_events=self.config.debug_raw_events,
             )
             context.client = client
-            gate.active_context = context
+            with self._gates_lock:
+                gate.active_context = context
             client.register_context(context)
             codex_thread_id = self._ensure_codex_thread(client, context, thread, cwd, body, bundle, config_profile_config)
             params = self._turn_params(codex_thread_id, input_items, body, config_profile_config)
@@ -636,31 +759,12 @@ class TurnScheduler:
                 except AppServerError:
                     pass
                 context.fail("Turn timed out.")
-                self.state.update_turn(
-                    owner_hash,
-                    thread_id,
-                    turn_id,
-                    status="timed_out",
-                    error=context.error_text,
-                    error_code=context.error_code,
-                    public_message=context.public_message,
-                    admin_message=context.admin_message,
-                    completed=True,
-                )
-                self._metric("turns_failed", 1)
+                context.final_status = "timed_out"
+                if self._persist_context_terminal(context):
+                    self._metric("turns_failed", 1)
                 return
             status = context.final_status or "completed"
-            self.state.update_turn(
-                owner_hash,
-                thread_id,
-                turn_id,
-                status=status,
-                error=context.error_text,
-                error_code=context.error_code,
-                public_message=context.public_message,
-                admin_message=context.admin_message,
-                completed=True,
-            )
+            finalized = self._persist_context_terminal(context)
             if context.error_code == CODEX_AUTH_REQUIRES_ADMIN:
                 self.auth.mark_runtime_auth_failure(
                     owner_hash,
@@ -669,11 +773,13 @@ class TurnScheduler:
                     admin_message=context.admin_message or context.error_text or "",
                 )
                 self.pool.close_profile(owner_hash, profile)
-            self._metric("turns_completed" if status == "completed" else "turns_failed", 1)
+            if finalized:
+                self._metric("turns_completed" if status == "completed" else "turns_failed", 1)
         except Exception as exc:  # noqa: BLE001 - background worker must persist failure state.
             message = str(exc)
             error_info = classify_runtime_error(message)
-            self.state.update_turn(
+            turn = self.state.get_turn(owner_hash, thread_id, turn_id)
+            finalized = self.state.finalize_turn(
                 owner_hash,
                 thread_id,
                 turn_id,
@@ -682,15 +788,8 @@ class TurnScheduler:
                 error_code=error_info.code,
                 public_message=error_info.public_message,
                 admin_message=error_info.admin_message,
-                completed=True,
-            )
-            turn = self.state.get_turn(owner_hash, thread_id, turn_id)
-            self.state.append_event(
-                owner_hash,
-                thread_id,
-                turn_id,
-                "turn.failed",
-                error_info.public_payload(),
+                event_type="turn.failed",
+                event_payload=error_info.public_payload(),
                 product_correlation_id=turn.get("product_correlation_id") if turn else None,
                 codex_thread_id=thread.get("codex_thread_id") if thread else None,
                 codex_turn_id=turn.get("codex_turn_id") if turn else None,
@@ -703,20 +802,16 @@ class TurnScheduler:
                     admin_message=error_info.admin_message,
                 )
                 self.pool.close_profile(owner_hash, profile)
-            self._metric("turns_failed", 1)
+            if finalized:
+                self._metric("turns_failed", 1)
         finally:
             if context and client:
                 client.unregister_context(context)
             if client and bundle and bundle.hosted_tools:
                 self.pool.close_client(client)
-            gate.active_context = None
-            if acquired_gate:
-                try:
-                    gate.lock.release()
-                except RuntimeError:
-                    pass
-            if acquired_global and self._global_semaphore:
-                self._global_semaphore.release()
+            with self._gates_lock:
+                if gate.active_context is context:
+                    gate.active_context = None
             if active_metric_incremented:
                 self._metric("active_turns", -1)
             if overlay:
@@ -739,8 +834,6 @@ class TurnScheduler:
                     productCorrelationId=final_turn.get("product_correlation_id") if final_turn else None,
                     durationMs=round(elapsed * 1000, 3),
                 )
-            with self._workers_lock:
-                self._workers.discard(threading.current_thread())
 
     def _ensure_codex_thread(
         self,
@@ -773,20 +866,7 @@ class TurnScheduler:
         bundle: ResolvedBundle | None,
         config_profile_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        codex_options = self._request_codex_options(body)
-        profile_config = config_profile_config or {}
-        params: dict[str, Any] = {}
-        if cwd:
-            params["cwd"] = str(cwd)
-        if self._codex_option(codex_options, profile_config, "approvalPolicy") is not None:
-            params["approvalPolicy"] = self._codex_option(codex_options, profile_config, "approvalPolicy")
-        if codex_options.get("sandbox") or bundle and bundle.sandbox_mode or profile_config.get("sandbox") is not None:
-            params["sandbox"] = codex_options.get("sandbox") or (bundle.sandbox_mode if bundle and bundle.sandbox_mode else profile_config.get("sandbox"))
-        if self._codex_option(codex_options, profile_config, "model") is not None:
-            params["model"] = self._codex_option(codex_options, profile_config, "model")
-        if self._codex_option(codex_options, profile_config, "personality") is not None:
-            params["personality"] = self._codex_option(codex_options, profile_config, "personality")
-        return params
+        return scheduler_config.thread_params(self, cwd, body, bundle, config_profile_config)
 
     def _turn_params(
         self,
@@ -795,141 +875,54 @@ class TurnScheduler:
         body: dict[str, Any],
         config_profile_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        codex_options = self._request_codex_options(body)
-        profile_config = config_profile_config or {}
-        params: dict[str, Any] = {"threadId": codex_thread_id, "input": input_items}
-        for request_key, app_server_key, aliases in (
-            ("serviceTier", "serviceTier", ()),
-            ("model", "model", ()),
-            ("effort", "effort", ("reasoningEffort",)),
-            ("personality", "personality", ()),
-            ("summary", "summary", ("reasoningSummary",)),
-        ):
-            value = self._codex_option(codex_options, profile_config, request_key, *aliases)
-            if value is not None:
-                params[app_server_key] = value
-        output_schema = self._codex_option(codex_options, profile_config, "outputSchema", "output_schema")
-        if output_schema is not None:
-            params["outputSchema"] = output_schema
-        return params
+        return scheduler_config.turn_params(self, codex_thread_id, input_items, body, config_profile_config)
 
     def _build_input(self, input_items: list[dict[str, Any]], bundle: ResolvedBundle | None) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        if bundle:
-            for skill in bundle.skills:
-                items.append({"type": "skill", "name": skill.name, "path": str(skill.path)})
-            if bundle.instructions:
-                items.append({"type": "text", "text": "\n\n".join(bundle.instructions), "text_elements": []})
-            for prompt in bundle.prompts:
-                text = prompt.path.read_text(encoding="utf-8")
-                items.append({"type": "text", "text": text, "text_elements": [], "name": prompt.name})
-        items.extend(input_items)
-        return items
+        return scheduler_config.build_input(input_items, bundle)
 
     def _config_profile_config(self, config_profile: str) -> dict[str, Any]:
-        if not self.config.config_profiles:
-            return {}
-        profile = self.config.config_profiles.get(config_profile)
-        if profile is None:
-            raise ValueError(f"Unknown configuration profile: {config_profile}")
-        return profile
+        return scheduler_config.config_profile_config(self, config_profile)
 
     def _validate_config_profile_bundle(self, profile_config: dict[str, Any], bundle_id: str | None) -> None:
-        enabled = (
-            profile_config.get("enabledBundles")
-            if profile_config.get("enabledBundles") is not None
-            else profile_config.get("bundleIds") if profile_config.get("bundleIds") is not None else profile_config.get("bundles")
-        )
-        if enabled is None or bundle_id is None:
-            return
-        allowed = {str(value) for value in enabled} if isinstance(enabled, list) else {str(enabled)}
-        if bundle_id not in allowed:
-            raise BundleError(f"Bundle {bundle_id} is not enabled for configuration profile.")
+        scheduler_config.validate_config_profile_bundle(profile_config, bundle_id)
 
     def _validate_config_profile_cwd(self, cwd: Path | None, profile_config: dict[str, Any]) -> None:
-        if cwd is None:
-            return
-        roots = profile_config.get("allowedWorkspaceRoots", profile_config.get("workspaceRoots"))
-        if roots is None:
-            return
-        raw_roots = roots if isinstance(roots, list) else [roots]
-        allowed_roots = [Path(str(value)).expanduser().resolve() for value in raw_roots]
-        allowed_roots.append(self.config.overlay_root)
-        if not any(cwd.resolve().is_relative_to(root) for root in allowed_roots):
-            raise BundleError(f"cwd is outside configuration profile workspace roots: {cwd}")
+        scheduler_config.validate_config_profile_cwd(self, cwd, profile_config)
 
     @staticmethod
     def _request_config_profile(body: dict[str, Any], fallback: Any = "default") -> str:
-        return str(body.get("configProfile") or body.get("runtimeProfile") or fallback or "default")
+        return scheduler_config.request_config_profile(body, fallback)
 
     @staticmethod
     def _request_codex_options(body: dict[str, Any]) -> dict[str, Any]:
-        options: dict[str, Any] = {}
-        runtime = body.get("runtime")
-        if isinstance(runtime, dict):
-            options.update(runtime)
-        codex_options = body.get("codexOptions")
-        if isinstance(codex_options, dict):
-            options.update(codex_options)
-        return options
+        return scheduler_config.request_codex_options(body)
 
     def _codex_process_config_args(
         self,
         body: dict[str, Any],
         profile_config: dict[str, Any] | None = None,
     ) -> tuple[tuple[str, str], ...]:
-        codex_options = self._request_codex_options(body)
-        profile = profile_config or {}
-        args: list[tuple[str, str]] = []
-        for request_key, config_key, aliases in (
-            ("webSearch", "web_search", ("web_search",)),
-            ("modelVerbosity", "model_verbosity", ("model_verbosity",)),
-            ("effort", "model_reasoning_effort", ("reasoningEffort", "modelReasoningEffort", "model_reasoning_effort")),
-        ):
-            value = self._codex_option(codex_options, profile, request_key, *aliases)
-            if value is not None:
-                args.append((config_key, self._format_codex_config_value(value)))
-        feature_values: dict[str, Any] = {}
-        for key in ("imageGeneration", "features.image_generation"):
-            if profile.get(key) is not None:
-                feature_values["image_generation"] = profile.get(key)
-        for source in (profile.get("features"),):
-            if isinstance(source, dict):
-                feature_values.update(source)
-        for key in ("imageGeneration", "features.image_generation"):
-            if codex_options.get(key) is not None:
-                feature_values["image_generation"] = codex_options.get(key)
-        if isinstance(codex_options.get("features"), dict):
-            feature_values.update(codex_options["features"])
-        for name, value in sorted(feature_values.items()):
-            if value is not None:
-                args.append((feature_config_key(str(name)), self._format_codex_config_value(value)))
-        return tuple(args)
+        return scheduler_config.codex_process_config_args(self, body, profile_config)
 
     @staticmethod
     def _codex_option(codex_options: dict[str, Any], profile_config: dict[str, Any], key: str, *aliases: str) -> Any:
-        for candidate in (key, *aliases):
-            if candidate in codex_options and codex_options[candidate] is not None:
-                return codex_options[candidate]
-        for candidate in (key, *aliases):
-            if profile_config.get(candidate) is not None:
-                return profile_config.get(candidate)
-        return None
+        return scheduler_config.codex_option(codex_options, profile_config, key, *aliases)
 
     @staticmethod
     def _format_codex_config_value(value: Any) -> str:
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        return str(value)
+        return scheduler_config.format_codex_config_value(value)
 
     def _gate(self, owner_hash: str, thread_id: str) -> ThreadGate:
         with self._gates_lock:
-            key = (owner_hash, thread_id)
-            gate = self._gates.get(key)
-            if not gate:
-                gate = ThreadGate(threading.Lock())
-                self._gates[key] = gate
-            return gate
+            return self._gate_locked(owner_hash, thread_id)
+
+    def _gate_locked(self, owner_hash: str, thread_id: str) -> ThreadGate:
+        key = (owner_hash, thread_id)
+        gate = self._gates.get(key)
+        if not gate:
+            gate = ThreadGate()
+            self._gates[key] = gate
+        return gate
 
     def _active_context(self, owner_hash: str, thread_id: str) -> BrokerTurnContext | None:
         return self._gate(owner_hash, thread_id).active_context
@@ -994,6 +987,12 @@ class TurnScheduler:
             "startedAt": turn.get("started_at"),
             "completedAt": turn.get("completed_at"),
             "updatedAt": turn["updated_at"],
+            "execution": {
+                "requestFingerprint": turn.get("request_fingerprint"),
+                "bundleDigest": turn.get("bundle_digest"),
+                "resolvedOptions": turn.get("resolved_options"),
+                "brokerVersion": turn.get("broker_version"),
+            },
         }
 
     def _stream_url(self, owner_id: str, thread_id: str, turn_id: str) -> str:

@@ -4,65 +4,19 @@ import json
 import os
 import shutil
 import time
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .app_server import AppServerError, AppServerPool
-from .auth import AuthManager
-from .bundles import BundleError, BundleRegistry
+from . import __version__
+from .app_server import AppServerError
+from .bundles import BundleError
 from .config import BrokerConfig
 from .scheduler import ActiveTurnError, ConflictError, NotFoundError, TurnScheduler
-from .state import StateStore
+from .services import BrokerServices, serve
 from .util import ensure_dir, json_dumps, json_log
-
-
-@dataclass
-class BrokerServices:
-    config: BrokerConfig
-    state: StateStore
-    auth: AuthManager
-    bundles: BundleRegistry
-    pool: AppServerPool
-    scheduler: TurnScheduler
-
-    @classmethod
-    def build(cls, config: BrokerConfig) -> "BrokerServices":
-        for path in (config.data_dir, config.auth_root, config.inline_bundle_root, config.overlay_root):
-            ensure_dir(path)
-        state = StateStore(config.state_db_path)
-        recovered_turns = state.recover_incomplete_turns("Broker restarted before the turn completed.")
-        state.recover_pending_interactions()
-        pruned_raw_events = 0
-        if config.raw_event_retention_seconds > 0:
-            cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.raw_event_retention_seconds)
-            pruned_raw_events = state.prune_raw_events_before(cutoff.isoformat().replace("+00:00", "Z"))
-        auth = AuthManager(config, state)
-        bundles = BundleRegistry(config, state)
-        pool = AppServerPool(config, state)
-        scheduler = TurnScheduler(config=config, state=state, auth=auth, bundles=bundles, pool=pool)
-        scheduler.note_recovered_turns(recovered_turns)
-        scheduler.note_pruned_raw_events(pruned_raw_events)
-        return cls(config=config, state=state, auth=auth, bundles=bundles, pool=pool, scheduler=scheduler)
-
-
-def serve(config: BrokerConfig) -> None:
-    services = BrokerServices.build(config)
-
-    class Handler(BrokerHandler):
-        broker = services
-
-    server = ThreadingHTTPServer((config.host, config.port), Handler)
-    try:
-        server.serve_forever()
-    finally:
-        services.scheduler.shutdown(config.shutdown_mode, config.shutdown_drain_timeout_seconds)
-        services.pool.close_all()
-        services.state.close()
 
 
 def metric_path_template(path: str) -> str:
@@ -89,7 +43,7 @@ def is_unauthenticated_path(method: str, path: str) -> bool:
 
 class BrokerHandler(BaseHTTPRequestHandler):
     broker: BrokerServices
-    server_version = "CodexBroker/0.1"
+    server_version = f"CodexBroker/{__version__}"
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API.
         self._dispatch("GET")
@@ -183,6 +137,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
             profile=query.get("profile", [None])[0],
             thread_id=query.get("threadId", [None])[0],
             turn_id=query.get("turnId", [None])[0],
+            after=int(query.get("after", ["0"])[0] or "0"),
             limit=limit,
         )
         self._json({"ownerHash": owner_hash, "auditLogs": [self._public_audit(entry) for entry in logs]})
@@ -230,10 +185,13 @@ class BrokerHandler(BaseHTTPRequestHandler):
             return
         if method == "POST" and tail == ["logout"]:
             body = self._read_json(allow_empty=True)
+            delete_profile = body.get("deleteProfile", False)
+            if not isinstance(delete_profile, bool):
+                raise ValueError("deleteProfile must be a boolean.")
             result = self.broker.auth.logout(
                 owner_id,
                 str(body.get("profile") or profile),
-                delete_profile=bool(body.get("deleteProfile")),
+                delete_profile=delete_profile,
             )
             self.broker.pool.close_profile(result["ownerHash"], result["profile"])
             self._json(result)
@@ -372,7 +330,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
                     self.broker.scheduler.note_event_stream_disconnect()
                     return
                 last_heartbeat = now
-            time.sleep(0.25)
+            self.broker.state.wait_for_events(min(max(10 - (now - last_heartbeat), 0.05), 1.0))
 
     def _readyz(self) -> None:
         errors: list[str] = []
@@ -482,8 +440,8 @@ def openapi_document() -> dict[str, Any]:
     turn_param = {"$ref": "#/components/parameters/turnId"}
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Codex Broker", "version": "0.5.5"},
-        "security": [{"brokerKey": []}],
+        "info": {"title": "Codex Broker", "version": __version__},
+        "security": [{"bearerAuth": []}, {"brokerKey": []}],
         "paths": {
             "/healthz": {
                 "get": {"security": [], "responses": {"200": json_response(ref("Health"), "Healthy")}}
@@ -566,6 +524,7 @@ def openapi_document() -> dict[str, Any]:
                         {"$ref": "#/components/parameters/action"},
                         {"$ref": "#/components/parameters/threadIdQuery"},
                         {"$ref": "#/components/parameters/turnIdQuery"},
+                        {"$ref": "#/components/parameters/after"},
                         {"$ref": "#/components/parameters/limit"},
                     ],
                     "responses": {"200": json_response(ref("AuditLogList"), "Owner-scoped audit logs")},
@@ -658,11 +617,15 @@ def openapi_document() -> dict[str, Any]:
         },
         "components": {
             "securitySchemes": {
+                "bearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "API key",
+                },
                 "brokerKey": {
                     "type": "apiKey",
                     "in": "header",
-                    "name": "Authorization",
-                    "description": "Use `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`.",
+                    "name": "X-Codex-Broker-Key",
                 }
             },
             "parameters": {
@@ -852,9 +815,18 @@ def openapi_document() -> dict[str, Any]:
                         "approvalPolicy": {"type": "string"},
                         "sandbox": {"type": "string"},
                         "serviceTier": {"type": "string"},
-                        "model": {"type": "string"},
-                        "effort": {"type": "string"},
-                        "reasoningEffort": {"type": "string"},
+                        "model": {
+                            "type": "string",
+                            "description": "Codex model for this turn. Overrides the selected configuration profile; when omitted, the profile or Codex default applies.",
+                        },
+                        "effort": {
+                            "type": "string",
+                            "description": "Reasoning effort for this turn. Supported values depend on the selected Codex model.",
+                        },
+                        "reasoningEffort": {
+                            "type": "string",
+                            "description": "Alias for effort.",
+                        },
                         "personality": {"type": "string"},
                         "summary": {"type": "string"},
                         "reasoningSummary": {"type": "string"},
@@ -880,7 +852,10 @@ def openapi_document() -> dict[str, Any]:
                         "hostApp": {"type": "string"},
                         "bundleId": {"type": "string"},
                         "cwd": {"type": "string"},
-                        "codexOptions": ref("CodexOptions"),
+                        "codexOptions": {
+                            **ref("CodexOptions"),
+                            "description": "Per-turn Codex options. Values override the selected configuration profile without modifying it.",
+                        },
                         "runtime": ref("CodexOptions"),
                         "stream": {"type": "boolean", "default": True},
                         "idempotencyKey": {"type": "string"},
@@ -917,6 +892,16 @@ def openapi_document() -> dict[str, Any]:
                         "completedAt": {"type": ["string", "null"]},
                         "updatedAt": {"type": "string"},
                         "streamUrl": {"type": "string"},
+                        "execution": {
+                            "type": "object",
+                            "required": ["requestFingerprint", "bundleDigest", "resolvedOptions", "brokerVersion"],
+                            "properties": {
+                                "requestFingerprint": {"type": ["string", "null"]},
+                                "bundleDigest": {"type": ["string", "null"]},
+                                "resolvedOptions": {"type": ["object", "null"], "additionalProperties": True},
+                                "brokerVersion": {"type": ["string", "null"]},
+                            },
+                        },
                     },
                 },
                 "BrokerEvent": {

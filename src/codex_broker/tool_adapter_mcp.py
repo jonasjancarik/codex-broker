@@ -8,6 +8,17 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from . import __version__
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
+def open_hosted_tool(req: urllib.request.Request, timeout: float) -> Any:
+    return urllib.request.build_opener(_NoRedirect()).open(req, timeout=timeout)
+
 
 class ToolAdapterServer:
     def __init__(self, config_path: Path) -> None:
@@ -39,7 +50,7 @@ class ToolAdapterServer:
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "codex-broker-tool-adapter", "version": "0.5.5"},
+                    "serverInfo": {"name": "codex-broker-tool-adapter", "version": __version__},
                 },
             }
         if method == "tools/list":
@@ -102,11 +113,22 @@ class ToolAdapterServer:
             headers=headers,
         )
         try:
-            with urllib.request.urlopen(req, timeout=float(tool.get("timeoutSeconds") or 30)) as response:
-                body = response.read().decode("utf-8", errors="replace")
+            with open_hosted_tool(req, float(tool.get("timeoutSeconds") or 30)) as response:
+                max_bytes = int(tool.get("maxResponseBytes") or 1_048_576)
+                raw_body = response.read(max_bytes + 1)
+                if len(raw_body) > max_bytes:
+                    return self.content(f"Hosted tool response exceeded {max_bytes} bytes.", is_error=True)
+                body = raw_body.decode("utf-8", errors="replace")
                 content_type = response.headers.get("Content-Type", "")
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            max_bytes = int(tool.get("maxResponseBytes") or 1_048_576)
+            try:
+                raw_body = exc.read(max_bytes + 1)
+            except OSError:
+                raw_body = b""
+            if len(raw_body) > max_bytes:
+                return self.content(f"Hosted tool error response exceeded {max_bytes} bytes.", is_error=True)
+            body = raw_body.decode("utf-8", errors="replace")
             return self.content(body or f"HTTP {exc.code}", is_error=True)
         except urllib.error.URLError as exc:
             return self.content(str(exc), is_error=True)

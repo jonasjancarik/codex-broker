@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import sys
@@ -47,6 +48,7 @@ class HostedToolRef:
     input_schema: dict[str, Any]
     endpoint: str
     timeout_seconds: float
+    max_response_bytes: int
     headers: dict[str, str]
     context: dict[str, Any]
     network_policy: dict[str, Any]
@@ -159,6 +161,7 @@ class BundleRegistry:
                         "inputSchema": tool.input_schema,
                         "endpoint": tool.endpoint,
                         "timeoutSeconds": tool.timeout_seconds,
+                        "maxResponseBytes": tool.max_response_bytes,
                         "headers": tool.headers,
                         "context": tool.context,
                         "networkPolicy": tool.network_policy,
@@ -185,12 +188,18 @@ class BundleRegistry:
             if overlay is None:
                 overlay = ensure_dir(self.config.overlay_root / f"adapter-{bundle.digest[:16]}-{random_id('tmp')}")
             config_path = overlay / "tool-adapters.json"
+            secret_env = {
+                value.removeprefix("env:"): value
+                for tool in bundle.hosted_tools
+                for value in tool.headers.values()
+                if value.startswith("env:")
+            }
             servers.append(
                 McpServerRef(
                     name=f"broker_hosted_{bundle.digest[:12]}",
                     command=sys.executable,
                     args=("-m", "codex_broker.tool_adapter_mcp", str(config_path)),
-                    env={},
+                    env=secret_env,
                     cwd=None,
                 )
             )
@@ -213,38 +222,58 @@ class BundleRegistry:
         return path
 
     def _find_mounted_bundle(self, bundle_id: str) -> Path | None:
-        candidates: list[Path] = []
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", bundle_id):
+            raise BundleError(f"Invalid bundle id: {bundle_id!r}")
+        candidates: list[tuple[Path, Path]] = []
         for root in self.config.allowed_bundle_roots:
+            root = root.resolve()
             candidates.extend(
                 [
-                    root / bundle_id / "bundle.json",
-                    root / f"{bundle_id}.json",
-                    root / bundle_id,
+                    (root, root / bundle_id / "bundle.json"),
+                    (root, root / f"{bundle_id}.json"),
+                    (root, root / bundle_id),
                 ]
             )
-        for candidate in candidates:
-            if candidate.is_file():
-                return candidate.resolve()
+        for root, candidate in candidates:
+            resolved = candidate.resolve()
+            if not is_relative_to(resolved, root) or not resolved.is_file():
+                continue
+            try:
+                payload = json.loads(resolved.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise BundleError(f"Invalid bundle manifest: {resolved}") from exc
+            if not isinstance(payload, dict) or payload.get("id") != bundle_id:
+                raise BundleError(f"Bundle manifest id does not match requested id: {bundle_id}")
+            return resolved
         for root in self.config.allowed_bundle_roots:
+            root = root.resolve()
             if not root.exists():
                 continue
             for path in root.rglob("bundle.json"):
+                resolved = path.resolve()
+                if not is_relative_to(resolved, root):
+                    continue
                 try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    payload = json.loads(resolved.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     continue
-                if payload.get("id") == bundle_id:
-                    return path.resolve()
+                if isinstance(payload, dict) and payload.get("id") == bundle_id:
+                    return resolved
         return None
 
     def _parse(self, payload: dict[str, Any], path: Path, source: str, raw: str) -> ResolvedBundle:
+        if not isinstance(payload, dict):
+            raise BundleError("Bundle manifest must be a JSON object.")
         bundle_id = str(payload.get("id") or "").strip()
-        if not bundle_id:
-            raise BundleError("Bundle id is required.")
-        instructions = tuple(str(item) for item in payload.get("instructions") or [])
-        allowed_paths = tuple(self._validated_workspace_path(value) for value in payload.get("allowedPaths") or [])
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", bundle_id):
+            raise BundleError("Bundle id must be 1-128 letters, numbers, dots, underscores, or hyphens.")
+        instructions_raw = self._array(payload, "instructions")
+        if any(not isinstance(item, str) for item in instructions_raw):
+            raise BundleError("Bundle instructions must be strings.")
+        instructions = tuple(instructions_raw)
+        allowed_paths = tuple(self._validated_workspace_path(value) for value in self._array(payload, "allowedPaths"))
         skills: list[SkillRef] = []
-        for entry in payload.get("skills") or []:
+        for entry in self._array(payload, "skills"):
             if not isinstance(entry, dict):
                 raise BundleError("Skill entries must be objects.")
             name = str(entry.get("name") or "").strip()
@@ -259,7 +288,7 @@ class BundleRegistry:
                 raise BundleError(f"Skill SKILL.md not found: {skill_md}")
             skills.append(SkillRef(name=name or skill_md.parent.name, path=skill_md))
         prompts: list[PromptRef] = []
-        for entry in payload.get("prompts") or []:
+        for entry in self._array(payload, "prompts"):
             if not isinstance(entry, dict):
                 raise BundleError("Prompt entries must be objects.")
             name = str(entry.get("name") or "").strip()
@@ -272,8 +301,12 @@ class BundleRegistry:
             if not prompt_path.is_file():
                 raise BundleError(f"Prompt file not found: {prompt_path}")
             prompts.append(PromptRef(name=name or prompt_path.stem, path=prompt_path))
-        mcp_servers = tuple(self._parse_mcp_server(entry) for entry in payload.get("mcpServers") or [])
-        hosted_tools = tuple(self._parse_hosted_tool(entry) for entry in payload.get("tools") or [])
+        mcp_servers = tuple(self._parse_mcp_server(entry) for entry in self._array(payload, "mcpServers"))
+        hosted_tools = tuple(self._parse_hosted_tool(entry) for entry in self._array(payload, "tools"))
+        self._unique_names("skill", (item.name for item in skills))
+        self._unique_names("prompt", (item.name for item in prompts))
+        self._unique_names("MCP server", (item.name for item in mcp_servers))
+        self._unique_names("hosted tool", (item.name for item in hosted_tools))
         sandbox = payload.get("sandbox") if isinstance(payload.get("sandbox"), dict) else {}
         digest = hashlib.sha256(json_dumps(payload).encode("utf-8")).hexdigest()
         return ResolvedBundle(
@@ -357,17 +390,25 @@ class BundleRegistry:
         scope = str(policy.get("scope") or entry.get("scope") or "owner")
         if scope not in {"owner", "profile"}:
             raise BundleError(f"Unsupported hosted tool scope: {scope}")
+        timeout_seconds = self._positive_float(
+            http.get("timeoutSeconds", entry.get("timeoutSeconds", 30)),
+            "Hosted tool timeoutSeconds",
+        )
         return HostedToolRef(
             name=name,
             description=str(entry.get("description") or ""),
             input_schema=input_schema,
             endpoint=endpoint,
-            timeout_seconds=float(http.get("timeoutSeconds") or entry.get("timeoutSeconds") or 30),
+            timeout_seconds=timeout_seconds,
             headers=headers,
             context=dict(context),
             network_policy=network_policy,
             approval_policy=approval_policy,
             scope=scope,
+            max_response_bytes=self._positive_int(
+                http.get("maxResponseBytes", entry.get("maxResponseBytes", self.config.hosted_tool_max_response_bytes)),
+                "Hosted tool maxResponseBytes",
+            ),
         )
 
     def _parse_headers(self, headers: dict[str, Any]) -> dict[str, str]:
@@ -408,11 +449,54 @@ class BundleRegistry:
     def _validate_hosted_tool_endpoint(self, endpoint: str) -> str | None:
         prefixes = self.config.allowed_hosted_tool_url_prefixes
         if not prefixes:
-            return None
+            raise BundleError("Hosted tools are disabled because no endpoint allowlist is configured.")
         for prefix in prefixes:
             if self._hosted_tool_url_matches(endpoint, prefix):
                 return prefix
         raise BundleError(f"Hosted tool endpoint is outside network allowlist: {endpoint}")
+
+    @staticmethod
+    def _array(payload: dict[str, Any], key: str) -> list[Any]:
+        value = payload.get(key)
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise BundleError(f"Bundle {key} must be an array.")
+        return value
+
+    @staticmethod
+    def _unique_names(kind: str, names: Any) -> None:
+        seen: set[str] = set()
+        for name in names:
+            if not name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name):
+                raise BundleError(f"Invalid {kind} name: {name!r}")
+            if name in seen:
+                raise BundleError(f"Duplicate {kind} name: {name}")
+            seen.add(name)
+
+    @staticmethod
+    def _positive_int(value: Any, label: str) -> int:
+        if isinstance(value, bool):
+            raise BundleError(f"{label} must be a positive integer.")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise BundleError(f"{label} must be a positive integer.") from exc
+        if parsed <= 0:
+            raise BundleError(f"{label} must be a positive integer.")
+        return parsed
+
+    @staticmethod
+    def _positive_float(value: Any, label: str) -> float:
+        if isinstance(value, bool):
+            raise BundleError(f"{label} must be a positive finite number.")
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise BundleError(f"{label} must be a positive finite number.") from exc
+        if not math.isfinite(parsed) or parsed <= 0:
+            raise BundleError(f"{label} must be a positive finite number.")
+        return parsed
 
     def _hosted_tool_url_matches(self, endpoint: str, prefix: str) -> bool:
         target = urlparse(endpoint)

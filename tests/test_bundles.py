@@ -12,6 +12,42 @@ from test_broker import config_for, wait_turn
 
 
 class BundleRegistryTests(unittest.TestCase):
+    def test_bundle_lookup_cannot_escape_mount_or_return_a_different_manifest_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = config_for(tmp)
+            (tmp / "outside.json").write_text('{"id":"outside"}', encoding="utf-8")
+            (config.allowed_bundle_roots[0] / "requested.json").write_text('{"id":"different"}', encoding="utf-8")
+            services = BrokerServices.build(config)
+            try:
+                with self.assertRaises(BundleError):
+                    services.bundles.resolve("../outside")
+                with self.assertRaises(BundleError):
+                    services.bundles.resolve("requested")
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_hosted_tools_require_an_endpoint_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(
+                config_for(Path(tmp_raw)),
+                enable_inline_bundles=True,
+                allowed_hosted_tool_url_prefixes=(),
+            )
+            services = BrokerServices.build(config)
+            try:
+                with self.assertRaises(BundleError):
+                    services.bundles.accept_inline(
+                        {
+                            "id": "hosted",
+                            "tools": [{"name": "host.call", "http": {"url": "http://127.0.0.1/tool"}}],
+                        }
+                    )
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
     def test_inline_bundle_can_be_resolved_and_used_after_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             config = replace(config_for(Path(tmp_raw), turn_delay=0.01), enable_inline_bundles=True, inline_bundle_max_bytes=1024)
@@ -259,6 +295,28 @@ class BundleRegistryTests(unittest.TestCase):
                 adapter_config = (overlay / "tool-adapters.json").read_text(encoding="utf-8")
                 self.assertIn('"networkPolicy"', adapter_config)
                 self.assertIn('"matchedPrefix": "http://127.0.0.1"', adapter_config)
+                secret_bundle_dir = config.allowed_bundle_roots[0] / "secret-policy"
+                secret_bundle_dir.mkdir()
+                (secret_bundle_dir / "bundle.json").write_text(
+                    """
+                    {
+                      "id": "secret-policy",
+                      "tools": [{
+                        "name": "host.secret",
+                        "http": {
+                          "url": "http://127.0.0.1/tool",
+                          "headers": {"X-Host-Tool-Key": "env:CODEX_HOST_TOOL_KEY"}
+                        }
+                      }]
+                    }
+                    """,
+                    encoding="utf-8",
+                )
+                secret_bundle = services.bundles.resolve("secret-policy")
+                assert secret_bundle is not None
+                secret_overlay = services.bundles.materialize(secret_bundle, "turn_secret")
+                servers = services.bundles.mcp_servers_for_bundle(secret_bundle, secret_overlay)
+                self.assertEqual(servers[-1].env, {"CODEX_HOST_TOOL_KEY": "env:CODEX_HOST_TOOL_KEY"})
             finally:
                 services.pool.close_all()
                 services.state.close()

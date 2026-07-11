@@ -71,7 +71,10 @@ def extract_expires_at(text: str, *, now: datetime | None = None) -> str | None:
 
 def normalize_profile(profile: str | None = None) -> str:
     text = str(profile or "default").strip()
-    return PROFILE_SAFE_RE.sub("_", text) or "default"
+    normalized = PROFILE_SAFE_RE.sub("_", text) or "default"
+    if normalized in {".", ".."}:
+        raise ValueError("Profile must contain at least one letter, number, underscore, or hyphen.")
+    return normalized
 
 
 @dataclass
@@ -130,8 +133,13 @@ class AuthManager:
 
     def profile_home(self, owner_hash: str, profile: str = "default") -> Path:
         profile_key = self.profile_key(profile)
-        home = self.config.auth_root / owner_hash / "profiles" / profile_key / "codex-home"
+        profiles_root = (self.config.auth_root / owner_hash / "profiles").resolve()
+        home = (profiles_root / profile_key / "codex-home").resolve()
+        if not home.is_relative_to(profiles_root):
+            raise ValueError("Profile resolves outside the owner's authentication directory.")
         ensure_dir(home)
+        for private_dir in (self.config.auth_root, profiles_root.parent, profiles_root, home.parent, home):
+            private_dir.chmod(0o700)
         self._ensure_config(home)
         self.state.ensure_profile(owner_hash, profile_key)
         return home
@@ -454,7 +462,8 @@ class AuthManager:
         profile_key = self.profile_key(profile)
         owner_hash = self.hash_owner(owner_id)
         home = self.profile_home(owner_hash, profile_key)
-        session = self._session(owner_hash, profile_key)
+        with self._lock:
+            session = self._sessions.pop((owner_hash, profile_key), None) if delete_profile else self._sessions.get((owner_hash, profile_key))
         if session and session.process and session.process.poll() is None:
             session.process.terminate()
         try:
@@ -477,7 +486,11 @@ class AuthManager:
             auth_file.unlink()
         deleted = False
         if delete_profile:
-            shutil.rmtree(home.parent, ignore_errors=True)
+            profiles_root = (self.config.auth_root / owner_hash / "profiles").resolve()
+            profile_dir = home.parent.resolve()
+            if not profile_dir.is_relative_to(profiles_root) or profile_dir == profiles_root:
+                raise ValueError("Refusing to delete a profile outside the owner's authentication directory.")
+            shutil.rmtree(profile_dir, ignore_errors=True)
             self.state.delete_profile(owner_hash, profile_key)
             self.state.append_audit(owner_hash, "auth.profile.delete", {"exitCode": exit_code}, profile=profile_key)
             deleted = True
@@ -574,6 +587,10 @@ class AuthManager:
             session.exit_code = code
             session.completed_at = utc_now()
             session.updated_at = session.completed_at
+            if self._sessions.get((session.owner_hash, session.profile)) is not session:
+                session.state = "cancelled"
+                session.error = "Authentication was cancelled."
+                return
             if code == 0:
                 session.state = "completed"
                 session.error = None

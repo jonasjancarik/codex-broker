@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from . import __version__
 
 
 def _paths(value: str | None, default: str) -> tuple[Path, ...]:
@@ -37,8 +40,11 @@ def _config_profiles() -> dict[str, dict[str, Any]]:
     path = os.environ.get("CODEX_BROKER_CONFIG_PROFILES_FILE")
     if not raw and path:
         profile_path = Path(path).expanduser()
-        if profile_path.exists():
-            raw = profile_path.read_text(encoding="utf-8")
+        if not profile_path.is_file():
+            raise FileNotFoundError(f"Configuration profiles file does not exist or is not a file: {profile_path}")
+        raw = profile_path.read_text(encoding="utf-8")
+        if not raw.strip():
+            raise ValueError(f"Configuration profiles file is empty: {profile_path}")
     if not raw:
         return {}
     parsed = json.loads(raw)
@@ -50,6 +56,44 @@ def _config_profiles() -> dict[str, dict[str, Any]]:
             raise ValueError(f"Configuration profile {name!r} must be a JSON object.")
         profiles[str(name)] = dict(value)
     return profiles
+
+
+def _owner_hash_secret(data_dir: Path, internal_key: str | None) -> str | None:
+    explicit = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY")
+    explicit_file = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY_FILE")
+    if explicit and explicit_file:
+        raise ValueError("Set only one of CODEX_BROKER_OWNER_HASH_KEY and CODEX_BROKER_OWNER_HASH_KEY_FILE.")
+    if explicit:
+        return explicit
+    if explicit_file:
+        path = Path(explicit_file).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"Owner hash key file does not exist or is not a file: {path}")
+        value = path.read_text(encoding="utf-8").strip()
+        if not value:
+            raise ValueError(f"Owner hash key file is empty: {path}")
+        return value
+    path = data_dir / "state" / "owner-hash.key"
+    if path.is_file():
+        value = path.read_text(encoding="utf-8").strip()
+        if not value:
+            raise ValueError(f"Persistent owner hash key file is empty: {path}")
+        return value
+    database_exists = (data_dir / "state" / "broker.sqlite").exists()
+    if database_exists and not internal_key:
+        # Legacy unauthenticated installations used stable plain SHA-256 hashes.
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    # Preserve hashes for installations that previously derived this key from the API key.
+    value = internal_key if internal_key and database_exists else secrets.token_urlsafe(48)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return path.read_text(encoding="utf-8").strip()
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(value + "\n")
+    return value
 
 
 @dataclass(frozen=True)
@@ -82,7 +126,35 @@ class BrokerConfig:
     config_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     client_name: str = "codex_broker"
     client_title: str = "Codex Broker"
-    client_version: str = "0.5.5"
+    client_version: str = __version__
+    max_queued_turns: int = 1000
+    hosted_tool_max_response_bytes: int = 1_048_576
+    history_retention_seconds: int = 90 * 24 * 60 * 60
+    max_events_per_turn: int = 10_000
+
+    def __post_init__(self) -> None:
+        if not self.codex_command:
+            raise ValueError("Codex command must not be empty.")
+        if self.max_active_turns < 0:
+            raise ValueError("CODEX_BROKER_MAX_ACTIVE_TURNS must be zero or greater.")
+        if self.max_queued_turns <= 0:
+            raise ValueError("CODEX_BROKER_MAX_QUEUED_TURNS must be greater than zero.")
+        if self.inline_bundle_max_bytes <= 0:
+            raise ValueError("CODEX_BROKER_INLINE_BUNDLE_MAX_BYTES must be greater than zero.")
+        if self.hosted_tool_max_response_bytes <= 0:
+            raise ValueError("CODEX_BROKER_HOSTED_TOOL_MAX_RESPONSE_BYTES must be greater than zero.")
+        if self.history_retention_seconds < 0:
+            raise ValueError("CODEX_BROKER_HISTORY_RETENTION_SECONDS must be zero or greater.")
+        if self.max_events_per_turn <= 0:
+            raise ValueError("CODEX_BROKER_MAX_EVENTS_PER_TURN must be greater than zero.")
+        for name, value in (
+            ("CODEX_BROKER_REQUEST_TIMEOUT_SECONDS", self.request_timeout_seconds),
+            ("CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS", self.host_response_timeout_seconds),
+            ("CODEX_BROKER_TURN_TIMEOUT_SECONDS", self.turn_timeout_seconds),
+            ("CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS", self.shutdown_drain_timeout_seconds),
+        ):
+            if value < 0:
+                raise ValueError(f"{name} must be zero or greater.")
 
     @property
     def state_db_path(self) -> Path:
@@ -116,7 +188,7 @@ class BrokerConfig:
             data_dir=data_dir,
             internal_key=key or None,
             allow_unauthenticated=_bool_env("CODEX_BROKER_ALLOW_UNAUTHENTICATED", False),
-            owner_hash_secret=os.environ.get("CODEX_BROKER_OWNER_HASH_KEY") or key or None,
+            owner_hash_secret=_owner_hash_secret(data_dir, key),
             allowed_workspace_roots=_paths(os.environ.get("CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS"), str(Path.cwd())),
             allowed_bundle_roots=_paths(os.environ.get("CODEX_BROKER_ALLOWED_BUNDLE_ROOTS"), str(Path.cwd())),
             max_active_turns=_int_env("CODEX_BROKER_MAX_ACTIVE_TURNS", 0),
@@ -144,4 +216,11 @@ class BrokerConfig:
             shutdown_mode=os.environ.get("CODEX_BROKER_SHUTDOWN_MODE", "interrupt"),
             shutdown_drain_timeout_seconds=float(os.environ.get("CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS", "30")),
             config_profiles=_config_profiles(),
+            max_queued_turns=_int_env("CODEX_BROKER_MAX_QUEUED_TURNS", 1000),
+            hosted_tool_max_response_bytes=_int_env(
+                "CODEX_BROKER_HOSTED_TOOL_MAX_RESPONSE_BYTES",
+                1_048_576,
+            ),
+            history_retention_seconds=_int_env("CODEX_BROKER_HISTORY_RETENTION_SECONDS", 90 * 24 * 60 * 60),
+            max_events_per_turn=_int_env("CODEX_BROKER_MAX_EVENTS_PER_TURN", 10_000),
         )

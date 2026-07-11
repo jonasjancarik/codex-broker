@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import sqlite3
 import unittest
 from pathlib import Path
 
@@ -9,6 +10,17 @@ from test_broker import config_for
 
 
 class StateStoreTests(unittest.TestCase):
+    def test_schema_version_is_recorded_and_newer_databases_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = config_for(Path(tmp_raw)).state_db_path
+            state = StateStore(path)
+            state.close()
+            with sqlite3.connect(path) as connection:
+                self.assertEqual(connection.execute("pragma user_version").fetchone()[0], 2)
+                connection.execute("pragma user_version = 3")
+            with self.assertRaisesRegex(RuntimeError, "newer than this broker supports"):
+                StateStore(path)
+
     def test_create_turn_returns_existing_turn_for_duplicate_idempotency_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             state = StateStore(config_for(Path(tmp_raw)).state_db_path)

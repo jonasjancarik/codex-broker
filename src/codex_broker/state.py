@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from . import state_transactions
 from .util import ensure_dir, json_dumps, json_loads, random_id, utc_now
 
 
@@ -16,6 +17,7 @@ class StateStore:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._events_condition = threading.Condition(self._lock)
         self._closed = False
         self._init_schema()
 
@@ -45,6 +47,9 @@ class StateStore:
 
     def _init_schema(self) -> None:
         with self._lock, self._conn:
+            version = int(self._conn.execute("pragma user_version").fetchone()[0])
+            if version > 2:
+                raise RuntimeError(f"State database schema version {version} is newer than this broker supports (2).")
             self._conn.executescript(
                 """
                 pragma journal_mode = wal;
@@ -169,6 +174,14 @@ class StateStore:
                 );
                 create index if not exists idx_pending_interactions_thread
                   on pending_interactions(owner_hash, thread_id, turn_id, status, created_at);
+                create index if not exists idx_events_stream
+                  on events(owner_hash, thread_id, turn_id, id);
+                create index if not exists idx_audit_owner_cursor
+                  on audit_logs(owner_hash, id);
+                create table if not exists audit_action_counts (
+                  action text primary key,
+                  count integer not null
+                );
                 """
             )
             self._ensure_columns(
@@ -187,6 +200,15 @@ class StateStore:
                     "config_profile": "text not null default 'default'",
                 },
             )
+            self._ensure_columns(
+                "turns",
+                {
+                    "request_fingerprint": "text",
+                    "bundle_digest": "text",
+                    "resolved_options_json": "text",
+                    "broker_version": "text",
+                },
+            )
             self._copy_column_if_present("turns", "runtime_profile", "config_profile")
             self._ensure_columns("turns", {"host_app": "text"})
             self._ensure_columns(
@@ -197,6 +219,15 @@ class StateStore:
                     "admin_message": "text",
                 },
             )
+            self._conn.execute("delete from audit_action_counts")
+            self._conn.execute(
+                "insert into audit_action_counts(action, count) select action, count(*) from audit_logs group by action"
+            )
+            self._conn.execute(
+                "update app_server_processes set status = 'orphaned', closed_at = coalesce(closed_at, ?), last_seen_at = ? where status = 'running'",
+                (utc_now(), utc_now()),
+            )
+            self._conn.execute("pragma user_version = 2")
             self._ensure_columns("app_server_processes", {"config_profile": "text not null default 'default'"})
             self._copy_column_if_present("app_server_processes", "runtime_profile", "config_profile")
             self._ensure_columns(
@@ -371,6 +402,10 @@ class StateStore:
         idempotency_key: str | None,
         product_correlation_id: str | None,
         status: str,
+        request_fingerprint: str | None = None,
+        bundle_digest: str | None = None,
+        resolved_options: dict[str, Any] | None = None,
+        broker_version: str | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         turn_id = random_id("turn")
@@ -381,14 +416,18 @@ class StateStore:
                     (owner_hash, thread_id, idempotency_key),
                 ).fetchone()
                 if existing:
-                    return self._turn_from_row(existing)
+                    result = self._turn_from_row(existing)
+                    result["_created"] = False
+                    return result
             self._conn.execute(
                 """
                 insert into turns(
                   owner_hash, thread_id, turn_id, profile, config_profile, bundle_id, cwd,
-                  host_app, mode, idempotency_key, product_correlation_id, status, input_json, created_at, updated_at
+                  host_app, mode, idempotency_key, product_correlation_id, status, input_json,
+                  request_fingerprint, bundle_digest, resolved_options_json, broker_version,
+                  created_at, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     owner_hash,
@@ -404,11 +443,17 @@ class StateStore:
                     product_correlation_id,
                     status,
                     json_dumps(input_items),
+                    request_fingerprint,
+                    bundle_digest,
+                    json_dumps(resolved_options) if resolved_options is not None else None,
+                    broker_version,
                     now,
                     now,
                 ),
             )
-        return self.get_turn(owner_hash, thread_id, turn_id) or {}
+        result = self.get_turn(owner_hash, thread_id, turn_id) or {}
+        result["_created"] = True
+        return result
 
     def get_turn(self, owner_hash: str, thread_id: str, turn_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -487,7 +532,7 @@ class StateStore:
         raw_params: dict[str, Any] | None = None,
         ambiguous: bool = False,
     ) -> int:
-        with self._lock, self._conn:
+        with self._events_condition, self._conn:
             cursor = self._conn.execute(
                 """
                 insert into events(owner_hash, thread_id, turn_id, event_type, payload_json,
@@ -510,7 +555,22 @@ class StateStore:
                     utc_now(),
                 ),
             )
-            return int(cursor.lastrowid)
+            event_id = int(cursor.lastrowid)
+            self._events_condition.notify_all()
+            return event_id
+
+    def wait_for_events(self, timeout_seconds: float) -> None:
+        with self._events_condition:
+            self._events_condition.wait(timeout=max(timeout_seconds, 0))
+
+    def finalize_turn(
+        self,
+        owner_hash: str,
+        thread_id: str,
+        turn_id: str,
+        **finalization: Any,
+    ) -> bool:
+        return state_transactions.finalize_turn(self, owner_hash, thread_id, turn_id, **finalization)
 
     def list_events(
         self,
@@ -717,6 +777,18 @@ class StateStore:
             )
             return int(cursor.rowcount)
 
+    def prune_history_before(self, cutoff: str) -> dict[str, int]:
+        return state_transactions.prune_history_before(self, cutoff)
+
+    def prune_excess_events(self, max_events_per_turn: int) -> int:
+        return state_transactions.prune_excess_events(self, max_events_per_turn)
+
+    def _rebuild_audit_counts_locked(self) -> None:
+        self._conn.execute("delete from audit_action_counts")
+        self._conn.execute(
+            "insert into audit_action_counts(action, count) select action, count(*) from audit_logs group by action"
+        )
+
     def record_bundle(self, bundle_id: str, digest: str, source: str, path: str) -> None:
         now = utc_now()
         with self._lock, self._conn:
@@ -795,14 +867,42 @@ class StateStore:
         turn_id: str | None = None,
     ) -> int:
         with self._lock, self._conn:
-            cursor = self._conn.execute(
-                """
-                insert into audit_logs(owner_hash, profile, thread_id, turn_id, action, payload_json, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (owner_hash, profile, thread_id, turn_id, action, json_dumps(payload or {}), utc_now()),
+            return self._insert_audit_locked(
+                owner_hash,
+                action,
+                payload or {},
+                profile=profile,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                created_at=utc_now(),
             )
-            return int(cursor.lastrowid)
+
+    def _insert_audit_locked(
+        self,
+        owner_hash: str,
+        action: str,
+        payload: dict[str, Any],
+        *,
+        profile: str | None = None,
+        thread_id: str | None = None,
+        turn_id: str | None = None,
+        created_at: str,
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            insert into audit_logs(owner_hash, profile, thread_id, turn_id, action, payload_json, created_at)
+            values (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (owner_hash, profile, thread_id, turn_id, action, json_dumps(payload), created_at),
+        )
+        self._conn.execute(
+            """
+            insert into audit_action_counts(action, count) values (?, 1)
+            on conflict(action) do update set count = audit_action_counts.count + 1
+            """,
+            (action,),
+        )
+        return int(cursor.lastrowid)
 
     def list_audit_logs(
         self,
@@ -812,6 +912,7 @@ class StateStore:
         profile: str | None = None,
         thread_id: str | None = None,
         turn_id: str | None = None,
+        after: int = 0,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         where: list[str] = []
@@ -819,6 +920,9 @@ class StateStore:
         if owner_hash:
             where.append("owner_hash = ?")
             params.append(owner_hash)
+        if after > 0:
+            where.append("id > ?")
+            params.append(after)
         if action:
             where.append("action = ?")
             params.append(action)
@@ -842,14 +946,13 @@ class StateStore:
 
     def count_audit_actions(self) -> dict[str, int]:
         with self._lock:
-            rows = self._conn.execute(
-                "select action, count(*) as count from audit_logs group by action"
-            ).fetchall()
+            rows = self._conn.execute("select action, count from audit_action_counts").fetchall()
         return {str(row["action"]): int(row["count"]) for row in rows}
 
     def _turn_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         data["input"] = json_loads(data.pop("input_json"), [])
+        data["resolved_options"] = json_loads(data.pop("resolved_options_json", None), None)
         return data
 
     def _event_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
