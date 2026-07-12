@@ -21,8 +21,8 @@ codex-broker process
   |     exposes health, readiness, OpenAPI, metrics, auth, threads, turns, events
   |
   +-- AuthManager
-  |     hashes owner ids
-  |     creates owner/profile CODEX_HOME directories
+  |     HMACs owner and auth-principal ids
+  |     creates auth-principal/profile CODEX_HOME directories
   |     runs codex login/status/logout commands
   |
   +-- TurnScheduler
@@ -189,9 +189,9 @@ Different broker threads can run concurrently. `CODEX_BROKER_MAX_ACTIVE_TURNS` c
 
 The pool key includes:
 
-- owner hash,
+- auth-principal hash,
 - profile,
-- owner/profile auth fingerprint,
+- auth-principal/profile auth fingerprint,
 - `configProfile`,
 - Codex command,
 - detected Codex version,
@@ -256,7 +256,7 @@ The broker is not a public API. It assumes a trusted host backend or worker call
 The main controls are:
 
 - broker-key authentication for product routes,
-- owner/profile auth home isolation,
+- owner-scoped broker-state isolation and auth-principal/profile auth-home isolation,
 - hashed owner paths and owner hashes in logs,
 - scrubbed child process environments,
 - explicit pass-through environment allowlists,

@@ -13,7 +13,7 @@ The usual deployment is one broker container beside one host app. The host app h
 
 The broker handles:
 
-- per-user and per-Codex-auth-profile `CODEX_HOME` directories
+- per-auth-principal and per-profile `CODEX_HOME` directories
 - Codex auth status, active probes, device auth, API-key auth, runtime invalidation, and logout
 - long-lived `codex app-server` child processes and process pooling
 - broker threads, turns, same-thread locking, steering, interruption, and archive behavior
@@ -53,7 +53,7 @@ Use the broker when a product app needs Codex but should not run Codex process m
 
 - Live chat: the app keeps chat state, UI streaming, and product tools while the broker serializes Codex turns.
 - Background jobs: the worker keeps queue records, artifacts, and review state while the broker runs Codex through a durable thread and turn API.
-- Per-user Codex auth: each product user or service account gets isolated Codex credentials under a broker-managed user/Codex-profile home.
+- Auth-principal Codex auth: trusted policy resolves each owner to an isolated or shared auth principal, with credentials stored under a broker-managed principal/profile home.
 - Reusable bundles: reviewed manifests expose skills, prompts, MCP servers, and broker-hosted HTTP adapters without moving product logic into the broker.
 
 ## Reader paths

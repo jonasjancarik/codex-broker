@@ -32,8 +32,8 @@ codex-broker process
   |     exposes health, readiness, OpenAPI, metrics, auth, threads, turns, events
   |
   +-- AuthManager
-  |     hashes owner ids
-  |     creates user/Codex-profile CODEX_HOME directories
+  |     HMACs owner and auth-principal ids
+  |     creates auth-principal/profile CODEX_HOME directories
   |     runs codex login/status/logout commands
   |
   +-- TurnScheduler
@@ -160,8 +160,8 @@ The broker is not a public API. It assumes a trusted host backend or worker call
 Main controls:
 
 - broker-key authentication for product routes
-- user/Codex-profile auth home isolation
-- hashed user paths and user hashes in logs
+- owner-scoped broker-state isolation and auth-principal/profile auth-home isolation
+- HMAC-derived owner/principal paths and hashes in logs
 - scrubbed child process environments
 - explicit pass-through environment allowlists
 - reviewed bundle roots

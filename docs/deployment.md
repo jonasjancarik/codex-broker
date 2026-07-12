@@ -62,7 +62,7 @@ When enabling the example chat bundle, the broker container must share a Docker 
 
 ## Secrets
 
-Set `CODEX_BROKER_INTERNAL_KEY_FILE` to a Docker secret path. The broker reports not-ready without an internal key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true` is set for local development. Do not pass auth files, API keys, or access tokens as bundle content. Owner Codex credentials are stored under hashed owner/profile paths in `/data/auth`.
+Set `CODEX_BROKER_INTERNAL_KEY_FILE` to a Docker secret path. The broker reports not-ready without an internal key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true` is set for local development. Do not pass auth files, API keys, or access tokens as bundle content. Codex credentials are stored under hashed auth-principal/profile paths in `/data/auth/principals`.
 
 The owner-hash key is stored separately at `/data/state/owner-hash.key` unless explicitly configured. Back up and restore it with `/data`; losing it makes existing owner-hash paths unreachable.
 

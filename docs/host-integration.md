@@ -98,7 +98,7 @@ Auth logout removes Codex credentials for an auth-principal/profile and closes i
 
 For an upstream account replacement, first quiesce every owner sharing the principal/profile. Then logout with `deleteProfile: true`, authenticate the replacement account into the same profile, and create a genuinely new broker thread. Do not reuse the previous caller-supplied `threadId`. The profile instance changes on deletion, so old and queued threads fail closed instead of resuming their Codex session under the replacement account.
 
-Auth status distinguishes `missing`, `present_unverified`, `authenticated`, `invalid`, and `refresh_failed`, and includes an `authFingerprint` for the owner/profile auth file. The cheap `GET /auth/status` route checks local credential state; `POST /auth/probe` runs a tiny real Codex request and persists `refresh_failed` if token refresh is invalidated. Failed turns expose a stable `errorCode`, end-user-safe `publicMessage`, and raw `adminMessage`; host UIs should show `publicMessage` or `error` and keep `adminMessage` in admin-only logs. When `errorCode` is `session_not_resumable`, Codex reported that previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for that profile so the next turn starts a fresh app-server child with the new auth.
+Auth status distinguishes `missing`, `present_unverified`, `authenticated`, `invalid`, and `refresh_failed`, and includes an `authFingerprint` for the auth-principal/profile auth file. `GET /auth/status` runs Codex's local login-status check; `POST /auth/probe` runs a tiny real Codex request and persists `refresh_failed` if token refresh is invalidated. Failed turns expose a stable `errorCode`, end-user-safe `publicMessage`, and raw `adminMessage`; host UIs should show `publicMessage` or `error` and keep `adminMessage` in admin-only logs. When `errorCode` is `session_not_resumable`, Codex reported that previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for that profile so the next turn starts a fresh app-server child with the new auth.
 
 Use `GET /v1/owners/{ownerId}/auth/usage` and `GET /v1/owners/{ownerId}/auth/rate-limits` for account displays. The response identifies both `ownerHash` and `authPrincipalHash`; the values under `usage` or `rateLimits` are totals for the principal/profile and may be shared across owners. `POST /v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume` mutates that shared upstream account, requires `idempotencyKey`, and creates an audit entry only for the requesting owner after Codex confirms success.
 
@@ -165,7 +165,7 @@ Move to the broker:
 - shared app-server process management,
 - turn lifecycle,
 - Codex thread mappings,
-- owner/profile auth isolation.
+- owner-scoped broker-state isolation and auth-principal/profile credential isolation.
 
 Recommended worker flow:
 

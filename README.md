@@ -209,10 +209,14 @@ Core endpoints:
 - `POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/steer`
 - `POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interrupt`
 - `GET /v1/owners/{ownerId}/threads/{threadId}/events?after=0`
+- `GET /v1/owners/{ownerId}/threads/{threadId}/interactions`
+- `GET /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions`
+- `GET /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}`
+- `POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve`
 
 Requests other than health and readiness require `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`. This includes `/metrics` and `/openapi.json`.
 
-Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the principal/profile auth file. `GET /auth/profiles` cheaply lists last-recorded profile state without running Codex. `GET /auth/status` checks local credential state, while `POST /auth/probe` runs a tiny real Codex request. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled App Server children that were started with the old auth.
+Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the principal/profile auth file. `GET /auth/profiles` lists last-recorded profile state without running Codex. `GET /auth/status` runs Codex's local login-status check, while `POST /auth/probe` runs a tiny real Codex request. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled App Server children that were started with the old auth.
 
 Account usage and rate-limit routes query Codex for the selected `authPrincipalHash + profile` and return the current App Server payload under `usage` or `rateLimits`. These are shared upstream totals when several owners map to the same principal. Consuming a rate-limit reset credit mutates that shared account: send a stable, non-empty `idempotencyKey`; the action is still recorded only in the requesting owner's audit log.
 
@@ -308,7 +312,7 @@ Still outside this repo:
 
 Implemented in this repo:
 
-- user/Codex-profile auth homes with hashed user paths,
+- auth-principal/profile auth homes with HMAC-derived paths,
 - API-key, device-auth, status, active probe, logout, and explicit profile deletion flows,
 - app-server stdio pooling with lazy restart after child failure,
 - profile defaults and policy checks for model, approval, sandbox, enabled bundles, and workspace roots,

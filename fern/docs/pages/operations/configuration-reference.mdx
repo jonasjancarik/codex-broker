@@ -28,7 +28,8 @@ Environment variables are read once at process startup by `BrokerConfig.from_env
 | `CODEX_BROKER_INTERNAL_KEY` | unset | Shared internal API key. Required unless unauthenticated dev mode is enabled. |
 | `CODEX_BROKER_INTERNAL_KEY_FILE` | unset | File containing the internal API key. Used only when `CODEX_BROKER_INTERNAL_KEY` is not set. |
 | `CODEX_BROKER_ALLOW_UNAUTHENTICATED` | `false` | Development escape hatch. When true and no key is configured, product routes accept unauthenticated requests. |
-| `CODEX_BROKER_OWNER_HASH_KEY` | internal key when set, otherwise unset | HMAC key for user hashes. Without it, `ownerId` values are hashed with plain SHA-256. |
+| `CODEX_BROKER_OWNER_HASH_KEY` | persistent generated key | Explicit HMAC key for owner and auth-principal hashes. When unset, the broker creates `state/owner-hash.key` once and reuses it across API-key rotations. |
+| `CODEX_BROKER_OWNER_HASH_KEY_FILE` | unset | File containing the owner-hash HMAC key. Mutually exclusive with `CODEX_BROKER_OWNER_HASH_KEY`. |
 | `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` | unset | Trusted JSON object mapping owner ids to the Codex account identities they may use. |
 | `CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE` | unset | File containing the same mapping. Mutually exclusive with the JSON variable. |
 
@@ -56,7 +57,7 @@ Derived paths under `CODEX_BROKER_DATA_DIR`:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CODEX_BIN` | `codex` | Codex CLI command. May include arguments because the value is split with `shlex.split()`. |
-| `CODEX_CREDENTIAL_STORE` | `file` | Value written to each user/Codex-profile `config.toml` as `cli_auth_credentials_store` and passed to Codex children. |
+| `CODEX_CREDENTIAL_STORE` | `file` | Value written to each auth-principal/profile `config.toml` as `cli_auth_credentials_store` and passed to Codex children. |
 | `CODEX_BROKER_PASSTHROUGH_ENV` | empty | CSV allowlist of exact environment variable names copied into app-server child processes in addition to the safe base environment. |
 
 The broker always sets `CODEX_HOME`, `CODEX_CREDENTIAL_STORE`, and `HOME` for Codex auth commands and app-server children. The child process environment is otherwise scrubbed.

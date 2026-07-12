@@ -102,7 +102,7 @@ Keep the broker key server-side. Browser `EventSource` cannot set the required a
 
 ## Auth states
 
-`GET /auth/status` is a cheap local check. `POST /auth/probe` runs a tiny real Codex request and persists `refresh_failed` when token refresh is invalidated.
+`GET /auth/status` runs Codex's local login-status check. `POST /auth/probe` runs a tiny real Codex request and persists `refresh_failed` when token refresh is invalidated.
 
 `GET /auth/profiles` lists persisted last-recorded profile state without invoking Codex. The thread's principal, canonical profile, and profile instance cannot change. To replace an account, quiesce every sharing owner, logout with `deleteProfile: true`, authenticate the replacement, and create a new broker thread id; old and queued threads fail closed.
 

@@ -29,7 +29,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/status"
 ```
 
-`authFingerprint` changes when the user/Codex-profile auth file changes. App-server children are keyed by that fingerprint so refreshed auth starts fresh runtime processes.
+`authFingerprint` changes when the auth-principal/profile auth file changes. App-server children are keyed by that fingerprint so refreshed auth starts fresh runtime processes.
 
 List last-recorded profile state without invoking Codex:
 
@@ -52,7 +52,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/auth/probe"
 ```
 
-If Codex reports token invalidation, the broker stores `refresh_failed` and closes stale pooled app-server children for that user/Codex-profile pair.
+If Codex reports token invalidation, the broker stores `refresh_failed` and closes stale pooled app-server children for that auth-principal/profile pair.
 
 ## Check usage and rate limits
 

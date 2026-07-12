@@ -1,6 +1,6 @@
 # Codex Broker Spec
 
-read_when: changing broker APIs, replacing local Codex integration code, adding per-user Codex auth, sharing Codex process-management code across app services, or supplying Codex skills/prompts/tools from a host application.
+read_when: changing broker APIs, replacing local Codex integration code, adding auth-principal/profile handling, sharing Codex process-management code across app services, or supplying Codex skills/prompts/tools from a host application.
 
 ## Goal
 
@@ -172,6 +172,7 @@ Core endpoints:
 - `POST /v1/owners/{ownerId}/auth/device/start`
 - `POST /v1/owners/{ownerId}/auth/device/submit`
 - `POST /v1/owners/{ownerId}/auth/api-key`
+- `POST /v1/owners/{ownerId}/auth/runtime/invalidate`
 - `POST /v1/owners/{ownerId}/auth/logout`
 - `GET /v1/owners/{ownerId}/audit-logs`
 - `POST /v1/owners/{ownerId}/threads`
@@ -182,6 +183,10 @@ Core endpoints:
 - `POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/steer`
 - `POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interrupt`
 - `GET /v1/owners/{ownerId}/threads/{threadId}/events`
+- `GET /v1/owners/{ownerId}/threads/{threadId}/interactions`
+- `GET /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions`
+- `GET /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}`
+- `POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve`
 
 Thread create example:
 
@@ -336,7 +341,7 @@ Broker-hosted adapters are transport shims. They forward declared headers, input
 
 The broker stores:
 
-- owner/profile auth status,
+- auth-principal/profile auth status,
 - broker thread id to Codex thread id mappings,
 - turns and turn status,
 - normalized events,
@@ -411,7 +416,7 @@ Move to the broker:
 - shared app-server process management,
 - turn lifecycle,
 - Codex thread mappings,
-- owner/profile auth isolation.
+- owner-scoped broker-state isolation and auth-principal/profile credential isolation.
 
 ## Implementation Phases
 
