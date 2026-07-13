@@ -44,13 +44,39 @@ Replace `examples/secrets/codex_broker_key.example` with a real secret file for 
 
 In a real product deployment, copy the `codex-broker` service shape into the app's existing `docker-compose.yml` instead of running this repo's example stack by itself.
 
-Keep these pieces:
+Start with this service definition and adjust the workspace and bundle source paths for your app:
 
-- a persistent `/data` volume
-- workspace mounts under `/workspaces` or another allowed root
-- reviewed bundle mounts under `/bundles`
-- a Docker secret or secret file for `CODEX_BROKER_INTERNAL_KEY_FILE`
-- network access from the host backend or worker to `http://codex-broker:3400`
+```yaml
+services:
+  codex-broker:
+    image: ghcr.io/jonasjancarik/codex-broker:latest
+    environment:
+      CODEX_BROKER_HOST: "0.0.0.0"
+      CODEX_BROKER_PORT: "3400"
+      CODEX_BROKER_DATA_DIR: "/data"
+      CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS: "/workspaces"
+      CODEX_BROKER_ALLOWED_BUNDLE_ROOTS: "/bundles"
+      CODEX_BROKER_INTERNAL_KEY_FILE: "/run/secrets/codex_broker_key"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - codex-broker-data:/data
+      - .:/workspaces/app:rw
+      - ./codex-bundles:/bundles:ro
+    secrets:
+      - codex_broker_key
+    restart: unless-stopped
+
+volumes:
+  codex-broker-data:
+
+secrets:
+  codex_broker_key:
+    file: ./secrets/codex_broker_key
+```
+
+Pin the image to a specific release tag for reproducible production deployments. Services on the same Compose network can reach the broker at `http://codex-broker:3400` without an `expose` or `ports` entry.
 
 Only publish `3400` to the host machine for local debugging. In production-style Compose stacks, leave the broker on the internal Compose network and have the host app call it server-side.
 
