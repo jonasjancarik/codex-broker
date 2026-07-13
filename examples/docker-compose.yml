@@ -5,15 +5,8 @@ services:
       args:
         CODEX_VERSION: "0.144.3"
     image: codex-broker:local
-    expose:
-      - "3400"
     environment:
-      CODEX_BROKER_HOST: "0.0.0.0"
-      CODEX_BROKER_PORT: "3400"
-      CODEX_BROKER_DATA_DIR: "/data"
       CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS: "/workspaces:/host-data"
-      CODEX_BROKER_ALLOWED_BUNDLE_ROOTS: "/bundles"
-      CODEX_BROKER_INTERNAL_KEY_FILE: "/run/secrets/codex_broker_key"
       CODEX_BROKER_ALLOWED_TOOL_COMMANDS: "python,node"
       CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES: "http://app:3000,http://host.docker.internal,http://127.0.0.1"
       CODEX_HOST_TOOL_KEY: "${CODEX_HOST_TOOL_KEY:-}"

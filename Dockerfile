@@ -8,7 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME=/home/broker \
     CODEX_BROKER_HOST=0.0.0.0 \
     CODEX_BROKER_PORT=3400 \
-    CODEX_BROKER_DATA_DIR=/data
+    CODEX_BROKER_DATA_DIR=/data \
+    CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS=/workspaces \
+    CODEX_BROKER_ALLOWED_BUNDLE_ROOTS=/bundles \
+    CODEX_BROKER_INTERNAL_KEY_FILE=/run/secrets/codex_broker_key
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tar \
@@ -33,8 +36,8 @@ RUN set -eux; \
     codex --version
 
 RUN useradd --create-home --shell /usr/sbin/nologin broker \
-    && mkdir -p /data \
-    && chown -R broker:broker /data /home/broker
+    && mkdir -p /data /workspaces /bundles \
+    && chown -R broker:broker /data /workspaces /bundles /home/broker
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

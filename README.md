@@ -287,8 +287,6 @@ docker run --rm \
   -v codex-broker-data:/data \
   -v /path/to/workspaces:/workspaces:rw \
   -v /path/to/bundles:/bundles:ro \
-  -e CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS=/workspaces \
-  -e CODEX_BROKER_ALLOWED_BUNDLE_ROOTS=/bundles \
   -e CODEX_BROKER_INTERNAL_KEY=dev-only-key \
   codex-broker
 ```

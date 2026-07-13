@@ -50,13 +50,6 @@ Start with this service definition and adjust the workspace and bundle source pa
 services:
   codex-broker:
     image: ghcr.io/jonasjancarik/codex-broker:latest
-    environment:
-      CODEX_BROKER_HOST: "0.0.0.0"
-      CODEX_BROKER_PORT: "3400"
-      CODEX_BROKER_DATA_DIR: "/data"
-      CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS: "/workspaces"
-      CODEX_BROKER_ALLOWED_BUNDLE_ROOTS: "/bundles"
-      CODEX_BROKER_INTERNAL_KEY_FILE: "/run/secrets/codex_broker_key"
     read_only: true
     tmpfs:
       - /tmp
