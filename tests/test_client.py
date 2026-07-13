@@ -53,6 +53,34 @@ class CodexBrokerClientTests(unittest.TestCase):
         self.assertIn("/v1/owners/owner%2Fa/auth/rate-limit-reset-credit/consume", seen[2]["url"])
         self.assertEqual(seen[2]["body"], {"profile": "work", "idempotencyKey": "reset-123"})
 
+    def test_model_list_sends_auth_scope_and_capability_filters(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_urlopen(req: Any, timeout: float) -> FakeResponse:
+            seen["url"] = req.full_url
+            seen["method"] = req.get_method()
+            return FakeResponse(b'{"models":[],"nextCursor":null}')
+
+        client = CodexBrokerClient("http://broker.internal")
+        with patch("urllib.request.urlopen", fake_urlopen):
+            result = client.list_models(
+                "owner/a",
+                profile="work",
+                auth_principal_id="shared/account",
+                cursor="page/2",
+                limit=25,
+                include_hidden=True,
+            )
+
+        self.assertEqual(result["models"], [])
+        self.assertEqual(seen["method"], "GET")
+        self.assertIn("/v1/owners/owner%2Fa/auth/models", seen["url"])
+        self.assertIn("profile=work", seen["url"])
+        self.assertIn("authPrincipalId=shared%2Faccount", seen["url"])
+        self.assertIn("cursor=page%2F2", seen["url"])
+        self.assertIn("limit=25", seen["url"])
+        self.assertIn("includeHidden=true", seen["url"])
+
     def test_auth_principal_selection_is_explicit_across_auth_and_thread_methods(self) -> None:
         seen: list[dict[str, Any]] = []
 

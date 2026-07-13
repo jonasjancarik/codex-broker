@@ -147,6 +147,18 @@ Response:
 }
 ```
 
+## Discover model options
+
+Query the selected account before rendering model, reasoning, or Fast controls:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/models?profile=default"
+```
+
+The response includes `models` and `nextCursor`. Each model advertises its supported/default reasoning efforts, service tiers, modalities, personality support, picker visibility, default state, and upgrade metadata. Pass the selected entry's `model` slug as `codexOptions.model`; `id` is the stable catalog preset identifier. Offer Fast only when the selected model includes a `serviceTiers` entry with `id: "fast"`.
+
 ## Submit a turn
 
 ```bash
@@ -165,7 +177,8 @@ curl -sS \
     "configProfile": "default",
     "codexOptions": {
       "model": "gpt-5.6-sol",
-      "effort": "high"
+      "effort": "high",
+      "serviceTier": "fast"
     },
     "mode": "queue",
     "productCorrelationId": "chat-123:message-456",
@@ -174,7 +187,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/turns"
 ```
 
-Each turn can choose a model with `codexOptions.model` and reasoning effort with `codexOptions.effort`. Request values override the selected `configProfile`; profile values override Codex's own defaults. If neither layer sets a value, the broker lets Codex choose its current recommended model and model-specific reasoning default. The `reasoningEffort` alias is also accepted, and supported effort values depend on the selected model.
+Each turn can choose a model with `codexOptions.model`, reasoning effort with `codexOptions.effort`, and an advertised service tier with `codexOptions.serviceTier`. Request values override the selected `configProfile`; profile values override Codex's own defaults. If neither layer sets a value, the broker lets Codex choose its current defaults. The `reasoningEffort` alias is also accepted. Read supported efforts and service tiers from `/auth/models`.
 
 Response:
 

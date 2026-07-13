@@ -12,6 +12,7 @@ class OpenApiTests(unittest.TestCase):
         for path in [
             "/v1/owners/{ownerId}/auth/status",
             "/v1/owners/{ownerId}/auth/profiles",
+            "/v1/owners/{ownerId}/auth/models",
             "/v1/owners/{ownerId}/auth/usage",
             "/v1/owners/{ownerId}/auth/rate-limits",
             "/v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume",
@@ -43,6 +44,10 @@ class OpenApiTests(unittest.TestCase):
             "AuthStatus",
             "AuthProfile",
             "AuthProfileList",
+            "ReasoningEffortOption",
+            "ModelServiceTier",
+            "CodexModel",
+            "ModelListResponse",
             "AccountUsageResponse",
             "AccountRateLimitsResponse",
             "RateLimitResetCreditConsumeRequest",
@@ -77,6 +82,9 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("codexOptions", components["schemas"]["TurnStartRequest"]["properties"])
         self.assertIn("runtime", components["schemas"]["TurnStartRequest"]["properties"])
         self.assertIn("webSearch", components["schemas"]["CodexOptions"]["properties"])
+        self.assertIn("serviceTier", components["schemas"]["CodexOptions"]["properties"])
+        self.assertIn("serviceTiers", components["schemas"]["CodexModel"]["properties"])
+        self.assertIn("defaultServiceTier", components["schemas"]["CodexModel"]["properties"])
         self.assertIn("threadId", components["schemas"]["ThreadCreateRequest"]["properties"])
         self.assertNotIn("productThreadId", components["schemas"]["ThreadCreateRequest"]["properties"])
         self.assertNotIn("productThreadId", components["schemas"]["Thread"]["properties"])

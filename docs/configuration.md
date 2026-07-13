@@ -1,6 +1,6 @@
 # Configuration
 
-read_when: changing environment variables, Docker configuration, config profiles, request runtime options, bundle manifests, hosted tools, MCP server validation, sandbox policy, or workspace policy.
+read_when: changing environment variables, Docker configuration, config profiles, model discovery, request runtime options, bundle manifests, hosted tools, MCP server validation, sandbox policy, or workspace policy.
 
 This is the reference for Codex Broker configuration. It covers process environment variables, Docker build arguments, configuration profiles, request-level Codex options, and task bundle manifest fields.
 
@@ -150,7 +150,7 @@ Supported keys:
 | `sandbox` | Codex thread | Default sandbox string. A request `codexOptions.sandbox` wins, then bundle `sandbox.mode`, then profile `sandbox`. |
 | `model` | Codex thread and turn | Passed to thread and turn calls unless overridden by request options. |
 | `personality` | Codex thread and turn | Passed to thread and turn calls unless overridden by request options. |
-| `serviceTier` | Codex turn | Passed to `turn/start`. |
+| `serviceTier` | Codex turn | Service-tier id passed to `turn/start`; discover Fast and other supported ids from `/auth/models`. |
 | `effort` | Codex turn and process config | Passed to `turn/start` and also mapped to Codex process config `model_reasoning_effort`. |
 | `reasoningEffort` | Codex turn and process config | Alias for `effort`. |
 | `modelReasoningEffort` | Process config | Alias used only for process config `model_reasoning_effort`. |
@@ -194,7 +194,11 @@ Selection precedence is:
 2. The selected configuration profile's `model` and `effort` defaults.
 3. Codex's current recommended model and model-specific reasoning default.
 
-The broker does not persist a request-level selection back into the configuration profile. `reasoningEffort` is accepted as an alias for `effort`. Model availability and supported effort values come from Codex and may differ by account, provider, and selected model.
+The broker does not persist a request-level selection back into the configuration profile. `reasoningEffort` is accepted as an alias for `effort`. Model availability, supported effort values, and service tiers come from Codex and may differ by account, provider, and selected model.
+
+Query `GET /v1/owners/{ownerId}/auth/models?profile=default` before rendering a picker. The endpoint wraps App Server `model/list` and returns `models` plus `nextCursor`. Model objects include `supportedReasoningEfforts`, `defaultReasoningEffort`, `serviceTiers`, `defaultServiceTier`, modalities, personality support, hidden/default state, and upgrade metadata. Pass the selected entry's `model` slug as `codexOptions.model`; its `id` is the stable catalog preset identifier. Use the selected service-tier `id` as `codexOptions.serviceTier`; offer Fast only when the selected model advertises `fast`.
+
+The optional query fields are `cursor`, `limit` from 1 through 500, and `includeHidden`. Hidden models are excluded by default. The response is scoped to the trusted owner-to-principal mapping and selected auth profile.
 
 ## Request-Level Options
 
@@ -399,7 +403,7 @@ Host endpoints may return ordinary JSON or text. Ordinary JSON is formatted as t
 
 | Build arg | Default | Description |
 | --- | --- | --- |
-| `CODEX_VERSION` | `0.144.0` | Codex CLI release version without the `rust-v` prefix. |
+| `CODEX_VERSION` | `0.144.3` | Codex CLI release version without the `rust-v` prefix. |
 | `TARGETARCH` | supplied by BuildKit | `amd64` maps to `x86_64`; `arm64` maps to `aarch64`. Other values fail the build. |
 
 The Docker image installs the official Codex CLI Linux musl archive, installs the broker package, runs as the non-root `broker` user, exposes port `3400`, and declares `/data` as a volume.

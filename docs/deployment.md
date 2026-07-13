@@ -10,7 +10,7 @@ For the complete environment-variable and profile reference, see [Configuration]
 
 The Dockerfile installs the official Codex CLI Linux musl release from `openai/codex`, verifies it against the release `codex-package_SHA256SUMS`, and then installs the broker Python package. Build-time args:
 
-- `CODEX_VERSION`: Codex release version without the `rust-v` prefix, default `0.144.0`.
+- `CODEX_VERSION`: Codex release version without the `rust-v` prefix, default `0.144.3`.
 - `TARGETARCH`: supplied by Docker BuildKit; `amd64` maps to `x86_64`, `arm64` maps to `aarch64`.
 
 GitHub Actions publishes multi-architecture images to `ghcr.io/jonasjancarik/codex-broker`. Pushes to `main` publish `edge`, and `v*` tags publish both `latest` and the matching version tag. Pull requests build the image without pushing it.

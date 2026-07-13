@@ -56,6 +56,29 @@ class CodexBrokerClient:
             query=auth_query(profile, auth_principal_id),
         )
 
+    def list_models(
+        self,
+        owner_id: str,
+        *,
+        profile: str = "default",
+        auth_principal_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        include_hidden: bool = False,
+    ) -> dict[str, Any]:
+        query = auth_query(profile, auth_principal_id)
+        if cursor is not None:
+            query["cursor"] = cursor
+        if limit is not None:
+            query["limit"] = str(limit)
+        if include_hidden:
+            query["includeHidden"] = "true"
+        return self._request(
+            "GET",
+            f"/v1/owners/{quote(owner_id)}/auth/models",
+            query=query,
+        )
+
     def account_rate_limits(
         self,
         owner_id: str,

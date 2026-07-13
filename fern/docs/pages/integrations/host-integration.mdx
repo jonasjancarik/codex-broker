@@ -71,21 +71,30 @@ Worker integrations usually follow this flow:
 
 The worker keeps queue records, generated files, artifact storage, and review rows. The broker runs the Codex side of the job.
 
-## Model and reasoning per turn
+## Model, reasoning, and Fast per turn
 
-Set model and reasoning choices in the turn body:
+First discover the selected account's available choices:
+
+```http
+GET /v1/owners/{ownerId}/auth/models?profile=default
+```
+
+The response preserves App Server's supported/default reasoning efforts and service tiers, modalities, personality support, picker visibility, default state, and upgrade metadata. It returns `nextCursor` for pagination. Pass the selected entry's `model` slug as `codexOptions.model`; `id` is the stable catalog preset identifier. Offer Fast only when the selected model advertises a `serviceTiers` entry with `id: "fast"`.
+
+Set the selected choices in the turn body:
 
 ```json
 {
   "input": [{ "type": "text", "text": "Review these changes." }],
   "codexOptions": {
     "model": "gpt-5.6-sol",
-    "effort": "high"
+    "effort": "high",
+    "serviceTier": "fast"
   }
 }
 ```
 
-Selection precedence is the turn's `codexOptions`, then the selected `configProfile`, then Codex's current recommended model and model-specific reasoning default. A turn-level choice does not modify the profile. `reasoningEffort` is accepted as an alias for `effort`, and supported effort values depend on the selected model.
+Selection precedence is the turn's `codexOptions`, then the selected `configProfile`, then Codex's current recommended model and model-specific defaults. A turn-level choice does not modify the profile. `reasoningEffort` is accepted as an alias for `effort`. Use `/auth/models` instead of hardcoding supported efforts or service tiers.
 
 ## Auth model
 

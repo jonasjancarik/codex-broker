@@ -152,11 +152,14 @@ class ConfigProfileTests(unittest.TestCase):
                 turn_params = services.scheduler._turn_params(
                     "codex_thread_1",
                     [{"type": "text", "text": "review"}],
-                    {"runtime": {"reasoningEffort": "medium", "reasoningSummary": "concise"}},
+                    {
+                        "codexOptions": {"model": "gpt-5.1-codex", "serviceTier": "fast"},
+                        "runtime": {"reasoningEffort": "medium", "reasoningSummary": "concise"},
+                    },
                     profile,
                 )
-                self.assertEqual(turn_params["model"], "gpt-5")
-                self.assertEqual(turn_params["serviceTier"], "flex")
+                self.assertEqual(turn_params["model"], "gpt-5.1-codex")
+                self.assertEqual(turn_params["serviceTier"], "fast")
                 self.assertEqual(turn_params["effort"], "medium")
                 self.assertEqual(turn_params["personality"], "concise")
                 self.assertEqual(turn_params["summary"], "concise")

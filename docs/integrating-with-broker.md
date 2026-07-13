@@ -79,6 +79,16 @@ curl -sS \
 
 The broker returns Codex's current account payload under `usage` or `rateLimits`. Responses include `ownerHash`, `authPrincipalHash`, and `sharedAuthPrincipal`. Totals belong to `authPrincipalHash + profile`, so mapped owners see the same upstream totals while retaining separate broker state and audits. The nested fields are passed through so host integrations remain compatible as Codex adds usage periods or limit types.
 
+Discover the selected account's current models and selector capabilities before rendering model, reasoning, or Fast controls:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/auth/models?profile=default"
+```
+
+The response contains a `models` array and `nextCursor`. Each model includes its supported and default reasoning effort, supported and default service tier, modalities, personality support, picker visibility, default status, and upgrade metadata. Pass the selected entry's `model` slug as `codexOptions.model`; its `id` is the stable catalog preset identifier. Use `cursor=<nextCursor>` for the next page. Hidden models are excluded unless `includeHidden=true`; normal product pickers should leave them hidden. Offer Fast only when the selected model advertises a `serviceTiers` entry whose `id` is `fast`.
+
 List persisted profiles and their last-recorded state without running Codex:
 
 ```bash
@@ -189,7 +199,8 @@ curl -sS \
     "configProfile": "default",
     "codexOptions": {
       "model": "gpt-5.6-sol",
-      "effort": "high"
+      "effort": "high",
+      "serviceTier": "fast"
     },
     "mode": "queue",
     "productCorrelationId": "chat-123:message-456",
@@ -198,7 +209,7 @@ curl -sS \
   "$BROKER/v1/owners/$OWNER/threads/$THREAD_ID/turns"
 ```
 
-Each turn can select a Codex model with `codexOptions.model` and reasoning effort with `codexOptions.effort`. Request values override the selected `configProfile`; profile values override Codex's own defaults. If neither layer sets a value, the broker lets Codex choose its current recommended model and model-specific reasoning default. The `reasoningEffort` alias is also accepted, and supported effort values depend on the selected model.
+Each turn can select a Codex model with `codexOptions.model`, reasoning effort with `codexOptions.effort`, and an advertised Fast or other service tier with `codexOptions.serviceTier`. Request values override the selected `configProfile`; profile values override Codex's own defaults. If neither layer sets a value, the broker lets Codex choose its recommended model and model-specific defaults. The `reasoningEffort` alias is also accepted. Read supported efforts and service tiers from `/auth/models` instead of hardcoding them.
 
 Use `codexOptions.outputSchema` in the turn body when the host needs the final assistant message constrained by a JSON Schema, such as a background job that expects a machine-readable result object.
 
@@ -268,7 +279,16 @@ broker = CodexBrokerClient(
 
 owner_id = "service-account-1"
 profiles = broker.list_auth_profiles(owner_id)
+models = broker.list_models(owner_id, profile="default")
 usage = broker.account_usage(owner_id, profile="default")
+
+selected_model = models["models"][0]
+codex_options = {
+    "model": selected_model["model"],
+    "effort": selected_model["defaultReasoningEffort"],
+}
+if any(tier["id"] == "fast" for tier in selected_model.get("serviceTiers", [])):
+    codex_options["serviceTier"] = "fast"
 
 thread = broker.create_thread(
     owner_id,
@@ -288,6 +308,7 @@ turn = broker.start_turn(
     {
         "input": [{"type": "text", "text": "Summarize the evidence."}],
         "mode": "queue",
+        "codexOptions": codex_options,
         "productCorrelationId": "chat-123:message-456",
         "idempotencyKey": "chat-123:message-456",
     },
@@ -325,7 +346,11 @@ const ownerId = "service-account-1";
 const auth = { profile: "default" };
 
 const profiles = await broker.listAuthProfiles(ownerId);
+const models = await broker.listModels(ownerId, auth);
 const usage = await broker.accountUsage(ownerId, auth);
+
+const selectedModel = models.models[0];
+const fastTier = selectedModel?.serviceTiers?.find((tier) => tier.id === "fast");
 
 const thread = await broker.createThread(ownerId, {
   threadId: "chat-123",
@@ -339,10 +364,17 @@ const thread = await broker.createThread(ownerId, {
 const turn = await broker.startTurn(ownerId, String(thread["threadId"]), {
   input: [{ type: "text", text: "Summarize the evidence." }],
   mode: "queue",
+  codexOptions: {
+    model: selectedModel?.model,
+    effort: selectedModel?.defaultReasoningEffort,
+    ...(fastTier ? { serviceTier: fastTier.id } : {}),
+  },
   productCorrelationId: "chat-123:message-456",
   idempotencyKey: "chat-123:message-456",
 });
 ```
+
+`list_models` and `listModels` return the selected account's model catalog, reasoning choices, and service tiers. Offer Fast only when the selected model advertises a `serviceTiers` entry whose `id` is `fast`.
 
 In Node or server runtimes, stream SSE with `fetch` so you can send the auth header:
 

@@ -140,7 +140,7 @@ Supported keys:
 | `sandbox` | Codex thread | Default sandbox string. Request options win, then bundle sandbox, then profile sandbox. |
 | `model` | Codex thread and turn | Passed to thread and turn calls unless overridden. |
 | `personality` | Codex thread and turn | Passed to thread and turn calls unless overridden. |
-| `serviceTier` | Codex turn | Passed to `turn/start`. |
+| `serviceTier` | Codex turn | Service-tier id passed to `turn/start`; discover Fast and other supported ids from `/auth/models`. |
 | `effort`, `reasoningEffort` | Codex turn and process config | Reasoning effort aliases. |
 | `summary`, `reasoningSummary` | Codex turn | Reasoning summary aliases. |
 | `outputSchema`, `output_schema` | Codex turn | JSON Schema for the final assistant message. |
@@ -165,7 +165,11 @@ A turn can override profile defaults without modifying the profile:
 }
 ```
 
-Selection precedence is the turn's `codexOptions`, then the selected configuration profile, then Codex's current recommended model and model-specific reasoning default. `reasoningEffort` is accepted as an alias for `effort`. Model availability and supported effort values come from Codex and may differ by account, provider, and selected model.
+Selection precedence is the turn's `codexOptions`, then the selected configuration profile, then Codex's current recommended model and model-specific defaults. `reasoningEffort` is accepted as an alias for `effort`. Model availability, supported effort values, and service tiers come from Codex and may differ by account, provider, and selected model.
+
+Query `GET /v1/owners/{ownerId}/auth/models?profile=default` before rendering a picker. It returns `models` plus `nextCursor`, preserving App Server's supported/default reasoning efforts and service tiers, modalities, personality support, picker visibility, default state, and upgrade metadata. Pass the selected entry's `model` slug as `codexOptions.model`; its `id` is the stable catalog preset identifier. Offer Fast only when the selected model advertises a `serviceTiers` entry with `id: "fast"`, then send that id as `codexOptions.serviceTier`.
+
+Use `cursor` for another page, `limit` from 1 through 500, and `includeHidden=true` only for trusted administrative views. Results are scoped to the owner-to-principal mapping and selected auth profile.
 
 ## Request-level options
 
@@ -206,7 +210,7 @@ Turn start accepts:
 
 | Build arg | Default | Description |
 | --- | --- | --- |
-| `CODEX_VERSION` | `0.144.0` | Codex CLI release version without the `rust-v` prefix. |
+| `CODEX_VERSION` | `0.144.3` | Codex CLI release version without the `rust-v` prefix. |
 | `TARGETARCH` | supplied by BuildKit | `amd64` maps to `x86_64`, `arm64` maps to `aarch64`. Other values fail the build. |
 
 ## Minimal local example

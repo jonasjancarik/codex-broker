@@ -174,6 +174,60 @@ def handle_app_server() -> int:
             continue
         if method == "initialize":
             send({"id": request_id, "result": {"serverInfo": {"name": "fake-codex"}}})
+        elif method == "model/list":
+            models = [
+                {
+                    "id": "sol-preset",
+                    "model": "gpt-5.6-sol",
+                    "upgrade": None,
+                    "upgradeInfo": None,
+                    "availabilityNux": None,
+                    "displayName": "GPT-5.6 Sol",
+                    "description": "Fast coding model.",
+                    "hidden": False,
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "low", "description": "Lower latency"},
+                        {"reasoningEffort": "max", "description": "Maximum reasoning"},
+                        {"reasoningEffort": "ultra", "description": "Maximum reasoning with delegation"},
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "inputModalities": ["text", "image"],
+                    "supportsPersonality": True,
+                    "additionalSpeedTiers": ["fast"],
+                    "serviceTiers": [
+                        {"id": "fast", "name": "Fast", "description": "Lower-latency execution"},
+                    ],
+                    "defaultServiceTier": None,
+                    "isDefault": True,
+                },
+                {
+                    "id": "terra-preset",
+                    "model": "gpt-5.6-terra",
+                    "upgrade": None,
+                    "upgradeInfo": None,
+                    "availabilityNux": None,
+                    "displayName": "GPT-5.6 Terra",
+                    "description": "Hidden test model.",
+                    "hidden": True,
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "medium", "description": "Balanced reasoning"},
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "inputModalities": ["text", "image"],
+                    "supportsPersonality": False,
+                    "additionalSpeedTiers": [],
+                    "serviceTiers": [],
+                    "defaultServiceTier": None,
+                    "isDefault": False,
+                },
+            ]
+            if not params.get("includeHidden"):
+                models = [model for model in models if not model["hidden"]]
+            offset = int(params.get("cursor") or 0)
+            limit = int(params.get("limit") or 20)
+            page = models[offset : offset + limit]
+            next_cursor = str(offset + limit) if offset + limit < len(models) else None
+            send({"id": request_id, "result": {"data": page, "nextCursor": next_cursor}})
         elif method == "account/usage/read":
             send(
                 {

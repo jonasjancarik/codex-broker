@@ -15,6 +15,48 @@ export interface AuthScope {
   sharedAuthPrincipal: boolean;
 }
 
+export interface ModelListOptions extends AuthSelection {
+  cursor?: string;
+  limit?: number;
+  includeHidden?: boolean;
+}
+
+export interface ReasoningEffortOption {
+  reasoningEffort: string;
+  description: string;
+}
+
+export interface ModelServiceTier {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface CodexModel extends Record<string, unknown> {
+  /** Stable catalog preset identifier. */
+  id: string;
+  /** Model slug to pass as codexOptions.model. */
+  model: string;
+  displayName: string;
+  description: string;
+  hidden: boolean;
+  supportedReasoningEfforts: ReasoningEffortOption[];
+  defaultReasoningEffort: string;
+  inputModalities: string[];
+  supportsPersonality: boolean;
+  serviceTiers: ModelServiceTier[];
+  defaultServiceTier: string | null;
+  isDefault: boolean;
+  upgrade?: string | null;
+  upgradeInfo?: Record<string, unknown> | null;
+}
+
+export interface ModelListResponse extends AuthScope {
+  profile: string;
+  models: CodexModel[];
+  nextCursor: string | null;
+}
+
 export interface AuthProfile {
   profile: string;
   state: string;
@@ -38,6 +80,14 @@ export interface TurnStartRequest extends Record<string, unknown> {
   input: Array<Record<string, unknown>>;
   authPrincipalId?: string;
   profile?: string;
+  codexOptions?: CodexOptions;
+}
+
+export interface CodexOptions extends Record<string, unknown> {
+  model?: string;
+  effort?: string;
+  reasoningEffort?: string;
+  serviceTier?: string;
 }
 
 export interface BrokerThread {
@@ -153,6 +203,19 @@ export class CodexBrokerClient {
 
   authStatus(ownerId: string, selection: AuthSelection = {}): Promise<Record<string, unknown>> {
     return this.request("GET", `/v1/owners/${enc(ownerId)}/auth/status${authSelectionQuery(selection)}`);
+  }
+
+  listModels(ownerId: string, options: ModelListOptions = {}): Promise<ModelListResponse> {
+    return this.request(
+      "GET",
+      `/v1/owners/${enc(ownerId)}/auth/models${queryString({
+        profile: options.profile ?? "default",
+        authPrincipalId: options.authPrincipalId,
+        cursor: options.cursor,
+        limit: options.limit,
+        includeHidden: options.includeHidden ? true : undefined,
+      })}`,
+    );
   }
 
   accountUsage(ownerId: string, selection: AuthSelection = {}): Promise<AccountUsageResponse> {
@@ -291,7 +354,7 @@ function enc(value: string): string {
   return encodeURIComponent(value);
 }
 
-function queryString(query: Record<string, string | number | undefined>): string {
+function queryString(query: Record<string, string | number | boolean | undefined>): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) params.set(key, String(value));

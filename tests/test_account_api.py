@@ -51,6 +51,45 @@ class AccountApiTests(unittest.TestCase):
         self.assertEqual(limits["rateLimits"]["primary"]["usedPercent"], 25)
         self.assertEqual(limits["rateLimits"]["resetCredits"], 1)
 
+    def test_lists_model_reasoning_and_fast_tier_capabilities(self) -> None:
+        visible = self._request("GET", "/v1/owners/owner%2Fa/auth/models?profile=work")
+
+        self.assertEqual(visible["profile"], "work")
+        self.assertEqual([model["id"] for model in visible["models"]], ["sol-preset"])
+        sol = visible["models"][0]
+        self.assertEqual(sol["model"], "gpt-5.6-sol")
+        self.assertEqual(
+            [option["reasoningEffort"] for option in sol["supportedReasoningEfforts"]],
+            ["low", "max", "ultra"],
+        )
+        self.assertEqual(sol["serviceTiers"][0]["id"], "fast")
+        self.assertIsNone(sol["defaultServiceTier"])
+
+        first_page = self._request(
+            "GET",
+            "/v1/owners/owner%2Fa/auth/models?profile=work&includeHidden=true&limit=1",
+        )
+        self.assertEqual([model["id"] for model in first_page["models"]], ["sol-preset"])
+        self.assertEqual(first_page["nextCursor"], "1")
+
+        second_page = self._request(
+            "GET",
+            "/v1/owners/owner%2Fa/auth/models?profile=work&includeHidden=true&limit=1&cursor=1",
+        )
+        self.assertEqual([model["id"] for model in second_page["models"]], ["terra-preset"])
+        self.assertIsNone(second_page["nextCursor"])
+
+    def test_model_list_rejects_invalid_query_values(self) -> None:
+        for query, message in (
+            ("includeHidden=sometimes", "includeHidden must be true or false."),
+            ("limit=0", "limit must be an integer between 1 and 500."),
+        ):
+            with self.subTest(query=query), self.assertRaises(urllib.error.HTTPError) as raised:
+                self._request("GET", f"/v1/owners/owner%2Fa/auth/models?profile=work&{query}")
+            self.assertEqual(raised.exception.code, 400)
+            error = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual(error["error"], message)
+
     def test_lists_persisted_auth_profiles_without_running_a_probe(self) -> None:
         result = self._request("GET", "/v1/owners/owner%2Fa/auth/profiles")
 

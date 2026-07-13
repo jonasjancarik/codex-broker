@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from .app_server import AppServerError
 from .auth_api import selector
 
 
@@ -19,6 +20,28 @@ def handle_account_route(
     owner_id: str,
     query: dict[str, list[str]],
 ) -> bool:
+    if method == "GET" and tail == ["models"]:
+        profile = selector(query, None, "profile", "default") or "default"
+        principal_id = selector(query, None, "authPrincipalId")
+        scope, profile_key = _account_scope(handler, owner_id, profile, principal_id)
+        with handler.broker.auth.profile_guard(scope.auth_principal_hash, profile_key):
+            client = _account_client(handler, scope, profile_key)
+            result = client.request("model/list", _model_list_params(query))
+        models = result.get("data")
+        next_cursor = result.get("nextCursor")
+        if not isinstance(models, list):
+            raise AppServerError("App Server model/list response is missing its model list.")
+        if next_cursor is not None and not isinstance(next_cursor, str):
+            raise AppServerError("App Server model/list response contains an invalid next cursor.")
+        handler._json(
+            {
+                **scope.public(),
+                "profile": profile_key,
+                "models": models,
+                "nextCursor": next_cursor,
+            }
+        )
+        return True
     if method == "GET" and tail == ["usage"]:
         profile = selector(query, None, "profile", "default") or "default"
         principal_id = selector(query, None, "authPrincipalId")
@@ -66,6 +89,31 @@ def handle_account_route(
     return False
 
 
+def _model_list_params(query: dict[str, list[str]]) -> dict[str, Any]:
+    cursor = selector(query, None, "cursor")
+    raw_limit = selector(query, None, "limit", "100") or "100"
+    try:
+        limit = int(raw_limit)
+    except ValueError as exc:
+        raise ValueError("limit must be an integer between 1 and 500.") from exc
+    if not 1 <= limit <= 500:
+        raise ValueError("limit must be an integer between 1 and 500.")
+
+    raw_include_hidden = selector(query, None, "includeHidden", "false") or "false"
+    normalized = raw_include_hidden.lower()
+    if normalized in {"true", "1"}:
+        include_hidden = True
+    elif normalized in {"false", "0"}:
+        include_hidden = False
+    else:
+        raise ValueError("includeHidden must be true or false.")
+
+    params: dict[str, Any] = {"limit": limit, "includeHidden": include_hidden}
+    if cursor is not None:
+        params["cursor"] = cursor
+    return params
+
+
 def _account_scope(
     handler: Any,
     owner_id: str,
@@ -95,6 +143,24 @@ def openapi_paths(
     request_body: RequestBodyFactory,
 ) -> dict[str, Any]:
     return {
+        "/v1/owners/{ownerId}/auth/models": {
+            "get": {
+                "parameters": [
+                    owner_param,
+                    {"$ref": "#/components/parameters/profile"},
+                    {"$ref": "#/components/parameters/authPrincipalId"},
+                    {"$ref": "#/components/parameters/cursor"},
+                    {"$ref": "#/components/parameters/limit"},
+                    {"$ref": "#/components/parameters/includeHidden"},
+                ],
+                "responses": {
+                    "200": json_response(ref("ModelListResponse"), "Available Codex models and capabilities"),
+                    "400": json_response(ref("Error"), "Invalid pagination or visibility query"),
+                    "403": json_response(ref("Error"), "Auth principal not permitted"),
+                    "502": json_response(ref("Error"), "Codex model discovery failed"),
+                },
+            }
+        },
         "/v1/owners/{ownerId}/auth/usage": {
             "get": {
                 "parameters": [
@@ -143,6 +209,93 @@ def openapi_schemas() -> dict[str, Any]:
         "profile": {"type": "string"},
     }
     return {
+        "ReasoningEffortOption": {
+            "type": "object",
+            "required": ["reasoningEffort", "description"],
+            "properties": {
+                "reasoningEffort": {"type": "string"},
+                "description": {"type": "string"},
+            },
+        },
+        "ModelServiceTier": {
+            "type": "object",
+            "required": ["id", "name", "description"],
+            "properties": {
+                "id": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+            },
+        },
+        "CodexModel": {
+            "type": "object",
+            "additionalProperties": True,
+            "required": [
+                "id",
+                "model",
+                "displayName",
+                "description",
+                "hidden",
+                "supportedReasoningEfforts",
+                "defaultReasoningEffort",
+                "inputModalities",
+                "supportsPersonality",
+                "serviceTiers",
+                "defaultServiceTier",
+                "isDefault",
+            ],
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Stable catalog preset identifier.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model slug to pass as codexOptions.model.",
+                },
+                "displayName": {"type": "string"},
+                "description": {"type": "string"},
+                "hidden": {"type": "boolean"},
+                "supportedReasoningEfforts": {
+                    "type": "array",
+                    "items": {"$ref": "#/components/schemas/ReasoningEffortOption"},
+                },
+                "defaultReasoningEffort": {"type": "string"},
+                "inputModalities": {"type": "array", "items": {"type": "string"}},
+                "supportsPersonality": {"type": "boolean"},
+                "serviceTiers": {
+                    "type": "array",
+                    "items": {"$ref": "#/components/schemas/ModelServiceTier"},
+                    "description": "Selectable service tiers advertised for this model, including Fast when available.",
+                },
+                "defaultServiceTier": {"type": ["string", "null"]},
+                "isDefault": {"type": "boolean"},
+                "upgrade": {"type": ["string", "null"]},
+                "upgradeInfo": {"type": ["object", "null"], "additionalProperties": True},
+                "availabilityNux": {"type": ["object", "null"], "additionalProperties": True},
+                "additionalSpeedTiers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "deprecated": True,
+                },
+            },
+        },
+        "ModelListResponse": {
+            "type": "object",
+            "required": [
+                "ownerHash",
+                "authPrincipalHash",
+                "sharedAuthPrincipal",
+                "profile",
+                "models",
+                "nextCursor",
+            ],
+            "properties": {
+                **scope,
+                "models": {"type": "array", "items": {"$ref": "#/components/schemas/CodexModel"}},
+                "nextCursor": {"type": ["string", "null"]},
+            },
+            "description": "Codex model, reasoning-effort, modality, personality, and service-tier capabilities for this auth principal and profile.",
+        },
         "AccountUsageResponse": {
             "type": "object",
             "required": ["ownerHash", "authPrincipalHash", "sharedAuthPrincipal", "profile", "usage"],

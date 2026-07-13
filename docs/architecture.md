@@ -1,6 +1,6 @@
 # Architecture
 
-read_when: changing process management, state storage, auth handling, bundle materialization, event streaming, recovery behavior, or host integration boundaries.
+read_when: changing process management, state storage, auth handling, model discovery, bundle materialization, event streaming, recovery behavior, or host integration boundaries.
 
 Codex Broker is an internal HTTP service that runs next to a host application. The host app calls the broker over HTTP, and the broker manages Codex auth homes, `codex app-server` child processes, durable broker thread and turn state, bundle mounting, and normalized event streaming.
 
@@ -18,7 +18,7 @@ codex-broker process
   |
   +-- HTTP API
   |     authenticates broker-key requests
-  |     exposes health, readiness, OpenAPI, metrics, auth, threads, turns, events
+  |     exposes health, readiness, OpenAPI, metrics, auth, model catalog, threads, turns, events
   |
   +-- AuthManager
   |     HMACs owner and auth-principal ids
@@ -58,6 +58,7 @@ The implementation intentionally uses the Python standard library HTTP server an
 | `src/codex_broker/identity.py` | Trusted owner-to-auth-principal policy and hashed identity scopes. |
 | `src/codex_broker/auth.py` | Profile normalization, CODEX_HOME creation, profile-instance lifecycle, Codex login/status/logout. |
 | `src/codex_broker/auth_api.py` | Auth/profile HTTP routes and OpenAPI fragments. |
+| `src/codex_broker/account_api.py` | Principal/profile-scoped model discovery, usage, rate-limit, and reset-credit HTTP routes. |
 | `src/codex_broker/scheduler.py` | Thread and turn lifecycle, same-thread gates, config profiles, Codex request params, metrics. |
 | `src/codex_broker/scheduler_threads.py` | Immutable thread auth bindings and public thread/turn shapes. |
 | `src/codex_broker/app_server.py` | `codex app-server` process pool, JSON-RPC transport, interaction mediation. |
@@ -148,7 +149,7 @@ Codex login commands run with:
 - `HOME` set to the profile parent directory,
 - a scrubbed environment that keeps only safe base variables.
 
-The broker supports cheap profile lists and status checks, explicit active auth probes, device auth start/submit, API-key login, runtime invalidation, logout, and explicit profile deletion. Owner state and audits remain isolated even when several owners share one principal. The App Server pool uses principal/profile credentials; processes with mounted MCP servers remain owner-isolated because an MCP server may carry tenant state.
+The broker supports cheap profile lists and status checks, principal/profile-scoped App Server `model/list` discovery, explicit active auth probes, device auth start/submit, API-key login, runtime invalidation, logout, and explicit profile deletion. Model discovery preserves reasoning, modality, personality, visibility, upgrade, and service-tier capabilities without storing them in SQLite. Owner state and audits remain isolated even when several owners share one principal. The App Server pool uses principal/profile credentials; processes with mounted MCP servers remain owner-isolated because an MCP server may carry tenant state.
 
 Creating a thread stores the resolved principal hash, canonical profile, and profile-instance id. Turn requests inherit this binding; supplied identity fields are assertions only. Deleting a profile removes its instance, so old and queued threads cannot resume after an account replacement.
 

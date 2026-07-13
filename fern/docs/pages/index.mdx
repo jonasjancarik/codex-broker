@@ -15,6 +15,7 @@ The broker handles:
 
 - per-auth-principal and per-profile `CODEX_HOME` directories
 - Codex auth status, active probes, device auth, API-key auth, runtime invalidation, and logout
+- model discovery for reasoning choices, Fast and other service tiers, modalities, personality support, defaults, and upgrade metadata
 - long-lived `codex app-server` child processes and process pooling
 - broker threads, turns, same-thread locking, steering, interruption, and archive behavior
 - normalized event persistence and Server-Sent Events streaming
@@ -32,9 +33,10 @@ Most integrations use this flow:
 2. The host chooses an `ownerId`, which owns broker state and audits.
 3. Trusted policy resolves the auth principal, defaulting it to the owner.
 4. The host checks or starts Codex auth for that principal/profile.
-5. The host creates a broker thread that immutably binds the principal and profile.
-6. The host submits turns and streams normalized events from `/events`.
-7. The host maps those events into its own UI, job logs, database rows, or artifacts.
+5. A picker can discover the principal/profile's current model, reasoning, and service-tier capabilities.
+6. The host creates a broker thread that immutably binds the principal and profile.
+7. The host submits turns and streams normalized events from `/events`.
+8. The host maps those events into its own UI, job logs, database rows, or artifacts.
 
 ```mermaid
 flowchart LR

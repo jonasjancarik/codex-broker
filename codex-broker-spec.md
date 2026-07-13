@@ -165,6 +165,7 @@ Core endpoints:
 - `GET /openapi.json`
 - `GET /v1/owners/{ownerId}/auth/status?profile=default`
 - `GET /v1/owners/{ownerId}/auth/profiles`
+- `GET /v1/owners/{ownerId}/auth/models`
 - `GET /v1/owners/{ownerId}/auth/usage`
 - `GET /v1/owners/{ownerId}/auth/rate-limits`
 - `POST /v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume`

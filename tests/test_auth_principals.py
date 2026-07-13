@@ -359,6 +359,20 @@ class AuthPrincipalTests(unittest.TestCase):
                 self.assertTrue(a["sharedAuthPrincipal"])
                 self.assertEqual(a["usage"], b["usage"])
 
+                models_a = self._request(
+                    base_url,
+                    "GET",
+                    "/v1/owners/owner-a/auth/models?profile=work&authPrincipalId=shared-account",
+                )
+                models_b = self._request(
+                    base_url,
+                    "GET",
+                    "/v1/owners/owner-b/auth/models?profile=work&authPrincipalId=shared-account",
+                )
+                self.assertNotEqual(models_a["ownerHash"], models_b["ownerHash"])
+                self.assertEqual(models_a["authPrincipalHash"], models_b["authPrincipalHash"])
+                self.assertEqual(models_a["models"], models_b["models"])
+
                 self._request(
                     base_url,
                     "POST",

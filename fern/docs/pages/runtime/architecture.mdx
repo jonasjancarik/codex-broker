@@ -1,6 +1,6 @@
 ---
 title: "Architecture"
-description: "The broker process boundaries, storage layout, app-server pool, bundle overlays, event streaming, and shutdown behavior."
+description: "The broker process boundaries, model discovery, storage layout, app-server pool, bundle overlays, event streaming, and shutdown behavior."
 ---
 
 # Architecture
@@ -29,7 +29,7 @@ codex-broker process
   |
   +-- HTTP API
   |     authenticates broker-key requests
-  |     exposes health, readiness, OpenAPI, metrics, auth, threads, turns, events
+  |     exposes health, readiness, OpenAPI, metrics, auth, model catalog, threads, turns, events
   |
   +-- AuthManager
   |     HMACs owner and auth-principal ids
@@ -66,6 +66,7 @@ The implementation uses the Python standard library HTTP server and `subprocess`
 | `src/codex_broker/__main__.py` | Console entry point. |
 | `src/codex_broker/config.py` | Environment parsing and derived filesystem paths. |
 | `src/codex_broker/http_api.py` | HTTP routes, auth header checks, readiness, metrics, SSE, OpenAPI. |
+| `src/codex_broker/account_api.py` | Principal/profile-scoped model discovery, usage, rate-limit, and reset-credit routes. |
 | `src/codex_broker/identity.py` | Trusted owner-to-auth-principal policy and hashed scopes. |
 | `src/codex_broker/auth.py` | Auth profile normalization, profile-instance lifecycle, `CODEX_HOME`, and Codex login/status/logout. |
 | `src/codex_broker/scheduler.py` | Thread and turn lifecycle, same-thread gates, config profiles, Codex request params, metrics. |
@@ -146,6 +147,8 @@ Restart recovery is conservative. Turns that were in progress before process dea
 ```
 
 The pool key includes auth-principal hash, Codex auth profile, auth fingerprint, `configProfile`, Codex command/version, credential-store mode, client identity fields, and process-level Codex config. Compatible children can serve isolated owner contexts. Mounted MCP declarations add owner scope because an MCP process may retain tenant state. Explicit unknown upstream thread or turn ids are never routed by single-context guessing.
+
+`GET /v1/owners/{ownerId}/auth/models` uses the selected principal/profile child to call App Server `model/list`. The broker does not persist the catalog; it preserves advertised reasoning, modality, personality, visibility, upgrade, and service-tier fields in the HTTP response.
 
 Threads persist an immutable principal/profile/profile-instance binding. Deleting a profile changes the instance and fences old or queued work. Databases with a different schema version are rejected rather than migrated.
 

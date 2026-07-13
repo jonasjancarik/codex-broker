@@ -28,6 +28,25 @@
           "type": "string"
         }
       },
+      "cursor": {
+        "description": "Opaque cursor returned by a previous model discovery request.",
+        "in": "query",
+        "name": "cursor",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "includeHidden": {
+        "description": "Include models hidden from Codex's default picker list.",
+        "in": "query",
+        "name": "includeHidden",
+        "required": false,
+        "schema": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
       "interactionId": {
         "in": "path",
         "name": "interactionId",
@@ -606,6 +625,104 @@
         ],
         "type": "object"
       },
+      "CodexModel": {
+        "additionalProperties": true,
+        "properties": {
+          "additionalSpeedTiers": {
+            "deprecated": true,
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "availabilityNux": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "defaultReasoningEffort": {
+            "type": "string"
+          },
+          "defaultServiceTier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Stable catalog preset identifier.",
+            "type": "string"
+          },
+          "inputModalities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "model": {
+            "description": "Model slug to pass as codexOptions.model.",
+            "type": "string"
+          },
+          "serviceTiers": {
+            "description": "Selectable service tiers advertised for this model, including Fast when available.",
+            "items": {
+              "$ref": "#/components/schemas/ModelServiceTier"
+            },
+            "type": "array"
+          },
+          "supportedReasoningEfforts": {
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffortOption"
+            },
+            "type": "array"
+          },
+          "supportsPersonality": {
+            "type": "boolean"
+          },
+          "upgrade": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upgradeInfo": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "model",
+          "displayName",
+          "description",
+          "hidden",
+          "supportedReasoningEfforts",
+          "defaultReasoningEffort",
+          "inputModalities",
+          "supportsPersonality",
+          "serviceTiers",
+          "defaultServiceTier",
+          "isDefault"
+        ],
+        "type": "object"
+      },
       "CodexOptions": {
         "additionalProperties": true,
         "properties": {
@@ -645,6 +762,7 @@
             "type": "string"
           },
           "serviceTier": {
+            "description": "Codex service-tier id for this turn, such as a Fast tier advertised by the selected model.",
             "type": "string"
           },
           "summary": {
@@ -959,6 +1077,63 @@
         },
         "type": "object"
       },
+      "ModelListResponse": {
+        "description": "Codex model, reasoning-effort, modality, personality, and service-tier capabilities for this auth principal and profile.",
+        "properties": {
+          "authPrincipalHash": {
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/CodexModel"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ownerHash": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "sharedAuthPrincipal": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ownerHash",
+          "authPrincipalHash",
+          "sharedAuthPrincipal",
+          "profile",
+          "models",
+          "nextCursor"
+        ],
+        "type": "object"
+      },
+      "ModelServiceTier": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description"
+        ],
+        "type": "object"
+      },
       "RateLimitResetCreditConsumeRequest": {
         "properties": {
           "authPrincipalId": {
@@ -1025,6 +1200,21 @@
         "required": [
           "status",
           "errors"
+        ],
+        "type": "object"
+      },
+      "ReasoningEffortOption": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "reasoningEffort": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoningEffort",
+          "description"
         ],
         "type": "object"
       },
@@ -1758,6 +1948,72 @@
               }
             },
             "description": "Auth principal not permitted"
+          }
+        }
+      }
+    },
+    "/v1/owners/{ownerId}/auth/models": {
+      "get": {
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ownerId"
+          },
+          {
+            "$ref": "#/components/parameters/profile"
+          },
+          {
+            "$ref": "#/components/parameters/authPrincipalId"
+          },
+          {
+            "$ref": "#/components/parameters/cursor"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          },
+          {
+            "$ref": "#/components/parameters/includeHidden"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelListResponse"
+                }
+              }
+            },
+            "description": "Available Codex models and capabilities"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid pagination or visibility query"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Auth principal not permitted"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Codex model discovery failed"
           }
         }
       }

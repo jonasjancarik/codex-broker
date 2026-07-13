@@ -23,8 +23,17 @@ broker = CodexBrokerClient(
 owner_id = "service-account-1"
 
 profiles = broker.list_auth_profiles(owner_id)
+models = broker.list_models(owner_id, profile="default")
 usage = broker.account_usage(owner_id, profile="default")
 rate_limits = broker.account_rate_limits(owner_id, profile="default")
+
+selected_model = models["models"][0]
+codex_options = {
+    "model": selected_model["model"],
+    "effort": selected_model["defaultReasoningEffort"],
+}
+if any(tier["id"] == "fast" for tier in selected_model.get("serviceTiers", [])):
+    codex_options["serviceTier"] = "fast"
 
 thread = broker.create_thread(
     owner_id,
@@ -44,6 +53,7 @@ turn = broker.start_turn(
     {
         "input": [{"type": "text", "text": "Summarize the evidence."}],
         "mode": "queue",
+        "codexOptions": codex_options,
         "productCorrelationId": "chat-123:message-456",
         "idempotencyKey": "chat-123:message-456",
     },
@@ -87,8 +97,12 @@ const ownerId = "service-account-1";
 const auth = { profile: "default" };
 
 const profiles = await broker.listAuthProfiles(ownerId);
+const models = await broker.listModels(ownerId, auth);
 const usage = await broker.accountUsage(ownerId, auth);
 const rateLimits = await broker.accountRateLimits(ownerId, auth);
+
+const selectedModel = models.models[0];
+const fastTier = selectedModel?.serviceTiers?.find((tier) => tier.id === "fast");
 
 const thread = await broker.createThread(ownerId, {
   threadId: "chat-123",
@@ -102,12 +116,19 @@ const thread = await broker.createThread(ownerId, {
 const turn = await broker.startTurn(ownerId, String(thread["threadId"]), {
   input: [{ type: "text", text: "Summarize the evidence." }],
   mode: "queue",
+  codexOptions: {
+    model: selectedModel?.model,
+    effort: selectedModel?.defaultReasoningEffort,
+    ...(fastTier ? { serviceTier: fastTier.id } : {}),
+  },
   productCorrelationId: "chat-123:message-456",
   idempotencyKey: "chat-123:message-456",
 });
 ```
 
 For a configured shared account, add `authPrincipalId` to `auth` and the thread-create body. The field is a trusted-policy assertion, not a free-form account selector. Turn-level identity fields must match the immutable thread binding.
+
+`list_models` and `listModels` return the selected account's model catalog, reasoning choices, and service tiers. Offer Fast only when the selected model advertises a `serviceTiers` entry whose `id` is `fast`.
 
 ## Streaming in Node
 

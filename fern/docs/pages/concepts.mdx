@@ -31,6 +31,12 @@ Codex auth profile ids are canonicalized before use in filesystem paths. Charact
 
 The resolved principal, canonical profile, and profile instance are immutable for a broker thread. Turns may repeat them as consistency assertions but cannot switch them. Deleting a profile invalidates old threads, so replacing an account requires a new broker thread.
 
+## Model catalog
+
+The model catalog is live App Server capability data for one auth principal and profile. `GET /auth/models` returns the available models, supported/default reasoning efforts and service tiers, modalities, personality support, picker visibility, default state, and upgrade metadata. It is not persisted in broker state.
+
+Host apps use the selected entry's `model` slug in `codexOptions.model` and the advertised reasoning-effort and service-tier ids in `codexOptions.effort` and `codexOptions.serviceTier`. A model entry's `id` is its stable catalog preset identifier. Fast is a service tier, not a reasoning effort, and should only be shown when the selected model advertises it.
+
 ## Broker thread
 
 A broker thread is the broker's durable handle for one host conversation, job, or long-running work item. Host apps may supply a stable `threadId` when creating a thread, or omit it and let the broker generate one.

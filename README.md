@@ -59,6 +59,7 @@ The broker owns generic Codex infrastructure:
 - `codex app-server` child processes and pooling,
 - per-auth-principal and per-profile `CODEX_HOME` directories,
 - Codex login status, active auth probe, device auth, API-key auth, and logout,
+- account-scoped model discovery for reasoning efforts, Fast and other service tiers, modalities, personality support, defaults, and upgrade metadata,
 - broker-thread to Codex-thread mappings,
 - turn creation, turn status, interruption, steering, and archive behavior,
 - one active turn at a time per broker thread,
@@ -191,6 +192,7 @@ Core endpoints:
 - `GET /openapi.json`
 - `GET /v1/owners/{ownerId}/auth/status`
 - `GET /v1/owners/{ownerId}/auth/profiles`
+- `GET /v1/owners/{ownerId}/auth/models`
 - `GET /v1/owners/{ownerId}/auth/usage`
 - `GET /v1/owners/{ownerId}/auth/rate-limits`
 - `POST /v1/owners/{ownerId}/auth/rate-limit-reset-credit/consume`
@@ -217,6 +219,8 @@ Core endpoints:
 Requests other than health and readiness require `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`. This includes `/metrics` and `/openapi.json`.
 
 Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the principal/profile auth file. `GET /auth/profiles` lists last-recorded profile state without running Codex. `GET /auth/status` runs Codex's local login-status check, while `POST /auth/probe` runs a tiny real Codex request. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled App Server children that were started with the old auth.
+
+Model-picker clients should call `GET /v1/owners/{ownerId}/auth/models?profile=default` instead of hardcoding model names, reasoning levels, or Fast availability. The response comes from App Server `model/list` and includes `supportedReasoningEfforts`, `defaultReasoningEffort`, `serviceTiers`, `defaultServiceTier`, modalities, personality support, defaults, hidden state, and upgrade metadata. Use the selected entry's `model` slug in `codexOptions.model`, the effort in `codexOptions.effort`, and an advertised service-tier id such as `fast` in `codexOptions.serviceTier`; the entry's `id` is the stable catalog preset identifier.
 
 Account usage and rate-limit routes query Codex for the selected `authPrincipalHash + profile` and return the current App Server payload under `usage` or `rateLimits`. These are shared upstream totals when several owners map to the same principal. Consuming a rate-limit reset credit mutates that shared account: send a stable, non-empty `idempotencyKey`; the action is still recorded only in the requesting owner's audit log.
 
@@ -326,7 +330,7 @@ Implemented in this repo:
 - optional raw app-server event capture with recursive secret redaction and bounded raw-field retention,
 - user-scoped audit log API for auth, turn, approval, interrupt, and logout events,
 - durable app-server child process lifecycle records for operational diagnosis,
-- app-server 0.144.0 mode/capability event coverage for plan, goal, review, approvals, user input, and MCP elicitations,
+- app-server 0.144.3 model discovery and mode/capability event coverage for plan, goal, review, approvals, user input, and MCP elicitations,
 - host-mediated approval, user-input, and MCP elicitation interaction records with resolve APIs and fail-closed fallback,
 - mounted bundles, inline bundle validation, skills/prompt overlays, mounted MCP, and broker-hosted tool adapters,
 - readiness checks, Prometheus-style metrics, structured JSON logs, and schema-backed `/openapi.json`.

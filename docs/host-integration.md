@@ -1,6 +1,6 @@
 # Host Integration
 
-read_when: integrating a trusted host, mapping owners to shared Codex accounts, replacing an upstream account, or changing thread/auth lifecycle behavior.
+read_when: integrating a trusted host, building a model picker, mapping owners to shared Codex accounts, replacing an upstream account, or changing thread/auth lifecycle behavior.
 
 Use this document when a product backend, chat service, or job worker wants to run Codex work through the broker. The host app calls the broker over HTTP; browser clients should keep calling the host app.
 
@@ -55,6 +55,18 @@ The resolved principal, canonical `profile`, and profile instance are immutable 
 
 `bundleId` selects the task bundle, `configProfile` selects the broker runtime/policy profile, and `cwd` sets the working directory Codex should use when the turn runs.
 
+## Discover Model, Reasoning, And Fast Options
+
+Before rendering a model picker, query the selected Codex account and auth profile:
+
+```http
+GET /v1/owners/{ownerId}/auth/models?profile=default
+```
+
+The response contains `models` and `nextCursor`. Each model preserves App Server's advertised `supportedReasoningEfforts`, `defaultReasoningEffort`, `serviceTiers`, `defaultServiceTier`, `inputModalities`, `supportsPersonality`, default and hidden state, and upgrade metadata. Pass the selected entry's `model` slug as `codexOptions.model`; `id` is the stable catalog preset identifier. A `fast` service tier is available only when it appears in that model's `serviceTiers`; send its `id` as `codexOptions.serviceTier`.
+
+Use `cursor` to fetch another page and `limit` to choose a page size up to 500. Hidden models are excluded by default; trusted administrative clients can request `includeHidden=true`. The endpoint is scoped through the same trusted `ownerId` to `authPrincipalId` policy as account usage and rate limits, so clients must not reuse a catalog fetched for a different principal/profile.
+
 ## Submit A Turn
 
 After you have a broker `threadId`, submit user or job work to that thread:
@@ -73,7 +85,8 @@ The JSON body below is the turn creation payload:
   "configProfile": "default",
   "codexOptions": {
     "model": "gpt-5.6-sol",
-    "effort": "high"
+    "effort": "high",
+    "serviceTier": "fast"
   },
   "cwd": "/workspaces/app",
   "mode": "reject",
@@ -86,7 +99,7 @@ Use `mode=reject` or `mode=steer` for live chat and `mode=queue` for job workers
 
 Use `productCorrelationId` to trace one host action through broker events and logs. Use `idempotencyKey` for host retries. A repeated turn create with the same owner, broker `threadId`, and idempotency key returns the original broker turn without creating a second Codex turn.
 
-`configProfile` is the canonical profile field. The broker also accepts the legacy `runtimeProfile` field as an alias for host integrations that were written against earlier broker drafts. `codexOptions` is the canonical per-request Codex options object. For model and reasoning selection, request-level `codexOptions.model` and `codexOptions.effort` win over the selected configuration profile. If neither the request nor the profile sets a value, the broker omits it and Codex uses its current recommended model and model-specific reasoning default. A turn-level choice does not modify the configuration profile. Supported effort values depend on the selected model.
+`configProfile` is the canonical profile field. The broker also accepts the legacy `runtimeProfile` field as an alias for host integrations that were written against earlier broker drafts. `codexOptions` is the canonical per-request Codex options object. For model and reasoning selection, request-level `codexOptions.model`, `codexOptions.effort`, and `codexOptions.serviceTier` win over the selected configuration profile. If neither the request nor the profile sets a value, the broker omits it and Codex uses its current recommended model, model-specific reasoning default, and default service tier. A turn-level choice does not modify the configuration profile. Supported efforts and service tiers depend on the selected model.
 
 The broker also accepts `runtime` as an alias for `codexOptions` and normalizes common option aliases such as `reasoningEffort` to `effort` and `reasoningSummary` to `summary`. Use `codexOptions.outputSchema` when a job worker needs Codex to return a final assistant message constrained by a JSON Schema.
 
@@ -136,7 +149,7 @@ The sample chat bundle exposes `host.evidence.search` through a broker-hosted ad
 
 Approval-gated tool work emits `tool.requested` before `approval.requested`, followed by `approval.resolved` after the broker answers the app-server approval request. Host UIs can use `tool.requested` for generic tool lifecycle display and approval events for approval-specific state.
 
-Codex app-server `0.144.0` exposes `default` and `plan` as collaboration mode kinds. Goal tracking, review, approval, user-input, and MCP elicitation behavior are separate app-server capabilities. The broker normalizes those surfaces as `thread.settings.updated`, `plan.updated`, `plan.delta`, `goal.updated`, `goal.cleared`, `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed`, `user_input.requested`, `user_input.resolved`, `mcp.elicitation.requested`, and `mcp.elicitation.resolved`.
+Codex app-server `0.144.3` exposes `default` and `plan` as collaboration mode kinds. Goal tracking, review, approval, user-input, and MCP elicitation behavior are separate app-server capabilities. The broker normalizes those surfaces as `thread.settings.updated`, `plan.updated`, `plan.delta`, `goal.updated`, `goal.cleared`, `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed`, `user_input.requested`, `user_input.resolved`, `mcp.elicitation.requested`, and `mcp.elicitation.resolved`.
 
 Approval, user-input, and MCP elicitation requests are persisted as broker interactions before they are answered. Request events include `interactionId`; host apps can display the prompt, then answer it with:
 

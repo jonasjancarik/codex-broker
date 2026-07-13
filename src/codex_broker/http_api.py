@@ -564,6 +564,20 @@ def openapi_document() -> dict[str, Any]:
                 "action": {"name": "action", "in": "query", "required": False, "schema": {"type": "string"}},
                 "status": {"name": "status", "in": "query", "required": False, "schema": {"type": "string"}},
                 "limit": {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
+                "cursor": {
+                    "name": "cursor",
+                    "in": "query",
+                    "required": False,
+                    "schema": {"type": "string"},
+                    "description": "Opaque cursor returned by a previous model discovery request.",
+                },
+                "includeHidden": {
+                    "name": "includeHidden",
+                    "in": "query",
+                    "required": False,
+                    "schema": {"type": "boolean", "default": False},
+                    "description": "Include models hidden from Codex's default picker list.",
+                },
             },
             "schemas": {
                 **account_api.openapi_schemas(),
@@ -645,7 +659,10 @@ def openapi_document() -> dict[str, Any]:
                     "properties": {
                         "approvalPolicy": {"type": "string"},
                         "sandbox": {"type": "string"},
-                        "serviceTier": {"type": "string"},
+                        "serviceTier": {
+                            "type": "string",
+                            "description": "Codex service-tier id for this turn, such as a Fast tier advertised by the selected model.",
+                        },
                         "model": {
                             "type": "string",
                             "description": "Codex model for this turn. Overrides the selected configuration profile; when omitted, the profile or Codex default applies.",

@@ -1,21 +1,24 @@
 ---
 title: "App-server modes"
-description: "The Codex app-server protocol surfaces the broker currently normalizes for turns, plans, goals, review, approvals, user input, and MCP elicitations."
+description: "The Codex app-server protocol surfaces the broker exposes for model discovery, turns, plans, goals, review, approvals, user input, and MCP elicitations."
 ---
 
 # App-server modes
 
-This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.144.0`:
+This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.144.3`:
 
 ```bash
-codex app-server generate-ts --out /private/tmp/codex-app-server-ts-0.144.0
-codex app-server generate-json-schema --out /private/tmp/codex-app-server-json-schema-0.144.0
+codex app-server generate-ts --out /private/tmp/codex-app-server-ts-0.144.3
+codex app-server generate-json-schema --out /private/tmp/codex-app-server-json-schema-0.144.3
 ```
+
+The generated protocol is unchanged from `0.144.0` to `0.144.3` for the surfaces below.
 
 The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `default` and `plan`. Goal tracking, review, approvals, user-input prompts, and MCP elicitations are separate app-server capabilities.
 
-| Capability | 0.144.0 app-server surface | Broker support | Host-facing surface |
+| Capability | 0.144.3 app-server surface | Broker support | Host-facing surface |
 | --- | --- | --- | --- |
+| Model and selector capabilities | `model/list`, including reasoning efforts, modalities, personality support, service tiers, defaults, visibility, and upgrade metadata | Implemented with auth-principal/profile scoping and pagination | `GET /v1/owners/{ownerId}/auth/models` |
 | Default chat/work turns | `thread/start`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt` | Implemented | Thread and turn HTTP APIs; `message.*`, `reasoning.*`, `tool.*`, and `turn.*` events |
 | Plan collaboration mode | `ModeKind = "default" \| "plan"`, `ThreadSettings.collaborationMode`, `turn/plan/updated`, `item/plan/delta` | Event normalization implemented | `thread.settings.updated`, `plan.updated`, `plan.delta` events |
 | Goal tracking | `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`, `thread/goal/updated`, `thread/goal/cleared` | Event normalization implemented; direct broker goal API not yet implemented | `goal.updated`, `goal.cleared` events |
@@ -26,11 +29,12 @@ The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `def
 
 ## API direction
 
-The broker currently treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. This keeps host integrations compatible with the generated protocol without inventing app-server methods that are not exposed.
+The broker treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. Model discovery directly maps `model/list` and preserves every model field for forward compatibility.
 
 Future product APIs should follow these boundaries:
 
 - Plan mode: expose current collaboration state and plan updates from events. Add a setter only if a generated app-server method appears for updating `ThreadSettings.collaborationMode`, or if the broker implements a supported Codex command path for switching modes.
+- Model catalog: keep discovery scoped to trusted owner-to-principal policy and the selected profile, with pagination and all advertised service tiers.
 - Goal tracking: add broker goal APIs once the broker can safely run `thread/goal/*` methods against a loaded Codex thread outside an active turn.
 - Review: add a review API around `review/start` once response and delivery semantics are mapped to broker turn state.
 - Approvals, user input, and MCP elicitations: keep pending interaction records, resolve APIs, and fallback response shapes in sync with generated app-server schemas.
