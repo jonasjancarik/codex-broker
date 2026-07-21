@@ -5,18 +5,18 @@ description: "The Codex app-server protocol surfaces the broker exposes for mode
 
 # App-server modes
 
-This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.144.3`:
+This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.144.6`:
 
 ```bash
-codex app-server generate-ts --out /private/tmp/codex-app-server-ts-0.144.3
-codex app-server generate-json-schema --out /private/tmp/codex-app-server-json-schema-0.144.3
+codex app-server generate-ts --out /private/tmp/codex-app-server-ts-0.144.6
+codex app-server generate-json-schema --out /private/tmp/codex-app-server-json-schema-0.144.6
 ```
 
-The generated protocol is unchanged from `0.144.0` to `0.144.3` for the surfaces below.
+The generated TypeScript protocol is unchanged from `0.144.0` to `0.144.6` for the surfaces below. The generated JSON schemas differ only in property ordering.
 
 The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `default` and `plan`. Goal tracking, review, approvals, user-input prompts, and MCP elicitations are separate app-server capabilities.
 
-| Capability | 0.144.3 app-server surface | Broker support | Host-facing surface |
+| Capability | 0.144.6 app-server surface | Broker support | Host-facing surface |
 | --- | --- | --- | --- |
 | Model and selector capabilities | `model/list`, including reasoning efforts, modalities, personality support, service tiers, defaults, visibility, and upgrade metadata | Implemented with auth-principal/profile scoping and pagination | `GET /v1/owners/{ownerId}/auth/models` |
 | Default chat/work turns | `thread/start`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt` | Implemented | Thread and turn HTTP APIs; `message.*`, `reasoning.*`, `tool.*`, and `turn.*` events |
