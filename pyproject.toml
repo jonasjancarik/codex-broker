@@ -13,8 +13,8 @@ codex-broker = "codex_broker.__main__:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/codex_broker"]
