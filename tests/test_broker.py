@@ -1005,7 +1005,10 @@ class BrokerTests(unittest.TestCase):
             services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))
             try:
                 owner_id = "owner/a"
-                thread = services.scheduler.create_thread(owner_id, {"cwd": str(services.config.allowed_workspace_roots[0])})
+                thread = services.scheduler.create_thread(
+                    owner_id,
+                    {"cwd": str(services.config.allowed_workspace_roots[0])},
+                )
                 first = services.scheduler.start_turn(
                     owner_id,
                     thread["threadId"],
@@ -1024,6 +1027,28 @@ class BrokerTests(unittest.TestCase):
                 self.assertNotIn("/v1/owners/owner/a/threads/", first["streamUrl"])
                 self.assertEqual(services.scheduler.metrics()["turns_started"], 1)
             finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_get_turn_returns_encoded_stream_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))
+            try:
+                owner_id = "owner/a"
+                thread = services.scheduler.create_thread(owner_id, {"cwd": str(services.config.allowed_workspace_roots[0])})
+                started = services.scheduler.start_turn(
+                    owner_id,
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "once"}]},
+                )
+
+                fetched = services.scheduler.get_turn(owner_id, thread["threadId"], started["turnId"])
+
+                self.assertEqual(fetched["streamUrl"], started["streamUrl"])
+                self.assertIn("/v1/owners/owner%2Fa/threads/", fetched["streamUrl"])
+                self.assertNotIn("/v1/owners/owner/a/threads/", fetched["streamUrl"])
+            finally:
+                services.scheduler.shutdown("interrupt", 1)
                 services.pool.close_all()
                 services.state.close()
 

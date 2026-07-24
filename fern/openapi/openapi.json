@@ -1541,7 +1541,8 @@
           "mode",
           "status",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "streamUrl"
         ],
         "type": "object"
       },

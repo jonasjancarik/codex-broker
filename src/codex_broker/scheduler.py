@@ -335,7 +335,9 @@ class TurnScheduler:
         turn = self.state.get_turn(owner_hash, thread_id, turn_id)
         if not turn:
             raise NotFoundError("Turn not found.")
-        return self._public_turn(turn)
+        public = self._public_turn(turn)
+        public["streamUrl"] = self._stream_url(owner_id, thread_id, turn_id)
+        return public
 
     def steer_turn(self, owner_id: str, thread_id: str, turn_id: str, body: dict[str, Any]) -> dict[str, Any]:
         owner_hash = self.auth.hash_owner(owner_id)

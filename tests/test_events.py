@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from codex_broker.events import normalize_app_server_event
 from codex_broker.http_api import BrokerHandler, BrokerServices
@@ -15,6 +17,41 @@ except ModuleNotFoundError:  # pragma: no cover - direct module invocation path.
 
 
 class EventStreamTests(unittest.TestCase):
+    def test_sse_stream_uses_http_1_1_chunked_body_framing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            try:
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"cwd": str(services.config.allowed_workspace_roots[0])},
+                )
+                handler = BrokerHandler.__new__(BrokerHandler)
+                handler.broker = services
+                handler.send_response = mock.Mock()
+                handler.send_header = mock.Mock()
+                handler.end_headers = mock.Mock()
+                handler._write_raw = mock.Mock(return_value=False)
+
+                with mock.patch("codex_broker.http_api.time.monotonic", side_effect=[0.0, 11.0]):
+                    handler._sse_events("owner-a", thread["threadId"], {})
+
+                self.assertEqual(handler.protocol_version, "HTTP/1.1")
+                handler.send_header.assert_any_call("Connection", "keep-alive")
+                handler.send_header.assert_any_call("Transfer-Encoding", "chunked")
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_sse_stream_writes_each_message_as_an_http_chunk(self) -> None:
+        handler = BrokerHandler.__new__(BrokerHandler)
+        handler.wfile = io.BytesIO()
+
+        self.assertTrue(handler._write_raw("data: hello\n\n"))
+
+        payload = b"data: hello\n\n"
+        expected = f"{len(payload):X}\r\n".encode("ascii") + payload + b"\r\n"
+        self.assertEqual(handler.wfile.getvalue(), expected)
+
     def test_sse_stream_rejects_unknown_thread_before_opening_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             services = BrokerServices.build(config_for(Path(tmp_raw)))

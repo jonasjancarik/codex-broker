@@ -104,6 +104,7 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("errorCode", components["schemas"]["Turn"]["properties"])
         self.assertIn("publicMessage", components["schemas"]["Turn"]["properties"])
         self.assertIn("adminMessage", components["schemas"]["Turn"]["properties"])
+        self.assertIn("streamUrl", components["schemas"]["Turn"]["required"])
         self.assertIn("expiresAt", components["schemas"]["DeviceAuthSession"]["properties"])
         self.assertIn("interactionId", components["parameters"])
         self.assertIn("fallbackResponse", components["schemas"]["Interaction"]["properties"])

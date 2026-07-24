@@ -45,6 +45,7 @@ def is_unauthenticated_path(method: str, path: str) -> bool:
 class BrokerHandler(BaseHTTPRequestHandler):
     broker: BrokerServices
     server_version = f"CodexBroker/{__version__}"
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API.
         self._dispatch("GET")
@@ -254,6 +255,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
+        self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         last_heartbeat = time.monotonic()
         while True:
@@ -362,7 +364,9 @@ class BrokerHandler(BaseHTTPRequestHandler):
 
     def _write_raw(self, body: str) -> bool:
         try:
-            self.wfile.write(body.encode("utf-8"))
+            payload = body.encode("utf-8")
+            chunk = f"{len(payload):X}\r\n".encode("ascii") + payload + b"\r\n"
+            self.wfile.write(chunk)
             self.wfile.flush()
             return True
         except (BrokenPipeError, ConnectionResetError, OSError):
@@ -725,7 +729,7 @@ def openapi_document() -> dict[str, Any]:
                 },
                 "Turn": {
                     "type": "object",
-                    "required": ["threadId", "turnId", "authPrincipalHash", "profile", "configProfile", "mode", "status", "createdAt", "updatedAt"],
+                    "required": ["threadId", "turnId", "authPrincipalHash", "profile", "configProfile", "mode", "status", "createdAt", "updatedAt", "streamUrl"],
                     "properties": {
                         "threadId": {"type": "string"},
                         "turnId": {"type": "string"},
