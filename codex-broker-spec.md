@@ -225,6 +225,12 @@ Turn create example:
 
 The broker should return a `streamUrl` for turns so host apps can consume normalized events with SSE.
 
+Native turn responses must include `usage`. It is `null` until Codex reports
+`thread/tokenUsage/updated`; afterward it contains exact `turn` counts,
+cumulative `thread` counts, and `modelContextWindow`. The broker persists the
+latest value so `GET .../turns/{turnId}` can return it after the stream closes.
+Early failures and interruptions may complete without usage.
+
 `authPrincipalId` is an optional request assertion validated against trusted owner-to-principal configuration. It is never an arbitrary client-selected identity. A broker thread permanently binds the resolved principal hash, canonical profile, and profile instance. Turns inherit that binding and cannot override it. Deleting a profile changes its instance so old and queued threads fail closed; a replacement account must use a new broker thread id.
 
 OpenAI-compatible routes use a separate bearer credential whose SHA-256 digest
@@ -253,6 +259,7 @@ Important event types:
 - `turn.completed`
 - `turn.failed`
 - `turn.interrupted`
+- `turn.usage.updated`
 - `message.delta`
 - `message.completed`
 - `tool.requested`

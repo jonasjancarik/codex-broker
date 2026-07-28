@@ -108,9 +108,12 @@ for event in broker.stream_events(owner_id, thread["threadId"], turn_id=turn["tu
 
 final_turn = broker.get_turn(owner_id, thread["threadId"], turn["turnId"])
 print(final_turn["status"])
+print(final_turn["usage"])
 ```
 
-The Python client returns plain dictionaries and raises `CodexBrokerClientError` for HTTP errors.
+The Python client returns plain dictionaries and raises `CodexBrokerClientError`
+for HTTP errors. `final_turn["usage"]` contains exact turn and cumulative thread
+token counts when Codex reported them; otherwise it is `None`.
 
 ## Native TypeScript client
 
@@ -123,7 +126,7 @@ clients/typescript/codex-broker-client.ts
 It is a source file, not an npm package.
 
 ```ts
-import { CodexBrokerClient } from "./codex-broker-client";
+import { CodexBrokerClient, type TurnUsage } from "./codex-broker-client";
 
 const broker = new CodexBrokerClient({
   baseUrl: "http://127.0.0.1:3400",
@@ -239,6 +242,11 @@ for await (const event of streamBrokerEvents(
   if (event["type"] === "message.delta") {
     const payload = event["payload"] as { delta?: string };
     process.stdout.write(payload.delta ?? "");
+  }
+
+  if (event["type"] === "turn.usage.updated") {
+    const payload = event["payload"] as { usage: TurnUsage | null };
+    console.log(payload.usage);
   }
 
   if (["turn.completed", "turn.failed", "turn.interrupted"].includes(String(event["type"]))) {

@@ -15,7 +15,7 @@ from .app_server import AppServerClient, AppServerError, AppServerPool
 from .auth import AuthManager
 from .bundles import BundleRegistry, ResolvedBundle
 from .config import BrokerConfig
-from .events import normalize_app_server_event
+from .events import normalize_app_server_event, normalize_token_usage
 from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, RuntimeErrorInfo, classify_app_server_error, classify_runtime_error
 from .scheduler_errors import ActiveTurnError, ConflictError, NotFoundError
 from . import scheduler_config, scheduler_interactions, scheduler_threads
@@ -1005,7 +1005,15 @@ class TurnScheduler:
         return scheduler_threads.public_thread(thread)
 
     def _public_turn(self, turn: dict[str, Any]) -> dict[str, Any]:
-        return scheduler_threads.public_turn(turn)
+        usage_event = self.state.get_latest_event(
+            str(turn["owner_hash"]),
+            str(turn["thread_id"]),
+            str(turn["turn_id"]),
+            "compat.response.usage",
+        )
+        payload = usage_event.get("payload") if usage_event else None
+        token_usage = payload.get("tokenUsage") if isinstance(payload, dict) else None
+        return scheduler_threads.public_turn(turn, usage=normalize_token_usage(token_usage))
 
     def _stream_url(self, owner_id: str, thread_id: str, turn_id: str) -> str:
         return f"/v1/owners/{quote(owner_id, safe='')}/threads/{quote(thread_id, safe='')}/events?turnId={quote(turn_id, safe='')}"

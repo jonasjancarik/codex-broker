@@ -167,7 +167,7 @@ def public_thread(thread: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def public_turn(turn: dict[str, Any]) -> dict[str, Any]:
+def public_turn(turn: dict[str, Any], *, usage: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "threadId": turn["thread_id"],
         "turnId": turn["turn_id"],
@@ -189,6 +189,7 @@ def public_turn(turn: dict[str, Any]) -> dict[str, Any]:
         "startedAt": turn.get("started_at"),
         "completedAt": turn.get("completed_at"),
         "updatedAt": turn["updated_at"],
+        "usage": usage,
         "execution": {
             "requestFingerprint": turn.get("request_fingerprint"),
             "bundleDigest": turn.get("bundle_digest"),

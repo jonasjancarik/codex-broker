@@ -111,6 +111,20 @@ export interface TurnExecution {
   brokerVersion: string | null;
 }
 
+export interface TokenUsageCounts {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+export interface TurnUsage {
+  turn: TokenUsageCounts;
+  thread: TokenUsageCounts;
+  modelContextWindow: number;
+}
+
 export interface BrokerTurn {
   threadId: string;
   turnId: string;
@@ -133,6 +147,7 @@ export interface BrokerTurn {
   completedAt: string | null;
   updatedAt: string;
   streamUrl?: string;
+  usage: TurnUsage | null;
   execution: TurnExecution;
 }
 

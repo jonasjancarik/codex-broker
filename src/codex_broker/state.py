@@ -436,6 +436,25 @@ class StateStore:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    def get_latest_event(
+        self,
+        owner_hash: str,
+        thread_id: str,
+        turn_id: str,
+        event_type: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                select * from events
+                where owner_hash = ? and thread_id = ? and turn_id = ? and event_type = ?
+                order by id desc
+                limit 1
+                """,
+                (owner_hash, thread_id, turn_id, event_type),
+            ).fetchone()
+        return self._event_from_row(row) if row else None
+
     def create_pending_interaction(
         self,
         owner_hash: str,

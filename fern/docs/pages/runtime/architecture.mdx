@@ -163,7 +163,9 @@ a second execution system:
 5. The scheduler starts the Codex turn with the binding's bundle, workspace,
    model, reasoning, service-tier, instruction, and output-schema policy.
 6. `rawResponseItem/completed` becomes `compat.response.output_item`, while
-   `thread/tokenUsage/updated` becomes `compat.response.usage`.
+   `thread/tokenUsage/updated` is retained internally for compatible response
+   assembly and exposed to native clients as `Turn.usage` and
+   `turn.usage.updated`.
 7. Synchronous responses, retrieval, and terminal stream events are assembled
    from those durable records.
 

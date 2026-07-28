@@ -1551,6 +1551,38 @@
         },
         "type": "object"
       },
+      "TokenUsageCounts": {
+        "properties": {
+          "cachedInputTokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inputTokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outputTokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasoningOutputTokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "totalTokens": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "totalTokens",
+          "inputTokens",
+          "cachedInputTokens",
+          "outputTokens",
+          "reasoningOutputTokens"
+        ],
+        "type": "object"
+      },
       "Turn": {
         "properties": {
           "adminMessage": {
@@ -1684,6 +1716,17 @@
           },
           "updatedAt": {
             "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exact Codex-reported turn and cumulative thread token usage. Null until the runtime reports usage."
           }
         },
         "required": [
@@ -1696,7 +1739,8 @@
           "status",
           "createdAt",
           "updatedAt",
-          "streamUrl"
+          "streamUrl",
+          "usage"
         ],
         "type": "object"
       },
@@ -1779,6 +1823,26 @@
         },
         "required": [
           "input"
+        ],
+        "type": "object"
+      },
+      "TurnUsage": {
+        "properties": {
+          "modelContextWindow": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "thread": {
+            "$ref": "#/components/schemas/TokenUsageCounts"
+          },
+          "turn": {
+            "$ref": "#/components/schemas/TokenUsageCounts"
+          }
+        },
+        "required": [
+          "turn",
+          "thread",
+          "modelContextWindow"
         ],
         "type": "object"
       }

@@ -21,6 +21,45 @@ USER_INPUT_REQUEST_METHOD = "item/tool/requestUserInput"
 USER_INPUT_RESOLVED_METHOD = "item/tool/requestUserInput/resolved"
 MCP_ELICITATION_REQUEST_METHOD = "mcpServer/elicitation/request"
 MCP_ELICITATION_RESOLVED_METHOD = "mcpServer/elicitation/resolved"
+TOKEN_USAGE_FIELDS = (
+    "totalTokens",
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+)
+
+
+def normalize_token_usage(token_usage: Any) -> dict[str, Any] | None:
+    if not isinstance(token_usage, dict):
+        return None
+    turn = _normalize_token_counts(token_usage.get("last"))
+    thread = _normalize_token_counts(token_usage.get("total"))
+    model_context_window = token_usage.get("modelContextWindow")
+    if turn is None or thread is None:
+        return None
+    if not isinstance(model_context_window, int) or model_context_window < 0:
+        return None
+    return {
+        "turn": turn,
+        "thread": thread,
+        "modelContextWindow": model_context_window,
+    }
+
+
+def public_broker_event(event_type: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if event_type != "compat.response.usage":
+        return event_type, payload
+    token_usage = payload.get("tokenUsage")
+    return "turn.usage.updated", {"usage": normalize_token_usage(token_usage)}
+
+
+def _normalize_token_counts(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    if any(not isinstance(value.get(field), int) or int(value[field]) < 0 for field in TOKEN_USAGE_FIELDS):
+        return None
+    return {field: int(value[field]) for field in TOKEN_USAGE_FIELDS}
 
 
 def approval_kind(method: str | None) -> str | None:

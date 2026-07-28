@@ -72,6 +72,23 @@ curl -sS \
 
 The evolving Codex payload is returned under `usage` or `rateLimits`. `authPrincipalHash` identifies the upstream total; mapped owners share it while `ownerHash` and audits remain separate.
 
+## Each completed turn reports its own token usage
+
+Account usage above reflects the shared upstream account. For owner- and
+thread-level accounting, read the completed broker turn:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $BROKER_KEY" \
+  "$BROKER/v1/owners/$OWNER/threads/$THREAD/turns/$TURN"
+```
+
+The `usage.turn` object contains input, cached-input, output, reasoning-output,
+and total tokens for that turn. `usage.thread` contains Codex's cumulative
+counts for the thread, while `modelContextWindow` reports the selected model's
+window. The field is `null` until Codex sends a usage notification and may stay
+`null` when a turn ends early.
+
 ## Consume a rate-limit reset credit
 
 This changes account state. Only call it after an explicit user or administrator action, and reuse the same idempotency key when retrying that action:

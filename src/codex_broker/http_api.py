@@ -14,6 +14,7 @@ from . import __version__, account_api, auth_api, openai_api
 from .app_server import AppServerError
 from .bundles import BundleError
 from .config import BrokerConfig
+from .events import public_broker_event
 from .identity import AuthPrincipalPolicyError
 from .scheduler import ActiveTurnError, ConflictError, NotFoundError, TurnScheduler
 from .services import BrokerServices, serve
@@ -275,9 +276,13 @@ class BrokerHandler(BaseHTTPRequestHandler):
             events = self.broker.state.list_events(owner_hash, thread_id, after=after, turn_id=turn_id, limit=100)
             for event in events:
                 after = int(event["id"])
+                public_event_type, public_event_payload = public_broker_event(
+                    str(event["event_type"]),
+                    event["payload"],
+                )
                 payload = {
                     "id": event["id"],
-                    "type": event["event_type"],
+                    "type": public_event_type,
                     "ownerHash": owner_hash,
                     "threadId": thread_id,
                     "turnId": event.get("turn_id"),
@@ -285,13 +290,13 @@ class BrokerHandler(BaseHTTPRequestHandler):
                     "codexThreadId": event.get("codex_thread_id"),
                     "codexTurnId": event.get("codex_turn_id"),
                     "createdAt": event["created_at"],
-                    "payload": event["payload"],
+                    "payload": public_event_payload,
                     "ambiguous": event["ambiguous"],
                 }
                 if event.get("raw_method"):
                     payload["rawMethod"] = event["raw_method"]
                     payload["rawParams"] = event.get("raw_params")
-                if not self._write_sse(event["event_type"], payload, event_id=after):
+                if not self._write_sse(public_event_type, payload, event_id=after):
                     self.broker.scheduler.note_event_stream_disconnect()
                     return
             now = time.monotonic()
@@ -747,9 +752,47 @@ def openapi_document() -> dict[str, Any]:
                     "required": ["input"],
                     "properties": {"input": {"type": "array", "minItems": 1, "items": ref("InputItem")}},
                 },
+                "TokenUsageCounts": {
+                    "type": "object",
+                    "required": [
+                        "totalTokens",
+                        "inputTokens",
+                        "cachedInputTokens",
+                        "outputTokens",
+                        "reasoningOutputTokens",
+                    ],
+                    "properties": {
+                        "totalTokens": {"type": "integer", "minimum": 0},
+                        "inputTokens": {"type": "integer", "minimum": 0},
+                        "cachedInputTokens": {"type": "integer", "minimum": 0},
+                        "outputTokens": {"type": "integer", "minimum": 0},
+                        "reasoningOutputTokens": {"type": "integer", "minimum": 0},
+                    },
+                },
+                "TurnUsage": {
+                    "type": "object",
+                    "required": ["turn", "thread", "modelContextWindow"],
+                    "properties": {
+                        "turn": ref("TokenUsageCounts"),
+                        "thread": ref("TokenUsageCounts"),
+                        "modelContextWindow": {"type": "integer", "minimum": 0},
+                    },
+                },
                 "Turn": {
                     "type": "object",
-                    "required": ["threadId", "turnId", "authPrincipalHash", "profile", "configProfile", "mode", "status", "createdAt", "updatedAt", "streamUrl"],
+                    "required": [
+                        "threadId",
+                        "turnId",
+                        "authPrincipalHash",
+                        "profile",
+                        "configProfile",
+                        "mode",
+                        "status",
+                        "createdAt",
+                        "updatedAt",
+                        "streamUrl",
+                        "usage",
+                    ],
                     "properties": {
                         "threadId": {"type": "string"},
                         "turnId": {"type": "string"},
@@ -772,6 +815,10 @@ def openapi_document() -> dict[str, Any]:
                         "completedAt": {"type": ["string", "null"]},
                         "updatedAt": {"type": "string"},
                         "streamUrl": {"type": "string"},
+                        "usage": {
+                            "description": "Exact Codex-reported turn and cumulative thread token usage. Null until the runtime reports usage.",
+                            "anyOf": [ref("TurnUsage"), {"type": "null"}],
+                        },
                         "execution": {
                             "type": "object",
                             "required": ["requestFingerprint", "bundleDigest", "resolvedOptions", "brokerVersion"],

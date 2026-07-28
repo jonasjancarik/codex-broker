@@ -67,6 +67,8 @@ class OpenApiTests(unittest.TestCase):
             "ThreadCreateRequest",
             "Thread",
             "TurnStartRequest",
+            "TokenUsageCounts",
+            "TurnUsage",
             "Turn",
             "BrokerEvent",
             "Interaction",
@@ -113,6 +115,12 @@ class OpenApiTests(unittest.TestCase):
         self.assertIn("publicMessage", components["schemas"]["Turn"]["properties"])
         self.assertIn("adminMessage", components["schemas"]["Turn"]["properties"])
         self.assertIn("streamUrl", components["schemas"]["Turn"]["required"])
+        self.assertIn("usage", components["schemas"]["Turn"]["required"])
+        self.assertEqual(
+            components["schemas"]["TurnUsage"]["properties"]["turn"]["$ref"],
+            "#/components/schemas/TokenUsageCounts",
+        )
+        self.assertIn("reasoningOutputTokens", components["schemas"]["TokenUsageCounts"]["required"])
         self.assertIn("expiresAt", components["schemas"]["DeviceAuthSession"]["properties"])
         self.assertIn("interactionId", components["parameters"])
         self.assertIn("fallbackResponse", components["schemas"]["Interaction"]["properties"])

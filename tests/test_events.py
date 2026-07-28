@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from codex_broker.events import normalize_app_server_event
+from codex_broker.events import normalize_app_server_event, public_broker_event
 from codex_broker.http_api import BrokerHandler, BrokerServices
 from codex_broker.scheduler import NotFoundError
 
@@ -142,18 +142,48 @@ class AppServerEventNormalizationTests(unittest.TestCase):
             "thread/tokenUsage/updated",
             {
                 "tokenUsage": {
+                    "total": {
+                        "totalTokens": 12,
+                        "inputTokens": 7,
+                        "cachedInputTokens": 2,
+                        "outputTokens": 5,
+                        "reasoningOutputTokens": 1,
+                    },
                     "last": {
                         "totalTokens": 12,
                         "inputTokens": 7,
                         "cachedInputTokens": 2,
                         "outputTokens": 5,
                         "reasoningOutputTokens": 1,
-                    }
+                    },
+                    "modelContextWindow": 200000,
                 }
             },
         )
         self.assertEqual(event_type, "compat.response.usage")
         self.assertEqual(payload["tokenUsage"]["last"]["cachedInputTokens"], 2)
+        public_type, public_payload = public_broker_event(event_type, payload)
+        self.assertEqual(public_type, "turn.usage.updated")
+        self.assertEqual(
+            public_payload["usage"],
+            {
+                "turn": {
+                    "totalTokens": 12,
+                    "inputTokens": 7,
+                    "cachedInputTokens": 2,
+                    "outputTokens": 5,
+                    "reasoningOutputTokens": 1,
+                },
+                "thread": {
+                    "totalTokens": 12,
+                    "inputTokens": 7,
+                    "cachedInputTokens": 2,
+                    "outputTokens": 5,
+                    "reasoningOutputTokens": 1,
+                },
+                "modelContextWindow": 200000,
+            },
+        )
 
     def test_review_and_approval_events_are_normalized(self) -> None:
         event_type, payload = self.normalize(

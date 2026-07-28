@@ -1052,6 +1052,47 @@ class BrokerTests(unittest.TestCase):
                 services.pool.close_all()
                 services.state.close()
 
+    def test_completed_native_turn_exposes_exact_token_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))
+            try:
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"cwd": str(services.config.allowed_workspace_roots[0])},
+                )
+                started = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "measure"}]},
+                )
+                self.assertIsNone(started["usage"])
+
+                completed = wait_turn(services, "owner-a", thread["threadId"], started["turnId"])
+
+                self.assertEqual(
+                    completed["usage"],
+                    {
+                        "turn": {
+                            "totalTokens": 12,
+                            "inputTokens": 7,
+                            "cachedInputTokens": 2,
+                            "outputTokens": 5,
+                            "reasoningOutputTokens": 1,
+                        },
+                        "thread": {
+                            "totalTokens": 12,
+                            "inputTokens": 7,
+                            "cachedInputTokens": 2,
+                            "outputTokens": 5,
+                            "reasoningOutputTokens": 1,
+                        },
+                        "modelContextWindow": 200000,
+                    },
+                )
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
     def test_archived_thread_rejects_new_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             services = BrokerServices.build(config_for(Path(tmp_raw), turn_delay=0.01))

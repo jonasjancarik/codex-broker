@@ -49,7 +49,7 @@ The broker validates `threadId` and optional `turnId` before opening the SSE res
 | `message.delta` | Assistant output deltas. Steering also emits `message.delta` with `steered` metadata. |
 | `message.completed` | Completed Codex agent message item. |
 | `compat.response.output_item` | Stable raw Responses item persisted for compatible response reconstruction. This is an internal broker event, not an OpenAI stream event name. |
-| `compat.response.usage` | Exact app-server token usage persisted for compatible response and usage reconstruction. |
+| `turn.usage.updated` | Exact Codex-reported turn usage, cumulative thread usage, and model context window. |
 | `reasoning.summary.started`, `reasoning.summary.delta`, `reasoning.completed` | Reasoning summary lifecycle and deltas. |
 | `tool.started`, `tool.output.delta`, `tool.completed`, `tool.requested` | Tool lifecycle and output. |
 | `approval.requested`, `approval.resolved` | Approval request lifecycle. |
@@ -64,6 +64,46 @@ OpenAI-compatible streaming is assembled from these durable events but uses
 the Responses or Chat Completions wire contract instead of this native broker
 envelope. See
 [OpenAI compatibility](openai-compatibility.mdx#streaming-follows-each-apis-native-framing).
+
+## Completed turns retain exact token accounting
+
+The broker persists each `thread/tokenUsage/updated` notification internally and
+streams a stable `turn.usage.updated` event to native clients:
+
+```json
+{
+  "type": "turn.usage.updated",
+  "payload": {
+    "usage": {
+      "turn": {
+        "totalTokens": 190,
+        "inputTokens": 123,
+        "cachedInputTokens": 45,
+        "outputTokens": 67,
+        "reasoningOutputTokens": 12
+      },
+      "thread": {
+        "totalTokens": 12345,
+        "inputTokens": 10000,
+        "cachedInputTokens": 4000,
+        "outputTokens": 2345,
+        "reasoningOutputTokens": 500
+      },
+      "modelContextWindow": 200000
+    }
+  }
+}
+```
+
+`GET /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}` returns the latest
+durable value under `usage`. It is `null` until Codex reports usage and can
+remain `null` when a turn fails or is interrupted before that notification.
+Use `usage.turn` for per-turn accounting. `usage.thread` is already cumulative,
+so do not sum it across turns.
+
+OpenAI-compatible response assembly continues to read the same durable record
+through its internal compatibility event; native clients do not need to consume
+that internal event name.
 
 ## Host-resolved interactions
 

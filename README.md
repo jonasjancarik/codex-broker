@@ -267,6 +267,11 @@ Model-picker clients should call `GET /v1/owners/{ownerId}/auth/models?profile=d
 
 Account usage and rate-limit routes query Codex for the selected `authPrincipalHash + profile` and return the current App Server payload under `usage` or `rateLimits`. These are shared upstream totals when several owners map to the same principal. Consuming a rate-limit reset credit mutates that shared account: send a stable, non-empty `idempotencyKey`; the action is still recorded only in the requesting owner's audit log.
 
+Completed native turns expose exact Codex-reported token accounting under
+`Turn.usage`, including per-turn counts, cumulative thread counts, and the model
+context window. The same update is streamed as `turn.usage.updated`. Usage is
+`null` until Codex reports it and may remain unavailable when a turn ends early.
+
 ## Shared Auth Principals And Account Replacement
 
 Set `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` or `CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE` to define the trusted owner-to-principal mapping. For example, `{"team-a":"shared-codex","team-b":"shared-codex"}` gives two isolated broker owners one shared Codex account. Clients may omit `authPrincipalId`; if they send it, it is only an assertion and must exactly match policy or the broker returns `403`. Never expose the broker key or raw owner/principal selection directly to browsers or other untrusted clients.
