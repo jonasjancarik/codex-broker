@@ -1,6 +1,6 @@
 # Integrating With The Broker
 
-read_when: writing host application code, job workers, chat backends, hosted tool endpoints, or agents that call Codex Broker over HTTP.
+read_when: writing host application code, OpenAI-compatible client integrations, job workers, chat backends, hosted tool endpoints, or agents that call Codex Broker over HTTP.
 
 This guide is the practical contract for code that interacts with Codex Broker. Use it when implementing a host backend or worker. The broker is an internal service; browser clients should call your product backend, and your backend should call the broker with the internal key.
 
@@ -29,6 +29,111 @@ X-Codex-Broker-Key: <CODEX_BROKER_INTERNAL_KEY>
 Only `GET /healthz` and `GET /readyz` are unauthenticated. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the broker is running with the explicit development override.
 
 Keep the broker key on the server side. Do not expose it to browser JavaScript. Browser `EventSource` also cannot set the required auth header, so product UIs should consume a product-owned stream or API that proxies broker events.
+
+## OpenAI-compatible clients use server-side identity bindings
+
+Existing OpenAI SDK clients can use Codex Broker by changing `base_url` and
+supplying a compatibility key issued by the broker operator:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:3400/v1",
+    api_key="a-compatibility-key-issued-by-the-operator",
+)
+
+response = client.responses.create(
+    model="gpt-compatible",
+    input="Explain the change in two sentences.",
+)
+print(response.output_text)
+```
+
+```typescript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "http://127.0.0.1:3400/v1",
+  apiKey: process.env.CODEX_BROKER_COMPATIBILITY_KEY,
+});
+
+const response = await client.responses.create({
+  model: "gpt-compatible",
+  input: "Explain the change in two sentences.",
+});
+console.log(response.output_text);
+```
+
+The key selects a fixed server-side binding containing the owner, auth
+principal, Codex auth profile, configuration profile, host app, optional
+bundle/workspace, and model aliases. The client cannot override those fields in
+an OpenAI request. Compatibility keys are separate from both the internal
+broker key and the upstream credential stored in the selected Codex auth
+profile.
+
+Configure bindings with `CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE`; the file
+stores only SHA-256 key digests. See
+[Configuration](configuration.md#openai-compatible-identity-bindings) for the
+file shape and operational guidance.
+
+### The supported API covers text-based Responses and Chat Completions
+
+| Endpoint | Supported behavior |
+| --- | --- |
+| `GET /v1/models` | Direct model names and configured aliases. |
+| `GET /v1/models/{model}` | One direct model or configured alias. |
+| `POST /v1/responses` | Synchronous and streamed text responses. |
+| `GET /v1/responses/{responseId}` | Retrieves a persisted compatible response owned by the binding. |
+| `GET /v1/responses/{responseId}/input_items` | Lists the normalized text input stored for a response. |
+| `POST /v1/responses/{responseId}/cancel` | Interrupts an active response and returns its updated state. |
+| `POST /v1/chat/completions` | Synchronous and streamed text Chat Completions adapter. |
+
+Responses requests support:
+
+- `model`
+- string input or text message input ending in a user message
+- `instructions`
+- `stream`
+- `previous_response_id`
+- `reasoning.effort` and `reasoning.summary`
+- `service_tier`
+- `text.format` with `text` or `json_schema`
+- string-to-string `metadata`
+- omitted `store` or `store: true`
+
+Chat Completions requests support text-only messages, `system` and `developer`
+instructions, streaming, `reasoning_effort`, `service_tier`, `metadata`,
+`response_format` with `text` or `json_schema`, and
+`stream_options.include_usage`.
+
+The broker deliberately rejects fields it cannot honor exactly:
+
+- `tools`, `tool_choice`, function calls, and tool messages
+- `store: false`
+- sampling, logprob, seed, and token-cap controls
+- images, audio, files, remote input, and other non-text content
+- background execution and response deletion
+
+Unknown fields also fail with an OpenAI-shaped `400` error instead of being
+silently ignored. Authentication failures use the familiar OpenAI error
+envelope, while transport streams follow the expected Responses event types or
+Chat Completions `[DONE]` framing.
+
+Reviewed Codex bundles and their MCP or hosted tools still work as broker
+deployment policy. They are not the same contract as caller-defined OpenAI
+functions, so sending `tools` never grants or selects them. Although Codex
+0.144.6 declares an app-server `item/tool/call` request type, its generated
+thread and turn start parameters do not provide the matching caller-tool
+declaration surface needed for an exact OpenAI mapping. This distinction
+prevents an OpenAI client from expanding the capabilities assigned by its
+server-side binding.
+
+Each compatible response runs on a fresh broker thread. When
+`previous_response_id` is supplied, the broker reconstructs the earlier
+compatible text history from persisted response records and injects it before
+the new Codex turn. The referenced response must belong to the same binding and
+must have been created through the Responses API.
 
 ## Minimal HTTP Flow
 

@@ -1,6 +1,6 @@
 # Configuration
 
-read_when: changing environment variables, Docker configuration, config profiles, model discovery, request runtime options, bundle manifests, hosted tools, MCP server validation, sandbox policy, or workspace policy.
+read_when: changing environment variables, Docker configuration, OpenAI-compatible identity bindings, config profiles, model discovery, request runtime options, bundle manifests, hosted tools, MCP server validation, sandbox policy, or workspace policy.
 
 This is the reference for Codex Broker configuration. It covers process environment variables, Docker build arguments, configuration profiles, request-level Codex options, and task bundle manifest fields.
 
@@ -33,8 +33,59 @@ Environment variables are read once at process startup by `BrokerConfig.from_env
 | `CODEX_BROKER_OWNER_HASH_KEY_FILE` | unset | File containing the owner-hash HMAC key. Mutually exclusive with `CODEX_BROKER_OWNER_HASH_KEY`. |
 | `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` | unset | Trusted JSON object mapping each `ownerId` to the `authPrincipalId` whose Codex account it may use. |
 | `CODEX_BROKER_AUTH_PRINCIPAL_MAP_FILE` | unset | File containing the same mapping. Mutually exclusive with the JSON variable. |
+| `CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE` | unset | JSON file mapping SHA-256 compatibility-key digests to fixed broker identity, profile, policy, workspace, and model-alias settings. Required before OpenAI-compatible routes accept requests. |
 
-Only `GET /healthz` and `GET /readyz` are unauthenticated by design. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the development override is active. A distinct mapped auth principal requires an authenticated trusted-host connection; `authPrincipalId` in a request is an assertion checked against this deployment policy, never a free-form client choice.
+Only `GET /healthz` and `GET /readyz` are unauthenticated by design.
+`/metrics`, `/openapi.json`, owner-scoped `/v1/owners/...` routes, and
+`/v1/bundles/inline` require the internal broker key unless the development
+override is active. `/v1/models`, `/v1/responses...`, and
+`/v1/chat/completions` require a compatibility key from
+`CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE`; the internal broker key is not valid
+for those routes, and a compatibility key is not valid for native routes. A
+distinct mapped auth principal requires an authenticated trusted-host
+connection; `authPrincipalId` in a native request is an assertion checked
+against deployment policy, never a free-form client choice.
+
+### OpenAI-compatible identity bindings
+
+The compatibility binding file is a JSON object keyed by the lowercase SHA-256
+digest of each issued key, prefixed with `sha256:`:
+
+```json
+{
+  "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08": {
+    "ownerId": "service-account-1",
+    "authPrincipalId": "shared-codex",
+    "profile": "default",
+    "configProfile": "default",
+    "hostApp": "openai-sdk",
+    "bundleId": "example-chat-v1",
+    "cwd": "/workspaces/app",
+    "modelAliases": {
+      "gpt-compatible": "gpt-5.6-sol"
+    }
+  }
+}
+```
+
+Generate a digest without writing the raw key into the file:
+
+```bash
+printf '%s' "$COMPATIBILITY_KEY" | shasum -a 256
+```
+
+`ownerId` is required. Every other field is optional; omitted `profile` and
+`configProfile` values default to `default`, while omitted `hostApp` defaults to
+`openai-compatible-api`. `modelAliases` lets existing clients keep a configured
+model name while the broker sends its mapped value to Codex. Aliases and direct
+model names appear in `GET /v1/models`.
+
+The raw compatibility key is a broker credential distributed separately from
+this file. The broker keeps only its digest in configuration and uses a
+constant-time comparison for authentication. A binding is also the complete
+authorization decision for that caller: OpenAI request bodies and headers
+cannot choose `ownerId`, `authPrincipalId`, profile, configuration profile,
+bundle, host app, or workspace.
 
 ### Filesystem And Policy Roots
 

@@ -113,6 +113,48 @@ curl -sS \
 
 If you use device auth instead, start and submit the device flow through the auth endpoints. Keep browser login and product UI auth outside the broker.
 
+## Use an OpenAI SDK with a compatibility binding
+
+OpenAI-compatible clients need a separate key binding. Create a random key,
+store its SHA-256 digest in a JSON file, and start the broker with
+`CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE` pointing to that file:
+
+```json
+{
+  "sha256:<lowercase-hex-digest>": {
+    "ownerId": "service-account-1",
+    "profile": "default",
+    "configProfile": "default",
+    "hostApp": "openai-sdk",
+    "modelAliases": {
+      "gpt-compatible": "gpt-5.6-sol"
+    }
+  }
+}
+```
+
+The raw key is distributed to the client, not stored in the binding file. Once
+configured, only the base URL and API key change:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:3400/v1",
+    api_key="the-raw-compatibility-key",
+)
+response = client.responses.create(
+    model="gpt-compatible",
+    input="Summarize this repository.",
+)
+print(response.output_text)
+```
+
+This surface supports text-based Responses and Chat Completions, including
+streaming, retrieval, cancellation, response chaining, reasoning controls,
+service tiers, and JSON Schema output. It rejects caller-defined tools and
+other fields the broker cannot honor exactly.
+
 ## Create a thread
 
 ```bash

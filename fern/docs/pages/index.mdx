@@ -19,6 +19,7 @@ The broker handles:
 - long-lived `codex app-server` child processes and process pooling
 - broker threads, turns, same-thread locking, steering, interruption, and archive behavior
 - normalized event persistence and Server-Sent Events streaming
+- OpenAI-compatible Responses and Chat Completions routes with server-side caller bindings
 - configuration profiles for model, sandbox, approval, workspace, and bundle policy
 - mounted bundles, inline bundle validation, skills, prompts, MCP servers, and broker-hosted tool adapters
 - readiness checks, audit logs, metrics, structured logs, and restart recovery
@@ -55,6 +56,7 @@ Use the broker when a product app needs Codex but should not run Codex process m
 
 - Live chat: the app keeps chat state, UI streaming, and product tools while the broker serializes Codex turns.
 - Background jobs: the worker keeps queue records, artifacts, and review state while the broker runs Codex through a durable thread and turn API.
+- Existing OpenAI clients: a server-side compatibility binding lets an SDK use Responses or text Chat Completions after changing its base URL and API key.
 - Auth-principal Codex auth: trusted policy resolves each owner to an isolated or shared auth principal, with credentials stored under a broker-managed principal/profile home.
 - Reusable bundles: reviewed manifests expose skills, prompts, MCP servers, and broker-hosted HTTP adapters without moving product logic into the broker.
 

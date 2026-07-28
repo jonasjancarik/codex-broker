@@ -1,6 +1,6 @@
 ---
 title: "Core concepts"
-description: "The main nouns in Codex Broker: users, Codex auth profiles, broker threads, turns, bundles, events, interactions, and configuration profiles."
+description: "The main nouns in Codex Broker: users, compatibility bindings, Codex auth profiles, broker threads, turns, bundles, events, interactions, and configuration profiles."
 ---
 
 # Core concepts
@@ -30,6 +30,17 @@ A Codex auth profile is a named credential set under an auth principal. The API 
 Codex auth profile ids are canonicalized before use in filesystem paths. Characters outside `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-` are replaced with `_`.
 
 The resolved principal, canonical profile, and profile instance are immutable for a broker thread. Turns may repeat them as consistency assertions but cannot switch them. Deleting a profile invalidates old threads, so replacing an account requires a new broker thread.
+
+## OpenAI compatibility binding
+
+An OpenAI compatibility binding maps the SHA-256 digest of one issued
+compatibility key to a fixed owner, optional auth principal, Codex auth profile,
+configuration profile, host app, optional bundle/workspace, and model aliases.
+OpenAI request bodies cannot override the binding.
+
+The compatibility key is separate from the internal broker key and from the
+upstream credential in the Codex auth profile. The broker accepts each
+credential only on its own API surface.
 
 ## Model catalog
 

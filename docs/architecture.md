@@ -1,6 +1,6 @@
 # Architecture
 
-read_when: changing process management, state storage, auth handling, model discovery, bundle materialization, event streaming, recovery behavior, or host integration boundaries.
+read_when: changing process management, state storage, auth handling, OpenAI-compatible routing, model discovery, bundle materialization, event streaming, recovery behavior, or host integration boundaries.
 
 Codex Broker is an internal HTTP service that runs next to a host application. The host app calls the broker over HTTP, and the broker manages Codex auth homes, `codex app-server` child processes, durable broker thread and turn state, bundle mounting, and normalized event streaming.
 
@@ -17,8 +17,8 @@ host app backend or worker
 codex-broker process
   |
   +-- HTTP API
-  |     authenticates broker-key requests
-  |     exposes health, readiness, OpenAPI, metrics, auth, model catalog, threads, turns, events
+  |     authenticates native broker keys and OpenAI compatibility keys
+  |     exposes health, readiness, OpenAPI, metrics, native APIs, Responses, and Chat Completions
   |
   +-- AuthManager
   |     HMACs owner and auth-principal ids
@@ -55,6 +55,9 @@ The implementation intentionally uses the Python standard library HTTP server an
 | `src/codex_broker/__main__.py` | Console entry point. |
 | `src/codex_broker/config.py` | Environment parsing and derived filesystem paths. |
 | `src/codex_broker/http_api.py` | HTTP routes, auth header checks, readiness, metrics, SSE, OpenAPI. |
+| `src/codex_broker/openai_api.py` | OpenAI-compatible routing, synchronous assembly, Responses SSE, and Chat Completions SSE. |
+| `src/codex_broker/openai_protocol.py` | Strict compatible request parsing, OpenAI object/error shapes, stable id mapping, and output/usage reconstruction. |
+| `src/codex_broker/openai_auth.py` | Digest-only compatibility-key authentication and immutable server-side caller bindings. |
 | `src/codex_broker/identity.py` | Trusted owner-to-auth-principal policy and hashed identity scopes. |
 | `src/codex_broker/auth.py` | Profile normalization, CODEX_HOME creation, profile-instance lifecycle, Codex login/status/logout. |
 | `src/codex_broker/auth_api.py` | Auth/profile HTTP routes and OpenAPI fragments. |
@@ -83,7 +86,11 @@ On startup, the broker:
 7. Constructs auth, bundle, app-server pool, and scheduler services.
 8. Starts `ThreadingHTTPServer` on `CODEX_BROKER_HOST:CODEX_BROKER_PORT`.
 
-Only `GET /healthz` and `GET /readyz` are unauthenticated. Every product route, `/metrics`, `/openapi.json`, and `/v1/bundles/inline` requires the broker key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
+Only `GET /healthz` and `GET /readyz` are unauthenticated. Native product
+routes, `/metrics`, `/openapi.json`, and `/v1/bundles/inline` require the
+internal broker key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
+OpenAI-compatible routes always require a separately configured compatibility
+key whose digest maps to an immutable server-side caller binding.
 
 ## Data Layout
 
@@ -153,6 +160,13 @@ The broker supports cheap profile lists and status checks, principal/profile-sco
 
 Creating a thread stores the resolved principal hash, canonical profile, and profile-instance id. Turn requests inherit this binding; supplied identity fields are assertions only. Deleting a profile removes its instance, so old and queued threads cannot resume after an account replacement.
 
+OpenAI-compatible callers do not send broker identity fields. Their bearer key
+selects a digest-only binding containing the owner, optional auth principal,
+profile, configuration profile, host app, optional bundle/cwd, and model
+aliases. The compatibility key, internal broker key, and upstream Codex
+credential are three distinct security domains and are never accepted in one
+another's place.
+
 ## Thread And Turn Flow
 
 A normal turn follows this path:
@@ -169,6 +183,13 @@ A normal turn follows this path:
 10. App-server notifications are normalized and persisted as broker events.
 11. The turn becomes `completed`, `failed`, `timed_out`, or `interrupted`.
 12. The overlay is removed and pooled child reuse is decided.
+
+An OpenAI-compatible response uses the same scheduler and durable turn records,
+but the façade creates a fresh broker thread for every response. A
+`previous_response_id` chain is reconstructed from owner-scoped compatible turn
+metadata, then injected with app-server `thread/inject_items` before the new
+turn starts. The request parser rejects unsupported behavioral fields rather
+than allowing Codex defaults to produce a falsely compatible result.
 
 Same-thread behavior is controlled by the turn `mode`:
 
@@ -240,6 +261,13 @@ GET /v1/owners/{ownerId}/threads/{threadId}/events?turnId=<turnId>&after=<event-
 
 SSE frames include a monotonically increasing event id and a JSON envelope with broker ids, Codex ids, product correlation id, payload, timestamp, and an `ambiguous` flag. When raw app-server capture is enabled, redacted `rawMethod` and `rawParams` are included until retention pruning clears them.
 
+For compatibility responses, `rawResponseItem/completed` is normalized to
+`compat.response.output_item` and `thread/tokenUsage/updated` to
+`compat.response.usage`. Those stable records are the source of truth for
+OpenAI output arrays, `output_text`, token usage, retrieval, and terminal
+stream events. The façade does not scrape final prose from generic message
+events.
+
 Approvals, permission requests, user-input prompts, and MCP elicitations are persisted as pending interactions before the broker answers the app-server request. Hosts can resolve them with the interaction API. If the host does not answer before `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`, the broker responds with a safe fallback:
 
 | Interaction | Fallback |
@@ -250,13 +278,19 @@ Approvals, permission requests, user-input prompts, and MCP elicitations are per
 | User input | Empty answers object. |
 | MCP elicitation | Decline. |
 
-## Security Model
+## Compatibility keys preserve the broker's identity boundary
 
-The broker is not a public API. It assumes a trusted host backend or worker calls it with an internal key. Browser clients should call the host app, not the broker directly.
+The broker remains an internal service. Native integrations use the internal
+key, while trusted OpenAI-compatible clients may use narrowly bound
+compatibility keys. Browser clients should still call the host app unless the
+deployment has deliberately issued them a binding and provided appropriate
+network controls.
 
 The main controls are:
 
 - broker-key authentication for product routes,
+- digest-only compatibility-key authentication with server-side identity and policy bindings,
+- strict separation between native and compatibility credentials,
 - owner-scoped broker-state isolation and auth-principal/profile auth-home isolation,
 - hashed owner paths and owner hashes in logs,
 - scrubbed child process environments,

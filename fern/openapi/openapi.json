@@ -1134,6 +1134,160 @@
         ],
         "type": "object"
       },
+      "OpenAIChatCompletion": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "OpenAIChatCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "messages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "type": "string"
+          },
+          "response_format": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "service_tier": {
+            "type": "string"
+          },
+          "store": {
+            "const": true
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "stream_options": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "model",
+          "messages"
+        ],
+        "type": "object"
+      },
+      "OpenAIError": {
+        "properties": {
+          "error": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "OpenAIItemList": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "OpenAIModel": {
+        "properties": {
+          "created": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "const": "model"
+          },
+          "owned_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "owned_by"
+        ],
+        "type": "object"
+      },
+      "OpenAIModelList": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIModel"
+            },
+            "type": "array"
+          },
+          "object": {
+            "const": "list"
+          }
+        },
+        "required": [
+          "object",
+          "data"
+        ],
+        "type": "object"
+      },
+      "OpenAIResponse": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "OpenAIResponseCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "input": {},
+          "instructions": {
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "model": {
+            "type": "string"
+          },
+          "previous_response_id": {
+            "type": "string"
+          },
+          "reasoning": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "service_tier": {
+            "type": "string"
+          },
+          "store": {
+            "const": true
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "text": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "model",
+          "input"
+        ],
+        "type": "object"
+      },
       "RateLimitResetCreditConsumeRequest": {
         "properties": {
           "authPrincipalId": {
@@ -1639,6 +1793,11 @@
         "in": "header",
         "name": "X-Codex-Broker-Key",
         "type": "apiKey"
+      },
+      "openaiCompatBearer": {
+        "bearerFormat": "OpenAI-compatible API key",
+        "scheme": "bearer",
+        "type": "http"
       }
     }
   },
@@ -1748,6 +1907,174 @@
             "description": "Inline bundle accepted"
           }
         }
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAIChatCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIChatCompletion"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Chat completion or event stream"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid or unsupported request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid compatibility key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Model not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Completion failed"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Codex App Server unavailable"
+          }
+        },
+        "security": [
+          {
+            "openaiCompatBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIModelList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid compatibility key"
+          }
+        },
+        "security": [
+          {
+            "openaiCompatBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/models/{model}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIModel"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid compatibility key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Model not found"
+          }
+        },
+        "security": [
+          {
+            "openaiCompatBearer": []
+          }
+        ]
       }
     },
     "/v1/owners/{ownerId}/audit-logs": {
@@ -2695,6 +3022,275 @@
             "description": "Turn steered"
           }
         }
+      }
+    },
+    "/v1/responses": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAIResponseCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Response or typed event stream"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid or unsupported request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid compatibility key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Model or previous response not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Compatible output could not be reconstructed"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Codex App Server unavailable"
+          }
+        },
+        "security": [
+          {
+            "openaiCompatBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/responses/{responseId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "responseId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid compatibility key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Response not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Compatible output could not be reconstructed"
+          }
+        },
+        "security": [
+          {
+            "openaiCompatBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/responses/{responseId}/cancel": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "responseId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid compatibility key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Response not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Response is not cancellable"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Compatible output could not be reconstructed"
+          }
+        },
+        "security": [
+          {
+            "openaiCompatBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/responses/{responseId}/input_items": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "responseId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIItemList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Invalid compatibility key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Response not found"
+          }
+        },
+        "security": [
+          {
+            "openaiCompatBearer": []
+          }
+        ]
       }
     }
   },

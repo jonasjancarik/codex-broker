@@ -190,6 +190,13 @@ Core endpoints:
 - `GET /readyz`
 - `GET /metrics`
 - `GET /openapi.json`
+- `GET /v1/models`
+- `GET /v1/models/{model}`
+- `POST /v1/responses`
+- `GET /v1/responses/{responseId}`
+- `GET /v1/responses/{responseId}/input_items`
+- `POST /v1/responses/{responseId}/cancel`
+- `POST /v1/chat/completions`
 - `GET /v1/owners/{ownerId}/auth/status`
 - `GET /v1/owners/{ownerId}/auth/profiles`
 - `GET /v1/owners/{ownerId}/auth/models`
@@ -216,7 +223,39 @@ Core endpoints:
 - `GET /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}`
 - `POST /v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve`
 
-Requests other than health and readiness require `Authorization: Bearer <key>` or `X-Codex-Broker-Key: <key>`. This includes `/metrics` and `/openapi.json`.
+Requests other than health and readiness require authentication. Native broker
+routes use `Authorization: Bearer <CODEX_BROKER_INTERNAL_KEY>` or
+`X-Codex-Broker-Key: <CODEX_BROKER_INTERNAL_KEY>`. OpenAI-compatible routes use
+`Authorization: Bearer <compatibility-key>` and resolve the caller to a
+server-side identity binding. The two credential types are intentionally not
+interchangeable. `/metrics` and `/openapi.json` remain native broker routes.
+
+OpenAI SDK clients can point at the broker without changing their normal request
+shape:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:3400/v1",
+    api_key="a-compatibility-key-issued-by-the-operator",
+)
+response = client.responses.create(
+    model="gpt-5.6-sol",
+    input="Summarize this change.",
+)
+print(response.output_text)
+```
+
+The façade is Responses-first and also provides a Chat Completions adapter. It
+supports text input, streaming, response retrieval, input-item retrieval,
+cancellation, response chaining, reasoning controls, service tiers, and JSON
+Schema output. It fails closed for caller-defined tools, `store: false`,
+sampling and logprob controls, token caps, background mode, and non-text input.
+Reviewed Codex bundles and MCP tools remain deployment policy; OpenAI request
+`tools` are not treated as equivalent capabilities. See
+[docs/integrating-with-broker.md](docs/integrating-with-broker.md#openai-compatible-clients-use-server-side-identity-bindings)
+for the exact compatibility contract.
 
 Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the principal/profile auth file. `GET /auth/profiles` lists last-recorded profile state without running Codex. `GET /auth/status` runs Codex's local login-status check, while `POST /auth/probe` runs a tiny real Codex request. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled App Server children that were started with the old auth.
 
@@ -260,6 +299,7 @@ CODEX_BROKER_ALLOWED_BUNDLE_ROOTS=/path/to/bundles
 CODEX_BROKER_ALLOWED_TOOL_COMMANDS=python,node
 CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES=http://127.0.0.1,http://localhost,http://host.docker.internal
 CODEX_BROKER_INTERNAL_KEY=dev-only-key
+CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE=/run/secrets/codex-broker-openai-bindings.json
 CODEX_BROKER_PASSTHROUGH_ENV=ESTF_ARCHIVER_API_URL,ESTF_ARCHIVER_API_KEY
 CODEX_BIN=codex
 CODEX_CREDENTIAL_STORE=file

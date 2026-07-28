@@ -1,6 +1,6 @@
 # Codex Broker Spec
 
-read_when: changing broker APIs, replacing local Codex integration code, adding auth-principal/profile handling, sharing Codex process-management code across app services, or supplying Codex skills/prompts/tools from a host application.
+read_when: changing broker APIs, OpenAI-compatible behavior, replacing local Codex integration code, adding auth-principal/profile handling, sharing Codex process-management code across app services, or supplying Codex skills/prompts/tools from a host application.
 
 ## Goal
 
@@ -50,6 +50,7 @@ The broker also owns Codex process management, Codex auth homes, app-server JSON
 - **Turn**: one unit of Codex work on a broker thread.
 - **Bundle**: reviewed material for a class of work.
 - **App-server lease**: a checked-out app-server client from the broker pool.
+- **Compatibility binding**: a digest-keyed server-side mapping from one OpenAI-compatible credential to fixed broker identity, policy, workspace, and model-alias settings.
 
 ## Architecture
 
@@ -163,6 +164,13 @@ Core endpoints:
 - `GET /readyz`
 - `GET /metrics`
 - `GET /openapi.json`
+- `GET /v1/models`
+- `GET /v1/models/{model}`
+- `POST /v1/responses`
+- `GET /v1/responses/{responseId}`
+- `GET /v1/responses/{responseId}/input_items`
+- `POST /v1/responses/{responseId}/cancel`
+- `POST /v1/chat/completions`
 - `GET /v1/owners/{ownerId}/auth/status?profile=default`
 - `GET /v1/owners/{ownerId}/auth/profiles`
 - `GET /v1/owners/{ownerId}/auth/models`
@@ -218,6 +226,20 @@ Turn create example:
 The broker should return a `streamUrl` for turns so host apps can consume normalized events with SSE.
 
 `authPrincipalId` is an optional request assertion validated against trusted owner-to-principal configuration. It is never an arbitrary client-selected identity. A broker thread permanently binds the resolved principal hash, canonical profile, and profile instance. Turns inherit that binding and cannot override it. Deleting a profile changes its instance so old and queued threads fail closed; a replacement account must use a new broker thread id.
+
+OpenAI-compatible routes use a separate bearer credential whose SHA-256 digest
+maps to a fixed compatibility binding. Request bodies and headers cannot select
+owner, auth principal, profile, configuration profile, host app, bundle, or
+workspace. Compatible Responses support text input, synchronous and typed SSE
+delivery, retrieval, input-item retrieval, cancellation, response chaining,
+reasoning/service-tier controls, metadata, and text or JSON Schema output. Chat
+Completions is a text adapter over the same scheduler and persistence.
+
+Unknown fields and unsupported behavior must fail with OpenAI-shaped errors.
+In particular, caller-defined tools, tool choice, tool messages, `store:
+false`, sampling/logprob/token-cap controls, background mode, and non-text
+input are not silently approximated. Reviewed bundle/MCP tools remain
+deployment policy and are never inferred from an OpenAI `tools` request.
 
 ## Events
 
