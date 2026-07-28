@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, account_api, auth_api
+from . import __version__, account_api, auth_api, openai_api
 from .app_server import AppServerError
 from .bundles import BundleError
 from .config import BrokerConfig
@@ -24,6 +24,17 @@ def metric_path_template(path: str) -> str:
     if path in {"/healthz", "/readyz", "/metrics", "/openapi.json"}:
         return path.strip("/") or "root"
     segments = [part for part in path.strip("/").split("/") if part]
+    if segments[:2] == ["v1", "models"]:
+        return "v1/models/model" if len(segments) > 2 else "v1/models"
+    if segments[:2] == ["v1", "responses"]:
+        if len(segments) == 2:
+            return "v1/responses"
+        if len(segments) == 3:
+            return "v1/responses/responseId"
+        suffix = segments[3] if segments[3] in {"input_items", "cancel"} else "resource"
+        return f"v1/responses/responseId/{suffix}"
+    if segments == ["v1", "chat", "completions"]:
+        return "v1/chat/completions"
     if segments[:2] == ["v1", "bundles"]:
         return "/".join(segments)
     if len(segments) >= 4 and segments[:2] == ["v1", "owners"]:
@@ -69,6 +80,8 @@ class BrokerHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/readyz":
                 self._readyz()
+                return
+            if openai_api.handle_openai_route(self, method, path, query):
                 return
             if not is_unauthenticated_path(method, path) and not self._authorized():
                 self._json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
@@ -429,6 +442,7 @@ def openapi_document() -> dict[str, Any]:
             },
             **account_api.openapi_paths(owner_param, ref, json_response, request_body),
             **auth_api.openapi_paths(owner_param, ref, json_response, request_body),
+            **openai_api.openapi_paths(ref, json_response, request_body),
             "/v1/owners/{ownerId}/audit-logs": {
                 "get": {
                     "parameters": [
@@ -547,7 +561,12 @@ def openapi_document() -> dict[str, Any]:
                     "type": "apiKey",
                     "in": "header",
                     "name": "X-Codex-Broker-Key",
-                }
+                },
+                "openaiCompatBearer": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "OpenAI-compatible API key",
+                },
             },
             "parameters": {
                 "ownerId": {"name": "ownerId", "in": "path", "required": True, "schema": {"type": "string"}},
@@ -586,6 +605,7 @@ def openapi_document() -> dict[str, Any]:
             "schemas": {
                 **account_api.openapi_schemas(),
                 **auth_api.openapi_schemas(ref),
+                **openai_api.openapi_schemas(),
                 "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
                 "Health": {"type": "object", "required": ["status"], "properties": {"status": {"const": "ok"}}},
                 "Readiness": {

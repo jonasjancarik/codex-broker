@@ -53,7 +53,7 @@ def thread_params(
     params: dict[str, Any] = {}
     if cwd:
         params["cwd"] = str(cwd)
-    for key in ("approvalPolicy", "model", "personality"):
+    for key in ("approvalPolicy", "model", "personality", "baseInstructions", "developerInstructions"):
         value = codex_option(options, profile, key)
         if value is not None:
             params[key] = value

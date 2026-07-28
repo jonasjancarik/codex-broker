@@ -297,6 +297,14 @@ class StateStore:
             ).fetchone()
         return self._turn_from_row(row) if row else None
 
+    def find_turn_by_turn_id(self, owner_hash: str, turn_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "select * from turns where owner_hash = ? and turn_id = ?",
+                (owner_hash, turn_id),
+            ).fetchone()
+        return self._turn_from_row(row) if row else None
+
     def update_turn(
         self,
         owner_hash: str,

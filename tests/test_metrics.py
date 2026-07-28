@@ -4,11 +4,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_broker.http_api import BrokerServices
+from codex_broker.http_api import BrokerServices, metric_path_template
 from test_broker import config_for
 
 
 class MetricsTests(unittest.TestCase):
+    def test_openai_compat_metric_paths_bound_resource_ids(self) -> None:
+        self.assertEqual(metric_path_template("/v1/responses/resp_abc/input_items"), "v1/responses/responseId/input_items")
+        self.assertEqual(
+            metric_path_template("/v1/responses/resp_abc/caller-controlled"),
+            "v1/responses/responseId/resource",
+        )
+        self.assertEqual(metric_path_template("/v1/models/gpt-compatible"), "v1/models/model")
+        self.assertEqual(metric_path_template("/v1/chat/completions"), "v1/chat/completions")
+
     def test_http_latency_metrics_include_counts_and_endpoint_sums(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             services = BrokerServices.build(config_for(Path(tmp_raw)))

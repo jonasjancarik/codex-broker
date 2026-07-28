@@ -36,10 +36,18 @@ class OpenApiTests(unittest.TestCase):
             "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}",
             "/v1/owners/{ownerId}/threads/{threadId}/turns/{turnId}/interactions/{interactionId}/resolve",
             "/v1/bundles/inline",
+            "/v1/models",
+            "/v1/models/{model}",
+            "/v1/responses",
+            "/v1/responses/{responseId}",
+            "/v1/responses/{responseId}/input_items",
+            "/v1/responses/{responseId}/cancel",
+            "/v1/chat/completions",
         ]:
             self.assertIn(path, paths)
         components = document["components"]
         self.assertIn("brokerKey", components["securitySchemes"])
+        self.assertIn("openaiCompatBearer", components["securitySchemes"])
         for schema in [
             "AuthStatus",
             "AuthProfile",

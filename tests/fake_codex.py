@@ -14,6 +14,18 @@ response_condition = threading.Condition()
 server_responses: dict[int, dict[str, Any]] = {}
 next_thread = 1
 next_turn = 1
+injected_threads: set[str] = set()
+
+
+def expected_params_match(env_name: str, params: dict[str, Any]) -> str | None:
+    raw = os.environ.get(env_name)
+    if not raw:
+        return None
+    expected = json.loads(raw)
+    for key, value in expected.items():
+        if params.get(key) != value:
+            return f"{env_name} expected {key}={value!r}, got {params.get(key)!r}"
+    return None
 
 
 def send(message: dict[str, Any]) -> None:
@@ -128,14 +140,58 @@ def complete_turn(thread_id: str, turn_id: str) -> None:
             request_base + 2,
             {"threadId": thread_id, "turnId": turn_id, "serverName": "host", "mode": "form", "message": "Continue?"},
         )
-    send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg1", "delta": "hello"}})
+    response_text = os.environ.get("FAKE_CODEX_RESPONSE_TEXT", "hello")
+    send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg1", "delta": response_text}})
     time.sleep(delay)
+    if os.environ.get("FAKE_CODEX_OMIT_RAW_RESPONSE") != "1":
+        send(
+            {
+                "method": "rawResponseItem/completed",
+                "params": {
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": {
+                        "id": "msg1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": response_text}],
+                    },
+                },
+            }
+        )
     send(
         {
             "method": "item/completed",
-            "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": "msg1", "type": "agentMessage", "text": "hello"}},
+            "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": "msg1", "type": "agentMessage", "text": response_text}},
         }
     )
+    if os.environ.get("FAKE_CODEX_OMIT_TOKEN_USAGE") != "1":
+        malformed = os.environ.get("FAKE_CODEX_MALFORMED_TOKEN_USAGE") == "1"
+        last = (
+            {"totalTokens": "bad"}
+            if malformed
+            else {
+                "totalTokens": 12,
+                "inputTokens": 7,
+                "cachedInputTokens": 2,
+                "outputTokens": 5,
+                "reasoningOutputTokens": 1,
+            }
+        )
+        send(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "tokenUsage": {
+                        "total": last,
+                        "last": last,
+                        "modelContextWindow": 200000,
+                    },
+                },
+            }
+        )
     if os.environ.get("FAKE_CODEX_TURN_COMPLETED_ERROR"):
         send(
             {
@@ -259,6 +315,10 @@ def handle_app_server() -> int:
                 }
             )
         elif method == "thread/start":
+            mismatch = expected_params_match("FAKE_CODEX_EXPECT_THREAD_PARAMS", params)
+            if mismatch:
+                send({"id": request_id, "error": {"code": -32602, "message": mismatch}})
+                continue
             thread_id = f"thr_fake_{next_thread}"
             next_thread += 1
             send({"id": request_id, "result": {"thread": {"id": thread_id}}})
@@ -266,7 +326,15 @@ def handle_app_server() -> int:
         elif method == "thread/resume":
             send({"id": request_id, "result": {"thread": {"id": params.get("threadId")}}})
             send({"method": "thread/resumed", "params": {"threadId": params.get("threadId"), "thread": {"id": params.get("threadId")}}})
+        elif method == "thread/inject_items":
+            thread_id = str(params.get("threadId"))
+            injected_threads.add(thread_id)
+            send({"id": request_id, "result": {}})
         elif method == "turn/start":
+            mismatch = expected_params_match("FAKE_CODEX_EXPECT_TURN_PARAMS", params)
+            if mismatch:
+                send({"id": request_id, "error": {"code": -32602, "message": mismatch}})
+                continue
             if os.environ.get("FAKE_CODEX_HANG_ON_TURN_START_ONCE") == "1":
                 marker = auth_home() / ".fake-hung-turn-start-once"
                 if not marker.exists():
@@ -283,6 +351,9 @@ def handle_app_server() -> int:
             turn_id = f"turn_fake_{next_turn}"
             next_turn += 1
             thread_id = str(params.get("threadId"))
+            if os.environ.get("FAKE_CODEX_REQUIRE_INJECT_BEFORE_TURN") == "1" and thread_id not in injected_threads:
+                send({"id": request_id, "error": {"code": -32602, "message": "history was not injected before turn/start"}})
+                continue
             send({"id": request_id, "result": {"turn": {"id": turn_id}}})
             if os.environ.get("FAKE_CODEX_AUTH_REFRESH_FAILURE") == "1":
                 send(

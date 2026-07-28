@@ -87,6 +87,22 @@ def _auth_principal_mappings() -> dict[str, str]:
     return mappings
 
 
+def _openai_compat_bindings() -> dict[str, Any]:
+    path = os.environ.get("CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE")
+    if not path:
+        return {}
+    bindings_path = Path(path).expanduser()
+    if not bindings_path.is_file():
+        raise FileNotFoundError(f"OpenAI compatibility bindings file does not exist or is not a file: {bindings_path}")
+    raw = bindings_path.read_text(encoding="utf-8")
+    if not raw.strip():
+        raise ValueError(f"OpenAI compatibility bindings file is empty: {bindings_path}")
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("OpenAI compatibility bindings must be a JSON object keyed by key digest.")
+    return parsed
+
+
 def _owner_hash_secret(data_dir: Path) -> str:
     explicit = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY")
     explicit_file = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY_FILE")
@@ -156,6 +172,7 @@ class BrokerConfig:
     hosted_tool_max_response_bytes: int = 1_048_576
     history_retention_seconds: int = 90 * 24 * 60 * 60
     max_events_per_turn: int = 10_000
+    openai_compat_bindings: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.codex_command:
@@ -249,4 +266,5 @@ class BrokerConfig:
             ),
             history_retention_seconds=_int_env("CODEX_BROKER_HISTORY_RETENTION_SECONDS", 90 * 24 * 60 * 60),
             max_events_per_turn=_int_env("CODEX_BROKER_MAX_EVENTS_PER_TURN", 10_000),
+            openai_compat_bindings=_openai_compat_bindings(),
         )

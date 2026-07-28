@@ -10,6 +10,46 @@ from test_broker import config_for
 
 
 class StateStoreTests(unittest.TestCase):
+    def test_turn_lookup_by_turn_id_is_owner_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            state = StateStore(config_for(Path(tmp_raw)).state_db_path)
+            try:
+                profile = state.ensure_profile("principal_hash", "default")
+                thread = state.create_thread(
+                    "owner-a",
+                    thread_id="thread-a",
+                    auth_principal_hash="principal_hash",
+                    auth_profile_instance_id=profile["instance_id"],
+                    profile="default",
+                    config_profile="default",
+                    host_app=None,
+                    bundle_id=None,
+                    cwd=None,
+                )
+                turn = state.create_turn(
+                    "owner-a",
+                    thread["thread_id"],
+                    auth_principal_hash="principal_hash",
+                    auth_profile_instance_id=profile["instance_id"],
+                    profile="default",
+                    config_profile="default",
+                    host_app=None,
+                    bundle_id=None,
+                    cwd=None,
+                    mode="reject",
+                    input_items=[{"type": "text", "text": "hello"}],
+                    idempotency_key=None,
+                    product_correlation_id=None,
+                    status="starting",
+                )
+                self.assertEqual(
+                    state.find_turn_by_turn_id("owner-a", turn["turn_id"])["turn_id"],
+                    turn["turn_id"],
+                )
+                self.assertIsNone(state.find_turn_by_turn_id("owner-b", turn["turn_id"]))
+            finally:
+                state.close()
+
     def test_schema_version_is_recorded_and_newer_databases_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             path = config_for(Path(tmp_raw)).state_db_path

@@ -48,6 +48,12 @@ class QueuedTurn:
     body: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class OpenAICompatTurn:
+    metadata: dict[str, Any]
+    history_items: tuple[dict[str, Any], ...] = ()
+
+
 class BrokerTurnContext:
     def __init__(
         self,
@@ -235,8 +241,33 @@ class TurnScheduler:
         return scheduler_threads.archive_thread(self, owner_id, thread_id)
 
     def start_turn(self, owner_id: str, thread_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        if "_openaiCompat" in body:
+            raise ValueError("_openaiCompat is reserved for broker-internal use.")
+        return self._start_turn(owner_id, thread_id, body)
+
+    def start_openai_turn(
+        self,
+        owner_id: str,
+        thread_id: str,
+        body: dict[str, Any],
+        *,
+        metadata: dict[str, Any],
+        history_items: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        internal_body = dict(body)
+        internal_body["_openaiCompat"] = OpenAICompatTurn(
+            metadata=dict(metadata),
+            history_items=tuple(dict(item) for item in (history_items or [])),
+        )
+        return self._start_turn(owner_id, thread_id, internal_body)
+
+    def _start_turn(self, owner_id: str, thread_id: str, body: dict[str, Any]) -> dict[str, Any]:
         if self._shutdown.is_set():
             raise ConflictError("Broker is shutting down.")
+        compat = body.get("_openaiCompat")
+        if compat is not None and not isinstance(compat, OpenAICompatTurn):
+            raise ValueError("_openaiCompat is reserved for broker-internal use.")
+        request_body = {key: value for key, value in body.items() if key != "_openaiCompat"}
         owner_hash = self.auth.hash_owner(owner_id)
         thread = self.state.get_thread(owner_hash, thread_id)
         if not thread:
@@ -303,7 +334,7 @@ class TurnScheduler:
                 idempotency_key=key if isinstance(key, str) and key else None,
                 product_correlation_id=correlation_id if isinstance(correlation_id, str) and correlation_id else None,
                 status="queued" if busy else "starting",
-                request_fingerprint=hashlib.sha256(json_dumps(body).encode("utf-8")).hexdigest(),
+                request_fingerprint=hashlib.sha256(json_dumps(request_body).encode("utf-8")).hexdigest(),
                 bundle_digest=bundle.digest if bundle else None,
                 resolved_options={
                     "authPrincipalHash": scope.auth_principal_hash,
@@ -314,6 +345,7 @@ class TurnScheduler:
                     "cwd": str(cwd) if cwd else None,
                     "codexOptions": self._request_codex_options(body),
                     "configProfileOptions": config_profile_config,
+                    **({"openaiCompat": compat.metadata} if isinstance(compat, OpenAICompatTurn) else {}),
                 },
                 broker_version=self.config.client_version,
             )
@@ -741,6 +773,12 @@ class TurnScheduler:
                 gate.active_context = context
             client.register_context(context)
             codex_thread_id = self._ensure_codex_thread(client, context, thread, cwd, body, bundle, config_profile_config)
+            compat = body.get("_openaiCompat")
+            if isinstance(compat, OpenAICompatTurn) and compat.history_items:
+                client.request(
+                    "thread/inject_items",
+                    {"threadId": codex_thread_id, "items": list(compat.history_items)},
+                )
             params = self._turn_params(codex_thread_id, input_items, body, config_profile_config)
             result = client.request("turn/start", params)
             turn_data = result.get("turn") if isinstance(result.get("turn"), dict) else {}

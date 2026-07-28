@@ -70,6 +70,13 @@ def normalize_app_server_event(
             "settings": settings,
             "collaborationMode": settings.get("collaborationMode"),
         }
+    if method == "thread/tokenUsage/updated":
+        usage = params.get("tokenUsage") if isinstance(params.get("tokenUsage"), dict) else {}
+        return "compat.response.usage", {
+            "threadId": params.get("threadId") or codex_thread_id,
+            "turnId": params.get("turnId") or codex_turn_id,
+            "tokenUsage": usage,
+        }
     if method == "thread/goal/updated":
         return "goal.updated", {
             "threadId": params.get("threadId") or codex_thread_id,
@@ -143,6 +150,9 @@ def normalize_app_server_event(
         if is_tool_item(item):
             return "tool.completed", {"item": item}
         return "item.completed", {"item": item}
+    if method == "rawResponseItem/completed":
+        item = params.get("item") if isinstance(params.get("item"), dict) else {}
+        return "compat.response.output_item", {"item": item}
     if method in APPROVAL_REQUEST_METHODS:
         return "approval.requested", {
             "kind": approval_kind(method),

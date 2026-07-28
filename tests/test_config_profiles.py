@@ -11,10 +11,39 @@ from unittest.mock import patch
 from codex_broker.bundles import BundleError
 from codex_broker.config import BrokerConfig
 from codex_broker.http_api import BrokerServices
+from codex_broker.openai_auth import OpenAICompatAuth, compatibility_key_digest
 from test_broker import config_for
 
 
 class ConfigProfileTests(unittest.TestCase):
+    def test_openai_compat_bindings_load_from_digest_only_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = Path(tmp_raw) / "bindings.json"
+            digest = compatibility_key_digest("compat-secret")
+            path.write_text(
+                json.dumps({digest: {"ownerId": "owner", "modelAliases": {"gpt": "gpt-5.6-sol"}}}),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_BROKER_DATA_DIR": tmp_raw,
+                    "CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE": str(path),
+                },
+                clear=True,
+            ):
+                config = BrokerConfig.from_env()
+
+        resolver = OpenAICompatAuth(config.openai_compat_bindings)
+        binding = resolver.resolve_authorization("Bearer compat-secret")
+        self.assertEqual(binding.owner_id, "owner")
+        self.assertEqual(binding.model_aliases["gpt"], "gpt-5.6-sol")
+        self.assertNotIn("compat-secret", repr(config.openai_compat_bindings))
+
+    def test_openai_compat_bindings_reject_raw_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "sha256"):
+            OpenAICompatAuth({"sk-raw-secret": {"ownerId": "owner"}})
+
     def test_missing_config_profile_file_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
             os.environ,
@@ -107,6 +136,17 @@ class ConfigProfileTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "non-empty string"):
                 BrokerConfig.from_env()
+
+    def test_openai_compat_binding_rejects_unknown_policy_fields(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown OpenAI compatibility binding field"):
+            OpenAICompatAuth(
+                {
+                    compatibility_key_digest("compat-key"): {
+                        "ownerId": "owner-a",
+                        "config_profile": "misspelled",
+                    }
+                }
+            )
 
     def test_config_profile_defaults_and_request_overrides_feed_app_server_params(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:

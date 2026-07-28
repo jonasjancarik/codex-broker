@@ -12,6 +12,7 @@ from .app_server import AppServerPool
 from .auth import AuthManager
 from .bundles import BundleRegistry
 from .config import BrokerConfig
+from .openai_auth import OpenAICompatAuth
 from .scheduler import TurnScheduler
 from .state import StateStore
 from .util import ensure_dir
@@ -25,6 +26,7 @@ class BrokerServices:
     bundles: BundleRegistry
     pool: AppServerPool
     scheduler: TurnScheduler
+    openai_auth: OpenAICompatAuth
 
     @classmethod
     def build(cls, config: BrokerConfig) -> "BrokerServices":
@@ -50,9 +52,18 @@ class BrokerServices:
         bundles = BundleRegistry(config, state)
         pool = AppServerPool(config, state)
         scheduler = TurnScheduler(config=config, state=state, auth=auth, bundles=bundles, pool=pool)
+        openai_auth = OpenAICompatAuth(config.openai_compat_bindings)
         scheduler.note_recovered_turns(recovered_turns)
         scheduler.note_pruned_raw_events(pruned_raw_events)
-        return cls(config=config, state=state, auth=auth, bundles=bundles, pool=pool, scheduler=scheduler)
+        return cls(
+            config=config,
+            state=state,
+            auth=auth,
+            bundles=bundles,
+            pool=pool,
+            scheduler=scheduler,
+            openai_auth=openai_auth,
+        )
 
 
 class BrokerHTTPServer(ThreadingHTTPServer):

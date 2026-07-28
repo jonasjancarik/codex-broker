@@ -123,6 +123,38 @@ class AppServerEventNormalizationTests(unittest.TestCase):
         self.assertEqual(event_type, "thread.settings.updated")
         self.assertEqual(payload["collaborationMode"]["mode"], "plan")
 
+    def test_raw_response_items_and_usage_have_stable_compatibility_events(self) -> None:
+        event_type, payload = self.normalize(
+            "rawResponseItem/completed",
+            {
+                "item": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hello"}],
+                }
+            },
+        )
+        self.assertEqual(event_type, "compat.response.output_item")
+        self.assertEqual(payload["item"]["id"], "msg_1")
+
+        event_type, payload = self.normalize(
+            "thread/tokenUsage/updated",
+            {
+                "tokenUsage": {
+                    "last": {
+                        "totalTokens": 12,
+                        "inputTokens": 7,
+                        "cachedInputTokens": 2,
+                        "outputTokens": 5,
+                        "reasoningOutputTokens": 1,
+                    }
+                }
+            },
+        )
+        self.assertEqual(event_type, "compat.response.usage")
+        self.assertEqual(payload["tokenUsage"]["last"]["cachedInputTokens"], 2)
+
     def test_review_and_approval_events_are_normalized(self) -> None:
         event_type, payload = self.normalize(
             "item/completed",
