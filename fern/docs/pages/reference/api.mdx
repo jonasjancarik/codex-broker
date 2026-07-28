@@ -1,6 +1,6 @@
 ---
 title: "API overview"
-description: "How the generated Codex Broker API reference fits with host integrations, event streaming, auth, and bundles."
+description: "How native broker APIs and OpenAI-compatible Responses and Chat Completions share one generated contract while keeping credentials separate."
 ---
 
 # API overview
@@ -32,6 +32,7 @@ The API includes endpoints for:
 - health and readiness
 - metrics
 - OpenAPI discovery
+- OpenAI-compatible model discovery, Responses, response retrieval, input-item retrieval, cancellation, and text Chat Completions
 - auth-principal/profile listing, status, probe, device auth, API-key auth, runtime invalidation, and logout
 - auth-principal/profile model discovery for reasoning choices, Fast and other service tiers, modalities, personality support, defaults, and upgrade metadata
 - auth-principal/profile usage, rate-limit reads, and reset-credit consumption
@@ -44,14 +45,31 @@ The API includes endpoints for:
 
 ## Authentication
 
-Product routes require one of these headers:
+Native broker routes require one of these headers:
 
 ```http
 Authorization: Bearer <CODEX_BROKER_INTERNAL_KEY>
 X-Codex-Broker-Key: <CODEX_BROKER_INTERNAL_KEY>
 ```
 
-`GET /healthz` and `GET /readyz` are unauthenticated. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the explicit development override is enabled.
+OpenAI-compatible routes require:
+
+```http
+Authorization: Bearer <compatibility-key>
+```
+
+The compatibility key resolves to a server-side owner, auth principal, profile,
+execution policy, optional bundle/workspace, and model aliases. It is not valid
+on native routes, and the internal broker key is not valid on compatible
+routes.
+
+`GET /healthz` and `GET /readyz` are unauthenticated. `/metrics`,
+`/openapi.json`, owner-scoped APIs, and `/v1/bundles/inline` require the
+internal broker key unless the explicit development override is enabled.
+
+See [OpenAI compatibility](../integrations/openai-compatibility.mdx) for the
+supported fields, streaming contract, response chaining, and explicit
+rejection boundary.
 
 ## Base URL
 
@@ -69,12 +87,31 @@ GET /readyz
 GET /openapi.json
 ```
 
+OpenAI-compatible clients use a base URL that includes `/v1`:
+
+```text
+http://127.0.0.1:3400/v1
+```
+
 ## Generated reference
 
-Use the generated API reference in this tab for endpoint shapes, parameters, responses, and schemas. Use the guide pages for host integration intent, event semantics, bundle boundaries, and deployment policy.
+Use the generated API reference in this tab for endpoint shapes, parameters,
+responses, security schemes, and schemas. The compatible schemas document the
+accepted subset rather than copying every field from the upstream OpenAI
+specification.
+
+Use the guide pages for identity intent, streaming semantics, bundle
+boundaries, compatibility limits, and deployment policy.
 
 ## API and host app relationship
 
 The host backend is the public product API. The broker is the internal Codex runtime API.
 
-Do not expose the broker key or broker SSE stream directly to browsers. Product UIs should call host-owned routes that authenticate product users and proxy or translate broker events.
+Do not expose the internal broker key or native broker SSE stream directly to
+browsers. Product UIs should call host-owned routes that authenticate product
+users and proxy or translate broker events.
+
+Compatibility keys are also backend credentials unless an operator has
+deliberately created a browser-specific binding and applied appropriate network
+and origin controls. The broker does not add CORS or become a public API merely
+because it accepts an OpenAI-compatible request shape.

@@ -1,6 +1,6 @@
 ---
 title: "App-server modes"
-description: "The Codex app-server protocol surfaces the broker exposes for model discovery, turns, plans, goals, review, approvals, user input, and MCP elicitations."
+description: "The pinned Codex app-server surfaces behind native turns, OpenAI-compatible output and history, plans, approvals, user input, and MCP elicitations."
 ---
 
 # App-server modes
@@ -20,6 +20,10 @@ The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `def
 | --- | --- | --- | --- |
 | Model and selector capabilities | `model/list`, including reasoning efforts, modalities, personality support, service tiers, defaults, visibility, and upgrade metadata | Implemented with auth-principal/profile scoping and pagination | `GET /v1/owners/{ownerId}/auth/models` |
 | Default chat/work turns | `thread/start`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt` | Implemented | Thread and turn HTTP APIs; `message.*`, `reasoning.*`, `tool.*`, and `turn.*` events |
+| Stable compatible output | `rawResponseItem/completed` | Persisted independently of optional raw-event debugging | `compat.response.output_item`; Responses and Chat Completions output |
+| Token usage | `thread/tokenUsage/updated` | Persists and validates the exact terminal `last` usage object | `compat.response.usage`; OpenAI response and optional Chat stream usage |
+| Compatible response history | `thread/inject_items` | Injects validated same-owner `previous_response_id` chains before `turn/start` | Responses `previous_response_id` |
+| Caller-defined dynamic tools | Server request `item/tool/call` and `DynamicToolSpec` types exist, but 0.144.6 thread and turn start parameters expose no matching declaration field | Not mapped; compatible `tools`, `tool_choice`, tool messages, and function outputs are rejected | OpenAI-shaped `400 unsupported_parameter` |
 | Plan collaboration mode | `ModeKind = "default" \| "plan"`, `ThreadSettings.collaborationMode`, `turn/plan/updated`, `item/plan/delta` | Event normalization implemented | `thread.settings.updated`, `plan.updated`, `plan.delta` events |
 | Goal tracking | `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`, `thread/goal/updated`, `thread/goal/cleared` | Event normalization implemented; direct broker goal API not yet implemented | `goal.updated`, `goal.cleared` events |
 | Review mode | `review/start`, `enteredReviewMode`, `exitedReviewMode`, auto-approval review notifications | Event normalization implemented; direct broker review API not yet implemented | `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed` events |
@@ -30,6 +34,25 @@ The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `def
 ## API direction
 
 The broker treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. Model discovery directly maps `model/list` and preserves every model field for forward compatibility.
+
+Codex 0.144.6 advertises experimental API support during app-server
+initialization, but its generated `ThreadStartParams` does not contain an
+`experimentalRawEvents` field. The broker consumes the declared
+`rawResponseItem/completed` notification without sending an unknown per-thread
+option.
+
+The generated protocol includes `item/tool/call` and dynamic-tool types but no
+supported field on `thread/start` or `turn/start` for declaring an OpenAI
+request's tool set. Reviewed bundle and MCP tools are also deployment policy,
+not caller-granted functions. Compatible tool semantics stay rejected until
+Codex exposes a complete declaration, call, result, cancellation, and streaming
+contract that can be mapped exactly.
+
+The 0.144.6 release includes `codex-responses-api-proxy`, but that executable is
+a minimal forward proxy whose default upstream is
+`https://api.openai.com/v1/responses`. It does not translate broker-managed
+app-server threads into an OpenAI API. Codex Broker therefore owns identity
+mapping, scheduling, persistence, and REST/SSE translation.
 
 Future product APIs should follow these boundaries:
 
@@ -47,5 +70,8 @@ When updating for a new Codex version:
 
 1. Regenerate the TypeScript and JSON schema artifacts.
 2. Compare `ModeKind`, `ClientRequest`, `ServerRequest`, and response types.
-3. Update event normalization and interaction fallback logic as needed.
-4. Update this page in the same change.
+3. Re-check `rawResponseItem/completed`, `thread/tokenUsage/updated`,
+   `thread/inject_items`, and `item/tool/call`.
+4. Update event normalization, compatibility fixtures, and interaction
+   fallback logic as needed.
+5. Update this page in the same change.

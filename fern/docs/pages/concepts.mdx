@@ -42,6 +42,10 @@ The compatibility key is separate from the internal broker key and from the
 upstream credential in the Codex auth profile. The broker accepts each
 credential only on its own API surface.
 
+The binding is also the compatibility caller's authorization boundary: request
+bodies cannot select owner, principal, profiles, bundle, workspace, or model
+aliases. See [OpenAI compatibility](integrations/openai-compatibility.mdx).
+
 ## Model catalog
 
 The model catalog is live App Server capability data for one auth principal and profile. `GET /auth/models` returns the available models, supported/default reasoning efforts and service tiers, modalities, personality support, picker visibility, default state, and upgrade metadata. It is not persisted in broker state.

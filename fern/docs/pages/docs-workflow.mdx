@@ -5,7 +5,10 @@ description: "How maintainers edit, preview, validate, and publish the Fern docs
 
 # Contributing to docs
 
-The Fern docs source lives in the `fern/` directory. Use Fern for reader-facing docs. Keep plain Markdown under `docs/` for source-local architecture notes and agent context.
+The Fern source under `fern/` is the single source of truth for reader-facing
+documentation. Files under the repository's root `docs/` directory are
+compatibility pointers for old links and agent `read_when` routing; do not add
+new guidance there.
 
 ```text
 fern/
@@ -30,6 +33,15 @@ Write MDX pages under `fern/docs/pages/`. Each page should answer one reader que
 - where do API and client details live?
 
 Avoid repeating the full configuration reference in every guide. Link to reference pages when a reader needs the exhaustive field list.
+
+When moving existing guidance into Fern:
+
+1. choose the page that answers the reader's question;
+2. move the complete behavior and safety contract there;
+3. replace the old root Markdown page with a short pointer to the Fern source;
+4. update README links to the Fern page; and
+5. search for stale copies of changed endpoint, credential, or configuration
+   wording.
 
 ## Update navigation
 
@@ -93,3 +105,5 @@ For CI, create a Fern token, store it as `FERN_TOKEN`, then run `pnpm docs:check
 - Update docs in the same change as behavior or API changes.
 - Use diagrams when they clarify a flow, but keep the surrounding text complete.
 - Keep pages under 1000 lines.
+- Keep root `docs/*.md` files as pointers only so behavior cannot drift between
+  two documentation trees.

@@ -5,9 +5,21 @@ description: "How product backends and job workers call Codex Broker without exp
 
 # Host integration
 
-Product backends and job workers call the broker over HTTP. Browser clients keep calling the host app. The host app calls the broker with the internal key.
+Product backends and job workers can use the native owner-scoped API or the
+OpenAI-compatible API. Browser clients normally keep calling the host app.
 
 Your backend remains the public product API. The broker is private infrastructure behind it.
+
+## Choose the API surface that matches the host
+
+| Surface | Best fit | Identity |
+| --- | --- | --- |
+| Native owner-scoped API | Product backends that need explicit threads, turns, event replay, interactions, auth management, bundles, and audit routes | Internal broker key plus server-selected `ownerId` |
+| OpenAI-compatible API | Existing OpenAI SDK integrations that need text Responses or Chat Completions without adopting broker-specific request shapes | Compatibility key mapped to a fixed server-side binding |
+
+Both surfaces use the same scheduler, Codex profiles, policy, app-server pool,
+and durable state. The compatible surface intentionally exposes fewer controls.
+See [OpenAI compatibility](openai-compatibility.mdx) for its exact contract.
 
 ## Boundary
 
@@ -96,18 +108,25 @@ Set the selected choices in the turn body:
 
 Selection precedence is the turn's `codexOptions`, then the selected `configProfile`, then Codex's current recommended model and model-specific defaults. A turn-level choice does not modify the profile. `reasoningEffort` is accepted as an alias for `effort`. Use `/auth/models` instead of hardcoding supported efforts or service tiers.
 
-## Auth model
+## Native API authentication stays server-side
 
-All product API routes require one of these headers:
+Native product routes require one of these headers:
 
 ```http
 Authorization: Bearer <CODEX_BROKER_INTERNAL_KEY>
 X-Codex-Broker-Key: <CODEX_BROKER_INTERNAL_KEY>
 ```
 
-Only `GET /healthz` and `GET /readyz` are unauthenticated. `/metrics`, `/openapi.json`, `/v1/...`, and `/v1/bundles/inline` require the broker key unless the broker is running with `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
+Only `GET /healthz` and `GET /readyz` are unauthenticated. `/metrics`,
+`/openapi.json`, `/v1/owners/...`, and `/v1/bundles/inline` require the broker
+key unless the broker is running with
+`CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
 
 Keep the broker key server-side. Browser `EventSource` cannot set the required auth header, so product UIs should consume a host-owned proxy stream.
+
+OpenAI-compatible routes always require their own compatibility bearer key.
+Unauthenticated development mode does not bypass that check, and native and
+compatibility keys are not interchangeable.
 
 ## Auth states
 
@@ -140,3 +159,4 @@ Failed turns include `errorCode`, `publicMessage`, and `adminMessage`. Host UIs 
 - Validate hosted-tool secret headers in the host app.
 - Keep product authorization inside the host app, including hosted tool endpoints.
 - Prefer configuration profiles and reviewed bundles over ad hoc per-request behavior.
+- Give each OpenAI-compatible client the narrowest practical server-side binding.

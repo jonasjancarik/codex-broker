@@ -8,7 +8,11 @@ A host app still owns its product behavior: users, permissions, database records
 
 You can run one broker for more than one app if you deliberately want a shared internal service, but that is not the main mental model. Start with one broker container for one product app.
 
-The project spec lives in [codex-broker-spec.md](codex-broker-spec.md). The Fern documentation site source lives in [fern/](fern/); preview it with `pnpm docs:dev` and validate it with `pnpm docs:check`. For implementation-level Markdown documentation, start with [docs/architecture.md](docs/architecture.md) and [docs/configuration.md](docs/configuration.md).
+The project spec lives in [codex-broker-spec.md](codex-broker-spec.md). Fern is
+the single source of truth for reader-facing documentation; start with the
+[overview](fern/docs/pages/index.mdx), preview it with `pnpm docs:dev`, and
+validate it with `pnpm docs:check`. Root `docs/*.md` files are compatibility
+pointers for existing links and agent routing.
 
 ## Why This Exists
 
@@ -253,8 +257,8 @@ cancellation, response chaining, reasoning controls, service tiers, and JSON
 Schema output. It fails closed for caller-defined tools, `store: false`,
 sampling and logprob controls, token caps, background mode, and non-text input.
 Reviewed Codex bundles and MCP tools remain deployment policy; OpenAI request
-`tools` are not treated as equivalent capabilities. See
-[docs/integrating-with-broker.md](docs/integrating-with-broker.md#openai-compatible-clients-use-server-side-identity-bindings)
+`tools` are not treated as equivalent capabilities. See the Fern
+[OpenAI compatibility guide](fern/docs/pages/integrations/openai-compatibility.mdx)
 for the exact compatibility contract.
 
 Auth status reports `missing`, `present_unverified`, `authenticated`, `invalid`, or `refresh_failed`, plus an `authFingerprint` for the principal/profile auth file. `GET /auth/profiles` lists last-recorded profile state without running Codex. `GET /auth/status` runs Codex's local login-status check, while `POST /auth/probe` runs a tiny real Codex request. Failed turns include `errorCode`, `publicMessage`, and `adminMessage`; host UIs should display `publicMessage` or `error` to end users and keep `adminMessage` for admin logs. `session_not_resumable` means Codex reported that the previous thread/session state is gone; host apps should continue in a new thread from persisted workspace context. After an administrator refreshes shared Codex auth, call `POST /v1/owners/{ownerId}/auth/runtime/invalidate` for the profile to close pooled App Server children that were started with the old auth.
@@ -286,7 +290,10 @@ From the repository root, run the broker through `uv`:
 uv run codex-broker
 ```
 
-`uv` reads [pyproject.toml](pyproject.toml), builds the local package, and runs the `codex-broker` console script. Set environment variables before starting the process. The complete configuration reference is in [docs/configuration.md](docs/configuration.md).
+`uv` reads [pyproject.toml](pyproject.toml), builds the local package, and runs
+the `codex-broker` console script. Set environment variables before starting
+the process. The complete configuration reference is in
+[Fern](fern/docs/pages/operations/configuration-reference.mdx).
 
 Useful local environment:
 
@@ -333,7 +340,9 @@ docker run --rm \
 
 Override the pinned Codex version with `--build-arg CODEX_VERSION=<version>`.
 
-See [docs/deployment.md](docs/deployment.md) and [examples/docker-compose.yml](examples/docker-compose.yml) for a Docker Compose example.
+See the Fern [deployment guide](fern/docs/pages/operations/deployment.mdx) and
+[examples/docker-compose.yml](examples/docker-compose.yml) for a Docker Compose
+example.
 
 ## Current Integrations
 
@@ -395,10 +404,11 @@ pnpm sdk:generate
 
 ## More Reading
 
-- [docs/architecture.md](docs/architecture.md): process boundaries, modules, storage layout, request flow, pooling, recovery, and security model.
-- [docs/configuration.md](docs/configuration.md): environment variables, configuration profiles, request options, bundle manifests, and Docker build args.
-- [docs/host-integration.md](docs/host-integration.md): how host apps should call the broker.
-- [docs/integrating-with-broker.md](docs/integrating-with-broker.md): copy-pasteable integration flow, client examples, SSE events, and hosted-tool endpoint contract.
-- [docs/app-server-modes.md](docs/app-server-modes.md): version-pinned Codex app-server mode and capability coverage.
-- [docs/deployment.md](docs/deployment.md): Docker mounts, secrets, deployment, and shutdown behavior.
+- [Fern overview](fern/docs/pages/index.mdx): responsibilities, runtime loop, and reader paths.
+- [OpenAI compatibility](fern/docs/pages/integrations/openai-compatibility.mdx): SDK setup, identity bindings, supported endpoints, streams, chaining, and explicit limits.
+- [Host integration](fern/docs/pages/integrations/host-integration.mdx): how native product backends and workers call the broker.
+- [Configuration reference](fern/docs/pages/operations/configuration-reference.mdx): environment variables, compatibility bindings, profiles, and request options.
+- [Architecture](fern/docs/pages/runtime/architecture.mdx): process boundaries, storage, scheduling, pooling, recovery, and security.
+- [App-server modes](fern/docs/pages/runtime/app-server-modes.mdx): version-pinned Codex protocol and capability coverage.
+- [Deployment](fern/docs/pages/operations/deployment.mdx): Docker mounts, secrets, readiness, and shutdown behavior.
 - [examples/bundles/README.md](examples/bundles/README.md): example task bundles and hosted-tool declarations.

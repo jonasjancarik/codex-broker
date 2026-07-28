@@ -1,0 +1,285 @@
+---
+title: "OpenAI compatibility"
+description: "Use Codex Broker through OpenAI SDKs with server-bound identity, Responses and Chat Completions, streaming, chaining, and explicit compatibility limits."
+---
+
+# The supported OpenAI API subset works as a drop-in endpoint
+
+Codex Broker exposes a deliberately bounded OpenAI-compatible API. Existing
+OpenAI SDK clients can use the supported text workflow by changing their base
+URL and API key; the broker then runs the request through its existing Codex
+identity, scheduler, persistence, and app-server controls.
+
+This is not a claim of compatibility with every OpenAI endpoint or parameter.
+The broker accepts behavior it can reproduce faithfully and returns an
+OpenAI-shaped error for everything else.
+
+## Change only the base URL and compatibility key
+
+Python:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:3400/v1",
+    api_key="a-compatibility-key-issued-by-the-operator",
+)
+
+response = client.responses.create(
+    model="gpt-compatible",
+    input="Explain this change in two sentences.",
+)
+print(response.output_text)
+```
+
+TypeScript:
+
+```typescript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "http://127.0.0.1:3400/v1",
+  apiKey: process.env.CODEX_BROKER_COMPATIBILITY_KEY,
+});
+
+const response = await client.responses.create({
+  model: "gpt-compatible",
+  input: "Explain this change in two sentences.",
+});
+console.log(response.output_text);
+```
+
+The compatibility key is not the internal broker key and is not the upstream
+credential stored in a Codex auth profile. Each credential is accepted only on
+its own boundary.
+
+## Compatibility keys select identity and policy on the server
+
+Set `CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE` to a JSON file whose keys are
+lowercase SHA-256 digests prefixed with `sha256:`:
+
+```json
+{
+  "sha256:<digest-of-client-key>": {
+    "ownerId": "service-account-1",
+    "authPrincipalId": "shared-codex",
+    "profile": "default",
+    "configProfile": "default",
+    "hostApp": "openai-sdk",
+    "bundleId": "example-chat-v1",
+    "cwd": "/workspaces/app",
+    "modelAliases": {
+      "gpt-compatible": "gpt-5.6-sol"
+    }
+  }
+}
+```
+
+Generate the digest without writing the raw key into the binding file:
+
+```bash
+printf '%s' "$COMPATIBILITY_KEY" | shasum -a 256
+```
+
+`ownerId` is required. The other fields are optional:
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `authPrincipalId` | owner policy default | Selects the trusted Codex credential principal. It must still satisfy the broker's owner-to-principal policy. |
+| `profile` | `default` | Selects the Codex auth profile. |
+| `configProfile` | `default` | Selects broker execution defaults and policy. |
+| `hostApp` | `openai-compatible-api` | Labels the integration in broker records and diagnostics. |
+| `bundleId` | none | Enables one reviewed Codex bundle for this caller. |
+| `cwd` | none | Fixes the allowed Codex working directory. |
+| `modelAliases` | `{}` | Maps client-visible model names to model ids advertised by Codex. |
+
+The raw key is distributed separately to the client. The broker keeps only its
+digest in configuration and never persists the presented key or its digest in
+turn records. Request bodies and custom headers cannot override the binding's
+owner, principal, profiles, host app, bundle, workspace, or aliases.
+
+See [Configuration reference](../operations/configuration-reference.mdx#openai-compatible-identity-bindings)
+for the complete environment contract.
+
+## The Responses API is the primary compatibility surface
+
+| Endpoint | Supported behavior |
+| --- | --- |
+| `GET /v1/models` | Lists direct model names and aliases available to the binding. |
+| `GET /v1/models/{model}` | Retrieves one available direct model or alias. |
+| `POST /v1/responses` | Creates synchronous or streamed text responses. |
+| `GET /v1/responses/{responseId}` | Reconstructs a persisted compatible response. |
+| `GET /v1/responses/{responseId}/input_items` | Lists the normalized text input persisted for a response. |
+| `POST /v1/responses/{responseId}/cancel` | Interrupts an active response and returns its updated state. |
+| `POST /v1/chat/completions` | Provides synchronous or streamed text Chat Completions over the same scheduler. |
+
+Responses requests accept:
+
+- `model`
+- a non-empty string input, or text message items ending in a user message
+- `instructions`
+- `stream`
+- `previous_response_id`
+- `reasoning.effort` and `reasoning.summary`
+- `service_tier`
+- `text.format` with `text` or `json_schema`
+- string-to-string `metadata`
+- omitted `store` or `store: true`
+
+JSON Schema output is passed to Codex as an enforceable app-server
+`outputSchema`:
+
+```python
+response = client.responses.create(
+    model="gpt-compatible",
+    input="Return the repository status.",
+    text={
+        "format": {
+            "type": "json_schema",
+            "name": "repository_status",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "clean": {"type": "boolean"},
+                },
+                "required": ["summary", "clean"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        }
+    },
+)
+```
+
+## Chat Completions supports text conversation adapters
+
+Chat Completions accepts:
+
+- text-only `messages`
+- `system` and `developer` instructions
+- `stream`
+- `reasoning_effort`
+- `service_tier`
+- string-to-string `metadata`
+- `response_format` with `text` or `json_schema`
+- `stream_options.include_usage`
+
+```python
+completion = client.chat.completions.create(
+    model="gpt-compatible",
+    messages=[
+        {"role": "system", "content": "Answer concisely."},
+        {"role": "user", "content": "What changed?"},
+    ],
+)
+
+print(completion.choices[0].message.content)
+```
+
+Responses should be preferred for new integrations. Chat Completions exists for
+applications whose current abstraction is message-based.
+
+## Streaming follows each API's native framing
+
+Responses streaming emits typed events such as:
+
+```text
+response.created
+response.in_progress
+response.output_item.added
+response.content_part.added
+response.output_text.delta
+response.output_text.done
+response.content_part.done
+response.output_item.done
+response.completed
+```
+
+Each event includes a monotonic `sequence_number`. Terminal failures use
+`response.failed`, `response.cancelled`, or `response.incomplete` as
+appropriate.
+
+Chat Completions emits `chat.completion.chunk` data frames, an optional
+usage-only chunk when `stream_options.include_usage` is true, and a final
+`data: [DONE]` marker.
+
+Closing a client connection does not cancel a stored response. Use
+`POST /v1/responses/{responseId}/cancel` when cancellation is intended.
+
+## Response chaining reconstructs persisted history
+
+Every compatible response runs on a fresh broker thread. When a request supplies
+`previous_response_id`, the broker:
+
+1. verifies that every ancestor belongs to the binding's owner scope;
+2. rejects missing, non-Responses, incomplete, cyclic, or excessively deep
+   chains;
+3. reconstructs canonical input and raw compatible output in chronological
+   order; and
+4. injects that history with app-server `thread/inject_items` before starting
+   the new turn.
+
+The client receives the requested model name, while the mapped Codex model id is
+kept in private broker execution metadata.
+
+## Unsupported semantics fail instead of changing behavior
+
+The broker rejects fields it cannot honor exactly:
+
+- `tools`, `tool_choice`, function calls, tool messages, and function outputs
+- `store: false` and response deletion
+- temperature, top-p, penalties, logprobs, seed, token bias, and token caps
+- images, audio, files, remote input, and other non-text content
+- background or deferred execution
+- unknown fields whose behavior could affect output or persistence
+
+These requests return an OpenAI-shaped `400` error with
+`code: "unsupported_parameter"` or `code: "invalid_parameter"`. They are never
+silently ignored.
+
+## Reviewed bundle tools remain deployment policy
+
+A compatibility binding may select a reviewed broker bundle containing Codex
+skills, MCP servers, or broker-hosted tools. Those capabilities are assigned by
+the operator and remain governed by bundle, workspace, sandbox, and host
+authorization policy.
+
+They are not caller-defined OpenAI functions. Codex 0.144.6 declares the
+app-server request type `item/tool/call`, but its generated thread and turn
+start parameters do not expose the matching caller-tool declaration contract
+needed for an exact OpenAI mapping. Sending `tools` therefore never grants or
+selects bundle capabilities.
+
+## Errors preserve the OpenAI envelope without exposing internals
+
+Authentication, validation, not-found, conflict, and server errors use:
+
+```json
+{
+  "error": {
+    "message": "Reader-safe explanation",
+    "type": "invalid_request_error",
+    "param": "field_name",
+    "code": "unsupported_parameter"
+  }
+}
+```
+
+Terminal Codex failures expose a stable error code and generic message. Raw
+app-server error text, broker ids, internal tool events, and compatibility
+credentials are not included in compatible response objects.
+
+Common checks:
+
+| Symptom | Check |
+| --- | --- |
+| `401 invalid_api_key` | Confirm that the client uses the raw compatibility key and that its digest exists in the binding file. |
+| `404 model_not_found` | Call `GET /v1/models` with the same key and verify the direct model or alias. |
+| `404 resource_not_found` | Confirm that the response id belongs to the same owner binding and was created through `/v1/responses`. |
+| `400 unsupported_parameter` | Remove fields outside the documented compatibility subset. |
+| `502 app_server_error` | Check broker readiness, Codex authentication, and app-server logs. |
+
+For native owner-scoped APIs, continue with [Host integration](host-integration.mdx)
+and [HTTP flow](http-flow.mdx).

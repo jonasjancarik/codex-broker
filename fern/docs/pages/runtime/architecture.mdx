@@ -1,6 +1,6 @@
 ---
 title: "Architecture"
-description: "The broker process boundaries, model discovery, storage layout, app-server pool, bundle overlays, event streaming, and shutdown behavior."
+description: "The broker's native and OpenAI-compatible HTTP boundaries, identity model, storage, scheduler, app-server pool, events, and shutdown behavior."
 ---
 
 # Architecture
@@ -28,8 +28,8 @@ host app backend or worker
 codex-broker process
   |
   +-- HTTP API
-  |     authenticates broker-key requests
-  |     exposes health, readiness, OpenAPI, metrics, auth, model catalog, threads, turns, events
+  |     authenticates native broker keys and OpenAI compatibility keys
+  |     exposes health, readiness, OpenAPI, metrics, native APIs, Responses, and Chat Completions
   |
   +-- AuthManager
   |     HMACs owner and auth-principal ids
@@ -66,14 +66,20 @@ The implementation uses the Python standard library HTTP server and `subprocess`
 | `src/codex_broker/__main__.py` | Console entry point. |
 | `src/codex_broker/config.py` | Environment parsing and derived filesystem paths. |
 | `src/codex_broker/http_api.py` | HTTP routes, auth header checks, readiness, metrics, SSE, OpenAPI. |
+| `src/codex_broker/openai_api.py` | Compatible routing, synchronous assembly, Responses SSE, and Chat Completions SSE. |
+| `src/codex_broker/openai_protocol.py` | Strict compatible request parsing, OpenAI objects and errors, id mapping, and durable output/usage reconstruction. |
+| `src/codex_broker/openai_auth.py` | Digest-only compatibility-key authentication and immutable caller bindings. |
 | `src/codex_broker/account_api.py` | Principal/profile-scoped model discovery, usage, rate-limit, and reset-credit routes. |
 | `src/codex_broker/identity.py` | Trusted owner-to-auth-principal policy and hashed scopes. |
 | `src/codex_broker/auth.py` | Auth profile normalization, profile-instance lifecycle, `CODEX_HOME`, and Codex login/status/logout. |
+| `src/codex_broker/auth_api.py` | Auth/profile HTTP routes and OpenAPI fragments. |
 | `src/codex_broker/scheduler.py` | Thread and turn lifecycle, same-thread gates, config profiles, Codex request params, metrics. |
+| `src/codex_broker/scheduler_threads.py` | Immutable thread auth bindings and public thread/turn shapes. |
 | `src/codex_broker/app_server.py` | `codex app-server` process pool, JSON-RPC transport, interaction mediation. |
 | `src/codex_broker/bundles.py` | Mounted and inline bundle lookup, validation, overlays, MCP config, hosted-tool declarations. |
 | `src/codex_broker/tool_adapter_mcp.py` | Local MCP server that forwards broker-hosted tool calls to host-owned HTTP endpoints. |
-| `src/codex_broker/state.py` | SQLite schema, persistence, restart recovery, event and audit queries. |
+| `src/codex_broker/state.py` | SQLite persistence, restart recovery, and event and audit queries. |
+| `src/codex_broker/state_schema.py` | Transactional schema creation and strict schema-version validation. |
 | `src/codex_broker/events.py` | Codex app-server notification to broker event normalization. |
 | `src/codex_broker/interactions.py` | Validation and fallback response shapes for approvals, permissions, user input, and MCP elicitations. |
 | `src/codex_broker/client.py` | Python client for host services and workers. |
@@ -88,10 +94,15 @@ On startup, the broker:
 4. Marks abandoned `starting`, `queued`, and `running` turns as failed.
 5. Marks pending interactions failed with fallback responses.
 6. Prunes persisted raw app-server event fields when raw capture retention is enabled.
-7. Constructs auth, bundle, app-server pool, and scheduler services.
+7. Constructs native auth, compatibility auth, bundle, app-server pool, and
+   scheduler services.
 8. Starts `ThreadingHTTPServer` on `CODEX_BROKER_HOST:CODEX_BROKER_PORT`.
 
-Only `GET /healthz` and `GET /readyz` are unauthenticated. Every product route, `/metrics`, `/openapi.json`, and `/v1/bundles/inline` requires the broker key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
+Only `GET /healthz` and `GET /readyz` are unauthenticated. Native product
+routes, `/metrics`, `/openapi.json`, and `/v1/bundles/inline` require the
+internal broker key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
+OpenAI-compatible routes always require a separately configured compatibility
+key whose digest maps to a fixed server-side caller binding.
 
 ## Data layout
 
@@ -99,9 +110,10 @@ Only `GET /healthz` and `GET /readyz` are unauthenticated. Every product route, 
 <data_dir>/
   state/
     broker.sqlite
+    owner-hash.key
   auth/
-    owners/
-      <owner-hash>/
+    principals/
+      <auth-principal-hash>/
         profiles/
           <profile>/
             codex-home/
@@ -127,7 +139,7 @@ The default data directory is `.data`; Docker deployments usually set it to `/da
 
 `StateStore` creates tables for:
 
-- user Codex auth profiles and auth status
+- auth-principal Codex profiles and auth status
 - broker threads
 - turns
 - normalized events and optional redacted raw app-server fields
@@ -137,6 +149,32 @@ The default data directory is `.data`; Docker deployments usually set it to `/da
 - pending interactions
 
 Restart recovery is conservative. Turns that were in progress before process death are failed because the app-server child that owned them is gone. Pending interactions are resolved with fallback responses so host UIs do not show stale prompts.
+
+## Compatible responses reuse the scheduler and durable event store
+
+The compatibility façade is an adapter over the same broker runtime rather than
+a second execution system:
+
+1. The bearer key resolves an immutable owner/principal/profile/policy binding.
+2. The requested model or alias is checked against app-server `model/list`.
+3. The broker creates a fresh broker thread and a compatibility-marked turn.
+4. A `previous_response_id` chain, when present, is reconstructed from
+   owner-scoped persisted records and sent through `thread/inject_items`.
+5. The scheduler starts the Codex turn with the binding's bundle, workspace,
+   model, reasoning, service-tier, instruction, and output-schema policy.
+6. `rawResponseItem/completed` becomes `compat.response.output_item`, while
+   `thread/tokenUsage/updated` becomes `compat.response.usage`.
+7. Synchronous responses, retrieval, and terminal stream events are assembled
+   from those durable records.
+
+Generic message events are useful for live deltas, but they are not treated as
+the final compatible response contract. A completed compatible response fails
+closed if its stable output item or token usage is missing or malformed.
+
+Every response gets a fresh broker thread so synchronous requests do not share
+mutable conversation state accidentally. Continuation is explicit through
+`previous_response_id`, and closing an HTTP stream does not implicitly cancel
+the persisted turn.
 
 ## App-server pool
 
@@ -156,13 +194,19 @@ Idle children are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`. Closed or c
 
 Turns that use broker-hosted HTTP adapters close their app-server child after finalization because adapter config includes per-turn overlay context.
 
-## Security model
+## Separate credentials preserve the identity boundary
 
-The broker is not a public API. It assumes a trusted host backend or worker calls it with an internal key.
+The broker remains an internal service. Native host integrations use the
+internal broker key. OpenAI-compatible clients use separate compatibility keys
+that select server-owned identity and policy bindings. Neither credential is
+accepted on the other's route set, and neither replaces the upstream Codex
+credential stored in the selected auth profile.
 
 Main controls:
 
 - broker-key authentication for product routes
+- digest-only compatibility-key authentication with immutable server-side bindings
+- strict separation between native, compatibility, and upstream credentials
 - owner-scoped broker-state isolation and auth-principal/profile auth-home isolation
 - HMAC-derived owner/principal paths and hashes in logs
 - scrubbed child process environments

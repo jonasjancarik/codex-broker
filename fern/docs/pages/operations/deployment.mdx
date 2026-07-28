@@ -79,6 +79,31 @@ Set `CODEX_HOST_TOOL_KEY` in both the broker process and the host app.
 
 Set `CODEX_BROKER_INTERNAL_KEY_FILE` to a Docker secret path. The broker reports not-ready without an internal key unless `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true` is set for local development.
 
+Deployments that expose the OpenAI-compatible API should mount a second,
+read-only secret file and point
+`CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE` at it:
+
+```yaml
+services:
+  codex-broker:
+    environment:
+      CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE: /run/secrets/openai_compat_bindings
+    secrets:
+      - codex_broker_key
+      - openai_compat_bindings
+
+secrets:
+  codex_broker_key:
+    file: ./secrets/codex_broker_key
+  openai_compat_bindings:
+    file: ./secrets/openai_compat_bindings.json
+```
+
+The binding file stores only SHA-256 key digests and fixed caller policy. Store
+and distribute each raw compatibility key separately. Compatibility keys,
+internal broker keys, and upstream Codex credentials serve different trust
+boundaries and should not be reused.
+
 Do not pass auth files, API keys, or access tokens as bundle content. Codex credentials are stored under hashed auth-principal/profile paths in `/data/auth`.
 
 Codex app-server children start with a scrubbed process environment. Secret-looking variables are not passed through by default. If a reviewed deployment needs a helper inside Codex to read specific environment variables, set `CODEX_BROKER_PASSTHROUGH_ENV` to exact variable names:
@@ -97,6 +122,11 @@ Profiles can set app-server defaults such as `model`, `approvalPolicy`, `sandbox
 
 When profiles are configured, unknown `configProfile` values are rejected.
 
+Compatibility bindings may select one of these configuration profiles plus an
+optional reviewed bundle and workspace. The client cannot override those
+choices. See [OpenAI compatibility](../integrations/openai-compatibility.mdx)
+and [Configuration reference](configuration-reference.mdx#openai-compatible-identity-bindings).
+
 ## Readiness
 
 `GET /readyz` checks:
@@ -107,6 +137,11 @@ When profiles are configured, unknown `configProfile` values are rejected.
 - configured bundle roots are readable/searchable directories
 - auth data directory writability
 - internal API key presence unless unauthenticated development mode is enabled
+
+Compatibility bindings are optional, so readiness does not require their file.
+If `CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE` is configured, a missing, empty,
+or malformed file fails broker startup instead of silently disabling the
+compatible API.
 
 ## Process lifecycle
 

@@ -34,6 +34,9 @@ navigation:
             icon: fa-duotone fa-diagram-project
       - section: Integrations
         contents:
+          - page: OpenAI compatibility
+            path: docs/pages/integrations/openai-compatibility.mdx
+            icon: fa-duotone fa-arrows-rotate
           - page: Host integration
             path: docs/pages/integrations/host-integration.mdx
             icon: fa-duotone fa-plug

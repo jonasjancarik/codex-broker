@@ -9,6 +9,13 @@ Bundles are reviewed task manifests selected by `bundleId`. They declare the ski
 
 The host app still implements tool behavior and final permission checks.
 
+An OpenAI compatibility binding may select one reviewed `bundleId`, but the
+client cannot choose or override it. Bundle skills, MCP servers, and hosted
+tools remain operator-assigned Codex capabilities; they are not exposed as
+caller-defined OpenAI functions. Compatible requests containing `tools`,
+`tool_choice`, tool messages, or function outputs are rejected even when the
+binding has a bundle.
+
 ## Bundle lookup
 
 Mounted bundles are resolved from each `CODEX_BROKER_ALLOWED_BUNDLE_ROOTS` entry in this order:

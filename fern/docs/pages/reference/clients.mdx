@@ -5,9 +5,46 @@ description: "Python and TypeScript client usage patterns for host services and 
 
 # Clients
 
-Host services can call the broker directly over HTTP, or use the lightweight clients included in this repository.
+Host services can call the native broker API directly over HTTP, use the
+lightweight native clients in this repository, or point an OpenAI SDK at the
+compatible API.
 
-## Python client
+## OpenAI SDKs
+
+For compatible text Responses or Chat Completions, use the official OpenAI SDK
+with a broker-issued compatibility key:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:3400/v1",
+    api_key="a-compatibility-key-issued-by-the-operator",
+)
+
+response = client.responses.create(
+    model="gpt-compatible",
+    input="Summarize the repository.",
+)
+print(response.output_text)
+```
+
+```typescript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "http://127.0.0.1:3400/v1",
+  apiKey: process.env.CODEX_BROKER_COMPATIBILITY_KEY,
+});
+```
+
+The compatibility surface does not expose native broker thread, interaction,
+auth-management, or audit routes. See
+[OpenAI compatibility](../integrations/openai-compatibility.mdx) before
+reusing an integration that sends tools, non-text content, sampling controls,
+or `store: false`.
+
+## Native Python client
 
 Use the bundled Python client when host code can import this package:
 
@@ -75,7 +112,7 @@ print(final_turn["status"])
 
 The Python client returns plain dictionaries and raises `CodexBrokerClientError` for HTTP errors.
 
-## TypeScript client
+## Native TypeScript client
 
 The repository includes a lightweight TypeScript source client at:
 
@@ -130,7 +167,7 @@ For a configured shared account, add `authPrincipalId` to `auth` and the thread-
 
 `list_models` and `listModels` return the selected account's model catalog, reasoning choices, and service tiers. Offer Fast only when the selected model advertises a `serviceTiers` entry whose `id` is `fast`.
 
-## Streaming in Node
+## Native event streaming in Node
 
 In Node or server runtimes, stream SSE with `fetch` so the request can send the broker auth header:
 

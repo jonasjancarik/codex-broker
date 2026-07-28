@@ -36,8 +36,12 @@ Most integrations use this flow:
 4. The host checks or starts Codex auth for that principal/profile.
 5. A picker can discover the principal/profile's current model, reasoning, and service-tier capabilities.
 6. The host creates a broker thread that immutably binds the principal and profile.
-7. The host submits turns and streams normalized events from `/events`.
-8. The host maps those events into its own UI, job logs, database rows, or artifacts.
+7. The host uses either native threads and event streams or the
+   OpenAI-compatible Responses and Chat Completions routes.
+8. The broker runs both surfaces through the same scheduler, Codex profile,
+   policy, and durable event store.
+9. The host maps the result into its own UI, job logs, database rows, or
+   artifacts.
 
 ```mermaid
 flowchart LR
@@ -62,10 +66,18 @@ Use the broker when a product app needs Codex but should not run Codex process m
 
 ## Reader paths
 
-New integrators: start with [Quickstart](quickstart.mdx), then read [Core concepts](concepts.mdx), [Host integration](integrations/host-integration.mdx), and [HTTP flow](integrations/http-flow.mdx).
+Existing OpenAI SDK users: read
+[OpenAI compatibility](integrations/openai-compatibility.mdx), then
+[Configuration reference](operations/configuration-reference.mdx#openai-compatible-identity-bindings).
+
+Native integrators: start with [Quickstart](quickstart.mdx), then read
+[Core concepts](concepts.mdx),
+[Host integration](integrations/host-integration.mdx), and
+[HTTP flow](integrations/http-flow.mdx).
 
 Operators: read [Deployment](operations/deployment.mdx), [Configuration reference](operations/configuration-reference.mdx), and [Architecture](runtime/architecture.mdx).
 
 Bundle authors: read [Bundles and hosted tools](bundles/bundles-and-hosted-tools.mdx).
 
-API consumers: read [API overview](reference/api.mdx), then use the generated API reference in the Reference tab.
+API consumers: read [API overview](reference/api.mdx), then use the generated
+API reference in the Reference tab.

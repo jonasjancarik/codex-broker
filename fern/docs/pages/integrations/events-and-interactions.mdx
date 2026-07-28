@@ -48,6 +48,8 @@ The broker validates `threadId` and optional `turnId` before opening the SSE res
 | `turn.started`, `turn.completed`, `turn.failed`, `turn.interrupted` | Turn lifecycle. Treat completed, failed, and interrupted as terminal for streaming loops. |
 | `message.delta` | Assistant output deltas. Steering also emits `message.delta` with `steered` metadata. |
 | `message.completed` | Completed Codex agent message item. |
+| `compat.response.output_item` | Stable raw Responses item persisted for compatible response reconstruction. This is an internal broker event, not an OpenAI stream event name. |
+| `compat.response.usage` | Exact app-server token usage persisted for compatible response and usage reconstruction. |
 | `reasoning.summary.started`, `reasoning.summary.delta`, `reasoning.completed` | Reasoning summary lifecycle and deltas. |
 | `tool.started`, `tool.output.delta`, `tool.completed`, `tool.requested` | Tool lifecycle and output. |
 | `approval.requested`, `approval.resolved` | Approval request lifecycle. |
@@ -57,6 +59,11 @@ The broker validates `threadId` and optional `turnId` before opening the SSE res
 | `error` | Normalized Codex app-server error payload. |
 
 When `ambiguous` is `true`, the broker attached an early app-server notification to the best known active context before all Codex metadata was available. Host consumers may display the event, but should avoid treating the Codex ids on that event as authoritative.
+
+OpenAI-compatible streaming is assembled from these durable events but uses
+the Responses or Chat Completions wire contract instead of this native broker
+envelope. See
+[OpenAI compatibility](openai-compatibility.mdx#streaming-follows-each-apis-native-framing).
 
 ## Host-resolved interactions
 
