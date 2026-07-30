@@ -114,6 +114,11 @@ for the complete environment contract.
 | `POST /v1/responses/{responseId}/cancel` | Interrupts an active response and returns its updated state. |
 | `POST /v1/chat/completions` | Provides synchronous or streamed text Chat Completions over the same scheduler. |
 
+Completed responses prefer Codex raw response items when available. Codex
+versions that omit those events are reconstructed from their persisted
+completed agent-message events, so synchronous responses remain retrievable
+after a broker restart.
+
 Responses requests accept:
 
 - `model`

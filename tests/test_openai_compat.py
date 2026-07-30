@@ -217,17 +217,17 @@ class OpenAICompatApiTests(unittest.TestCase):
         retrieved = self._request("GET", f"/v1/responses/{created['id']}")
         self.assertEqual(retrieved, created)
 
-    def test_completed_response_requires_raw_output(self) -> None:
+    def test_completed_response_falls_back_to_normalized_agent_message(self) -> None:
         os.environ["FAKE_CODEX_OMIT_RAW_RESPONSE"] = "1"
-        with self.assertRaises(urllib.error.HTTPError) as missing:
-            self._request(
-                "POST",
-                "/v1/responses",
-                {"model": "gpt-compatible", "input": "Missing raw output"},
-            )
-        self.assertEqual(missing.exception.code, 500)
-        error = json.loads(missing.exception.read().decode("utf-8"))["error"]
-        self.assertEqual(error["code"], "server_error")
+        created = self._request(
+            "POST",
+            "/v1/responses",
+            {"model": "gpt-compatible", "input": "Missing raw output"},
+        )
+        self.assertEqual(created["output"][0]["content"][0]["text"], "hello")
+        self._restart_broker()
+        retrieved = self._request("GET", f"/v1/responses/{created['id']}")
+        self.assertEqual(retrieved, created)
 
     def test_completed_response_rejects_malformed_usage(self) -> None:
         os.environ["FAKE_CODEX_MALFORMED_TOKEN_USAGE"] = "1"

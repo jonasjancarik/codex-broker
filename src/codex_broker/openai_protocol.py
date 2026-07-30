@@ -315,9 +315,45 @@ def raw_output_items(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
-def public_output_items(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def normalized_output_items(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reconstruct output when Codex omits rawResponseItem/completed."""
     output: list[dict[str, Any]] = []
-    for item in raw_output_items(events):
+    for event in events:
+        if event.get("event_type") != "message.completed":
+            continue
+        payload = event.get("payload")
+        item = payload.get("item") if isinstance(payload, dict) else None
+        if not isinstance(item, dict) or item.get("type") != "agentMessage":
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            continue
+        output.append(
+            {
+                "id": item.get("id") or f"msg_{len(output) + 1}",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": text,
+                        "annotations": [],
+                        "logprobs": [],
+                    }
+                ],
+            }
+        )
+    return output
+
+
+def public_output_items(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    raw_items = raw_output_items(events)
+    if not raw_items:
+        return normalized_output_items(events)
+
+    output: list[dict[str, Any]] = []
+    for item in raw_items:
         if item.get("type") != "message" or item.get("role") != "assistant":
             continue
         content: list[dict[str, Any]] = []
