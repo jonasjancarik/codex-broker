@@ -8,11 +8,13 @@ A host app still owns its product behavior: users, permissions, database records
 
 You can run one broker for more than one app if you deliberately want a shared internal service, but that is not the main mental model. Start with one broker container for one product app.
 
-The project spec lives in [codex-broker-spec.md](codex-broker-spec.md). Fern is
-the single source of truth for reader-facing documentation; start with the
-[overview](fern/docs/pages/index.mdx), preview it with `pnpm docs:dev`, and
-validate it with `pnpm docs:check`. Root `docs/*.md` files are compatibility
-pointers for existing links and agent routing.
+Read the hosted [Codex Broker documentation](https://codex-broker.docs.buildwithfern.com/)
+for the overview, quickstart, integration guides, and API reference. The project
+spec lives in [codex-broker-spec.md](codex-broker-spec.md), while Fern is the
+single source of truth for reader-facing documentation. Its source starts at
+[fern/docs/pages/index.mdx](fern/docs/pages/index.mdx); preview it with
+`pnpm docs:dev` and validate it with `pnpm docs:check`. Root `docs/*.md` files
+are compatibility pointers for existing links and agent routing.
 
 ## Why This Exists
 
