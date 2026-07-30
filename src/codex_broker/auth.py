@@ -742,7 +742,6 @@ class AuthManager:
                 session.error = "Authentication was cancelled."
                 return
             if code == 0:
-                session.state = "completed"
                 session.error = None
                 self.state.update_auth_status(
                     principal_hash,
@@ -758,8 +757,8 @@ class AuthManager:
                     auth_principal_hash=principal_hash,
                     profile=session.profile,
                 )
+                session.state = "completed"
             else:
-                session.state = "failed"
                 session.error = session.output[-1] if session.output else f"codex login exited with {code}"
                 self.state.update_auth_status(principal_hash, session.profile, "failed", "chatgpt")
                 self.state.append_audit(
@@ -769,3 +768,4 @@ class AuthManager:
                     auth_principal_hash=principal_hash,
                     profile=session.profile,
                 )
+                session.state = "failed"
