@@ -1,13 +1,15 @@
 ---
 title: "Overview"
-description: "Codex Broker keeps product backends from managing Codex auth homes, app-server children, and turn streams themselves."
+description: "Codex Broker gives applications an HTTP API for Codex and manages the runtime infrastructure behind it."
 ---
 
 # Codex Broker
 
-Codex Broker is an internal HTTP service you run next to a product app that needs Codex. It keeps the app backend from managing Codex auth homes, `codex app-server` children, thread mappings, same-thread locks, and event streams itself.
+Codex Broker gives applications an HTTP API for Codex. It includes an OpenAI-compatible surface, so supported OpenAI SDK workflows can run on Codex by changing their base URL and API key.
 
-The usual deployment is one broker container beside one host app. The host app handles product behavior. The broker handles Codex runtime plumbing.
+It is more than a protocol adapter. The broker runs and manages Codex on the application's behalf, including per-user Codex home directories, authentication, long-lived `codex app-server` processes, threads and turns, concurrency, event streaming, execution policy, and reusable skills and tools.
+
+The host app continues to own its users, permissions, product data, UI, prompts, and business logic. The usual deployment is one broker container beside one host app.
 
 ## Broker responsibilities
 

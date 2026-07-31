@@ -1,12 +1,12 @@
 # Codex Broker
 
-Codex Broker is an internal service you run next to your product app when that app needs to use Codex. In the normal deployment, you add it to the same Docker Compose project as your app, and your app calls it over HTTP.
+Codex Broker gives applications an HTTP API for Codex. It includes an OpenAI-compatible surface, so supported OpenAI SDK workflows can run on Codex by changing their base URL and API key.
 
-Think of the broker as your app's local Codex service. Your app sends it chat messages or job requests, and the broker starts and manages the Codex work behind the scenes.
+It is more than a protocol adapter. The broker runs and manages Codex on your application's behalf: authentication, long-lived processes, threads and turns, concurrency, event streaming, execution policy, and reusable skills and tools.
 
-A host app still owns its product behavior: users, permissions, database records, UI, prompts, evidence behavior, job queues, and business rules. The broker owns the reusable Codex operations for that app deployment: Codex auth homes, long-lived app-server processes, thread and turn lifecycle, same-thread locking, event streaming, and bundle mounting.
+Your application continues to own its users, permissions, product data, UI, prompts, and business logic. Codex Broker owns the reusable runtime infrastructure needed to operate Codex reliably.
 
-You can run one broker for more than one app if you deliberately want a shared internal service, but that is not the main mental model. Start with one broker container for one product app.
+In the normal deployment, you run one broker container beside one product app, often in the same Docker Compose project. You can deliberately share one broker across multiple apps, but that is not the main mental model.
 
 Read the hosted [Codex Broker documentation](https://codex-broker.docs.buildwithfern.com/)
 for the overview, quickstart, integration guides, and API reference. The project
