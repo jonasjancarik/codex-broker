@@ -727,7 +727,28 @@
         "additionalProperties": true,
         "properties": {
           "approvalPolicy": {
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            ]
+          },
+          "approvalsReviewer": {
+            "enum": [
+              "user",
+              "auto_review"
+            ]
+          },
+          "approvals_reviewer": {
+            "description": "Snake-case alias for approvalsReviewer.",
+            "enum": [
+              "user",
+              "auto_review"
+            ]
           },
           "effort": {
             "description": "Reasoning effort for this turn. Supported values depend on the selected Codex model.",
@@ -759,7 +780,11 @@
             "type": "string"
           },
           "sandbox": {
-            "type": "string"
+            "enum": [
+              "read-only",
+              "workspace-write",
+              "danger-full-access"
+            ]
           },
           "serviceTier": {
             "description": "Codex service-tier id for this turn, such as a Fast tier advertised by the selected model.",
@@ -1344,6 +1369,9 @@
             },
             "type": "array"
           },
+          "sandboxPreflight": {
+            "$ref": "#/components/schemas/SandboxPreflight"
+          },
           "status": {
             "enum": [
               "ready",
@@ -1353,7 +1381,8 @@
         },
         "required": [
           "status",
-          "errors"
+          "errors",
+          "sandboxPreflight"
         ],
         "type": "object"
       },
@@ -1396,6 +1425,54 @@
           "sharedAuthPrincipal",
           "profile",
           "invalidated"
+        ],
+        "type": "object"
+      },
+      "SandboxPreflight": {
+        "properties": {
+          "backend": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "codexVersion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "durationSeconds": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "permissionProfile": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "healthy",
+              "failed",
+              "unsupported",
+              "skipped"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "platform",
+          "backend",
+          "codexVersion",
+          "permissionProfile",
+          "checkedAt",
+          "durationSeconds"
         ],
         "type": "object"
       },
@@ -1975,6 +2052,18 @@
     },
     "/v1/chat/completions": {
       "post": {
+        "parameters": [
+          {
+            "description": "Separate deployment credential required only when the resolved broker configuration selects danger-full-access. The OpenAI compatibility key is not sufficient.",
+            "in": "header",
+            "name": "X-Codex-Broker-Danger-Full-Access-Key",
+            "required": false,
+            "schema": {
+              "format": "password",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2848,6 +2937,16 @@
           },
           {
             "$ref": "#/components/parameters/threadId"
+          },
+          {
+            "description": "Separate deployment credential required only when codexOptions.sandbox selects danger-full-access. The normal broker API key is not sufficient.",
+            "in": "header",
+            "name": "X-Codex-Broker-Danger-Full-Access-Key",
+            "required": false,
+            "schema": {
+              "format": "password",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3090,6 +3189,18 @@
     },
     "/v1/responses": {
       "post": {
+        "parameters": [
+          {
+            "description": "Separate deployment credential required only when the resolved broker configuration selects danger-full-access. The OpenAI compatibility key is not sufficient.",
+            "in": "header",
+            "name": "X-Codex-Broker-Danger-Full-Access-Key",
+            "required": false,
+            "schema": {
+              "format": "password",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {

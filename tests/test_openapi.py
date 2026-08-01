@@ -84,6 +84,25 @@ class OpenApiTests(unittest.TestCase):
             turn_start["requestBody"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/TurnStartRequest",
         )
+        for path in (
+            "/v1/owners/{ownerId}/threads/{threadId}/turns",
+            "/v1/responses",
+            "/v1/chat/completions",
+        ):
+            header_names = {
+                parameter.get("name")
+                for parameter in paths[path]["post"].get("parameters", [])
+                if isinstance(parameter, dict)
+            }
+            self.assertIn("X-Codex-Broker-Danger-Full-Access-Key", header_names)
+        archive_header_names = {
+            parameter.get("name")
+            for parameter in paths["/v1/owners/{ownerId}/threads/{threadId}/archive"]["post"].get(
+                "parameters", []
+            )
+            if isinstance(parameter, dict)
+        }
+        self.assertNotIn("X-Codex-Broker-Danger-Full-Access-Key", archive_header_names)
         self.assertIn("mode", components["schemas"]["TurnStartRequest"]["properties"])
         self.assertIn("stream", components["schemas"]["TurnStartRequest"]["properties"])
         self.assertIn("configProfile", components["schemas"]["ThreadCreateRequest"]["properties"])
