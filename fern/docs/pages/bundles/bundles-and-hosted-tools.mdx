@@ -130,7 +130,7 @@ Rules:
 
 ## Broker-hosted tools
 
-Broker-hosted tools become a local MCP adapter that forwards calls to host-owned HTTP endpoints.
+Broker-hosted tools become a local MCP adapter that forwards calls to host-owned HTTP endpoints. The adapter negotiates the legacy MCP handshake revisions from `2024-11-05` through `2025-11-25`, echoing a supported client version or offering `2025-11-25` when the requested version is unsupported.
 
 ```json
 {

@@ -14,6 +14,39 @@ from codex_broker.tool_adapter_mcp import ToolAdapterServer
 
 
 class ToolAdapterTests(unittest.TestCase):
+    def test_broker_hosted_adapter_negotiates_supported_mcp_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = Path(tmp_raw) / "adapter.json"
+            path.write_text('{"tools": []}', encoding="utf-8")
+            adapter = ToolAdapterServer(path)
+
+            for protocol_version in ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"):
+                with self.subTest(protocol_version=protocol_version):
+                    response = adapter.handle(
+                        {
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {"protocolVersion": protocol_version},
+                        }
+                    )
+                    self.assertEqual(response["result"]["protocolVersion"], protocol_version)
+
+    def test_broker_hosted_adapter_offers_latest_mcp_version_when_requested_version_is_unsupported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = Path(tmp_raw) / "adapter.json"
+            path.write_text('{"tools": []}', encoding="utf-8")
+            adapter = ToolAdapterServer(path)
+
+            response = adapter.handle(
+                {
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2099-01-01"},
+                }
+            )
+
+            self.assertEqual(response["result"]["protocolVersion"], "2025-11-25")
+
     def test_broker_hosted_adapter_does_not_follow_http_redirects(self) -> None:
         target_hits = 0
 

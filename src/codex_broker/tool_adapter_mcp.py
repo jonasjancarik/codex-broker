@@ -11,6 +11,17 @@ from typing import Any
 from . import __version__
 
 
+SUPPORTED_PROTOCOL_VERSIONS = frozenset(
+    {
+        "2024-11-05",
+        "2025-03-26",
+        "2025-06-18",
+        "2025-11-25",
+    }
+)
+LATEST_PROTOCOL_VERSION = "2025-11-25"
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
         return None
@@ -45,10 +56,17 @@ class ToolAdapterServer:
         if method == "notifications/initialized":
             return None
         if method == "initialize":
+            params = message.get("params") if isinstance(message.get("params"), dict) else {}
+            requested_version = params.get("protocolVersion")
+            protocol_version = (
+                requested_version
+                if isinstance(requested_version, str) and requested_version in SUPPORTED_PROTOCOL_VERSIONS
+                else LATEST_PROTOCOL_VERSION
+            )
             return {
                 "id": request_id,
                 "result": {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": protocol_version,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "codex-broker-tool-adapter", "version": __version__},
                 },
