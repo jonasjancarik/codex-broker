@@ -85,6 +85,7 @@ class OpenAICompatApiTests(unittest.TestCase):
         os.environ.pop("FAKE_CODEX_OMIT_RAW_RESPONSE", None)
         os.environ.pop("FAKE_CODEX_MALFORMED_TOKEN_USAGE", None)
         os.environ.pop("FAKE_CODEX_TURN_COMPLETED_ERROR", None)
+        os.environ.pop("FAKE_CODEX_RESPONSE_SPLITS_JSON", None)
 
     def test_models_use_openai_shape_and_aliases(self) -> None:
         models = self._request("GET", "/v1/models")
@@ -263,6 +264,65 @@ class OpenAICompatApiTests(unittest.TestCase):
         self.assertIn("event: response.output_item.done", raw)
         self.assertIn("event: response.completed", raw)
         self.assertLess(raw.index("event: response.created"), raw.index("event: response.completed"))
+
+    def test_safe_mode_sanitizes_split_output_across_openai_response_forms(self) -> None:
+        canary = "registered-openai-canary"
+        self.services.sanitizer.register("test-canary", canary)
+        os.environ["FAKE_CODEX_RESPONSE_SPLITS_JSON"] = json.dumps(
+            ["before registered-open", "ai-canary after"]
+        )
+        responses_sync = json.dumps(
+            self._request("POST", "/v1/responses", {"model": "gpt-compatible", "input": "Sync"})
+        )
+        responses_stream = self._request_text(
+            "POST",
+            "/v1/responses",
+            {"model": "gpt-compatible", "input": "Stream", "stream": True},
+        )
+        chat_sync = json.dumps(
+            self._request(
+                "POST",
+                "/v1/chat/completions",
+                {"model": "gpt-compatible", "messages": [{"role": "user", "content": "Sync"}]},
+            )
+        )
+        chat_stream = self._request_text(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [{"role": "user", "content": "Stream"}],
+                "stream": True,
+            },
+        )
+        for rendered in (responses_sync, responses_stream, chat_sync, chat_stream):
+            self.assertNotIn(canary, rendered)
+            self.assertIn("<redacted>", rendered)
+
+    def test_raw_mode_preserves_openai_output(self) -> None:
+        self.config = replace(self.config, event_sanitization_mode="raw")
+        self._restart_broker()
+        canary = "raw-openai-canary"
+        self.services.sanitizer.register("test-canary", canary)
+        os.environ["FAKE_CODEX_RESPONSE_SPLITS_JSON"] = json.dumps(["raw-openai-", "canary"])
+        sync = self._request("POST", "/v1/responses", {"model": "gpt-compatible", "input": "Raw"})
+        stream = self._request_text(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [{"role": "user", "content": "Raw"}],
+                "stream": True,
+            },
+        )
+        self.assertIn(canary, json.dumps(sync))
+        streamed_text = "".join(
+            str(payload.get("choices", [{}])[0].get("delta", {}).get("content") or "")
+            for line in stream.splitlines()
+            if line.startswith("data: {")
+            for payload in (json.loads(line.removeprefix("data: ")),)
+        )
+        self.assertEqual(streamed_text, canary)
 
     def test_chat_sync_and_stream(self) -> None:
         os.environ["FAKE_CODEX_EXPECT_THREAD_PARAMS"] = json.dumps(

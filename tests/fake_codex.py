@@ -141,7 +141,23 @@ def complete_turn(thread_id: str, turn_id: str) -> None:
             {"threadId": thread_id, "turnId": turn_id, "serverName": "host", "mode": "form", "message": "Continue?"},
         )
     response_text = os.environ.get("FAKE_CODEX_RESPONSE_TEXT", "hello")
-    send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg1", "delta": response_text}})
+    raw_splits = os.environ.get("FAKE_CODEX_RESPONSE_SPLITS_JSON")
+    response_parts = json.loads(raw_splits) if raw_splits else [response_text]
+    if not isinstance(response_parts, list) or not all(isinstance(part, str) for part in response_parts):
+        raise ValueError("FAKE_CODEX_RESPONSE_SPLITS_JSON must contain a JSON string array")
+    response_text = "".join(response_parts)
+    for response_part in response_parts:
+        send(
+            {
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "itemId": "msg1",
+                    "delta": response_part,
+                },
+            }
+        )
     time.sleep(delay)
     if os.environ.get("FAKE_CODEX_OMIT_RAW_RESPONSE") != "1":
         send(
@@ -230,6 +246,32 @@ def handle_app_server() -> int:
             continue
         if method == "initialize":
             send({"id": request_id, "result": {"serverInfo": {"name": "fake-codex"}}})
+        elif method == "command/exec":
+            command_value = params.get("command")
+            if not isinstance(command_value, list) or not all(isinstance(arg, str) for arg in command_value):
+                send({"id": request_id, "error": {"code": -32602, "message": "command must be an argv array"}})
+                continue
+            command = " ".join(command_value)
+            if os.environ.get("FAKE_CODEX_PROBE_HANG") == "1":
+                continue
+            if os.environ.get("FAKE_CODEX_PROBE_START_FAILURE") == "1":
+                send({"id": request_id, "error": {"message": "fake sandbox start failure"}})
+            elif "sandbox-probe-read-only-write" in command:
+                cwd = params.get("cwd")
+                if os.environ.get("FAKE_CODEX_PROBE_READ_ONLY_WRITABLE") == "1" and cwd:
+                    Path(str(cwd), ".sandbox-probe-read-only-write").write_text("bad", encoding="utf-8")
+                    send({"id": request_id, "result": {"exitCode": 0}})
+                else:
+                    send({"id": request_id, "result": {"exitCode": 1}})
+            elif "sandbox-probe-write" in command:
+                cwd = params.get("cwd")
+                if cwd:
+                    Path(str(cwd), ".sandbox-probe-write").write_text("ok", encoding="utf-8")
+                send({"id": request_id, "result": {"exitCode": 0}})
+            elif "test ! -r" in command:
+                send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_CANARY_READABLE") == "1" else 0}})
+            else:
+                send({"id": request_id, "result": {"exitCode": 0}})
         elif method == "model/list":
             models = [
                 {
@@ -321,10 +363,50 @@ def handle_app_server() -> int:
                 continue
             thread_id = f"thr_fake_{next_thread}"
             next_thread += 1
-            send({"id": request_id, "result": {"thread": {"id": thread_id}}})
+            permission_profile = params.get("permissions")
+            send(
+                {
+                    "id": request_id,
+                    "result": {
+                        "thread": {"id": thread_id},
+                        "activePermissionProfile": (None if os.environ.get("FAKE_CODEX_OMIT_SECURITY_PROVENANCE") == "1" else (
+                            {
+                                "id": permission_profile,
+                                "extends": ":workspace" if permission_profile == "broker-workspace-write" else ":read-only",
+                            }
+                            if permission_profile
+                            else None
+                        )),
+                        "instructionSources": None if os.environ.get("FAKE_CODEX_OMIT_SECURITY_PROVENANCE") == "1" else [],
+                        "runtimeWorkspaceRoots": None if os.environ.get("FAKE_CODEX_OMIT_SECURITY_PROVENANCE") == "1" else params.get("runtimeWorkspaceRoots", []),
+                    },
+                }
+            )
             send({"method": "thread/started", "params": {"thread": {"id": thread_id}}})
         elif method == "thread/resume":
-            send({"id": request_id, "result": {"thread": {"id": params.get("threadId")}}})
+            mismatch = expected_params_match("FAKE_CODEX_EXPECT_THREAD_RESUME_PARAMS", params)
+            if mismatch:
+                send({"id": request_id, "error": {"code": -32602, "message": mismatch}})
+                continue
+            permission_profile = params.get("permissions")
+            send(
+                {
+                    "id": request_id,
+                    "result": {
+                        "thread": {"id": params.get("threadId")},
+                        "activePermissionProfile": (None if os.environ.get("FAKE_CODEX_OMIT_SECURITY_PROVENANCE") == "1" else (
+                            {
+                                "id": permission_profile,
+                                "extends": ":workspace" if permission_profile == "broker-workspace-write" else ":read-only",
+                            }
+                            if permission_profile
+                            else None
+                        )),
+                        "instructionSources": None if os.environ.get("FAKE_CODEX_OMIT_SECURITY_PROVENANCE") == "1" else [],
+                        "runtimeWorkspaceRoots": None if os.environ.get("FAKE_CODEX_OMIT_SECURITY_PROVENANCE") == "1" else params.get("runtimeWorkspaceRoots", []),
+                    },
+                }
+            )
             send({"method": "thread/resumed", "params": {"threadId": params.get("threadId"), "thread": {"id": params.get("threadId")}}})
         elif method == "thread/inject_items":
             thread_id = str(params.get("threadId"))

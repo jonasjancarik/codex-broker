@@ -1,20 +1,121 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
+import tomllib
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_broker.auth import AuthManager, normalize_profile
+from codex_broker.auth import AuthManager, normalize_profile, render_managed_codex_config
 from codex_broker.http_api import BrokerServices
 from codex_broker.runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, classify_runtime_error
+from codex_broker.security import SecretSanitizer
 from codex_broker.state import StateStore
 from test_broker import config_for, wait_turn
 
 
 class AuthProfileTests(unittest.TestCase):
+    def test_auth_secret_registration_refreshes_and_is_removed_on_logout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            state = StateStore(config.state_db_path)
+            sanitizer = SecretSanitizer()
+            auth = AuthManager(config, state, sanitizer=sanitizer)
+            principal_hash = auth.hash_owner("owner-a")
+            try:
+                auth_file = auth.auth_file(principal_hash, "default")
+                auth_file.write_text(
+                    '{"tokens":{"access_token":"first-canary"},"metadata":"ordinary-value"}',
+                    encoding="utf-8",
+                )
+                auth.refresh_profile_secrets(principal_hash, "default")
+                self.assertEqual(sanitizer.sanitize_text("first-canary"), "<redacted>")
+                self.assertEqual(sanitizer.sanitize_text("ordinary-value"), "ordinary-value")
+
+                auth_file.write_text('{"refresh_token":"second-canary"}', encoding="utf-8")
+                auth.refresh_profile_secrets(principal_hash, "default")
+                self.assertEqual(sanitizer.sanitize_text("first-canary"), "first-canary")
+                self.assertEqual(sanitizer.sanitize_text("second-canary"), "<redacted>")
+
+                auth.logout("owner-a", "default")
+                self.assertEqual(sanitizer.sanitize_text("second-canary"), "second-canary")
+            finally:
+                state.close()
+
+    def test_runtime_home_is_separate_private_and_rejects_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            state = StateStore(config.state_db_path)
+            auth = AuthManager(config, state)
+            try:
+                principal_hash = auth.hash_owner("owner-a")
+                auth_home = auth.profile_home(principal_hash, "work/team")
+                runtime_home = auth.runtime_home(principal_hash, "work/team")
+
+                self.assertEqual(
+                    runtime_home,
+                    (config.runtime_home_root / principal_hash / "profiles" / "work_team").resolve(),
+                )
+                self.assertNotEqual(runtime_home, auth_home)
+                self.assertFalse((runtime_home / "auth.json").exists())
+                self.assertEqual(stat.S_IMODE(runtime_home.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(config.runtime_home_root.stat().st_mode), 0o700)
+                with self.assertRaisesRegex(ValueError, "safe path component"):
+                    auth.runtime_home("../outside", "default")
+            finally:
+                state.close()
+
+    def test_managed_config_renders_parse_safe_default_deny_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = replace(
+                config_for(tmp),
+                data_dir=tmp / 'data "quoted"',
+                credential_store='file "quoted"',
+                sandbox_deny_paths=(tmp / 'extra "quoted"',),
+            )
+            rendered = render_managed_codex_config(config)
+            parsed = tomllib.loads(rendered)
+
+            self.assertEqual(parsed["default_permissions"], "broker-read-only")
+            self.assertEqual(parsed["cli_auth_credentials_store"], 'file "quoted"')
+            read_only = parsed["permissions"]["broker-read-only"]
+            workspace_write = parsed["permissions"]["broker-workspace-write"]
+            self.assertEqual(read_only["extends"], ":read-only")
+            self.assertEqual(workspace_write["extends"], ":workspace")
+            self.assertEqual(read_only["filesystem"][":root"], "deny")
+            self.assertEqual(read_only["filesystem"][":minimal"], "read")
+            self.assertEqual(read_only["filesystem"][":workspace_roots"]["."], "read")
+            self.assertEqual(workspace_write["filesystem"][":workspace_roots"]["."], "write")
+            self.assertEqual(workspace_write["filesystem"][":slash_tmp"], "deny")
+            self.assertEqual(workspace_write["filesystem"][":tmpdir"], "deny")
+            for profile in (read_only, workspace_write):
+                filesystem = profile["filesystem"]
+                self.assertEqual(filesystem["glob_scan_max_depth"], 12)
+                self.assertEqual(filesystem[str(config.auth_root.resolve())], "deny")
+                self.assertEqual(filesystem[str(config.state_db_path.parent.resolve())], "deny")
+                self.assertEqual(filesystem["/run/secrets"], "deny")
+                self.assertEqual(filesystem[":workspace_roots"]["**/.env.*"], "deny")
+                self.assertEqual(filesystem[":workspace_roots"]["**/*.pem"], "deny")
+
+    def test_managed_config_file_is_private_and_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            state = StateStore(config.state_db_path)
+            auth = AuthManager(config, state)
+            try:
+                home = auth.profile_home(auth.hash_owner("owner-a"), "default")
+                config_path = home / "config.toml"
+                first = config_path.read_text(encoding="utf-8")
+                auth.profile_home(auth.hash_owner("owner-a"), "default")
+                self.assertEqual(config_path.read_text(encoding="utf-8"), first)
+                self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
+            finally:
+                state.close()
+
     def test_dot_segment_profile_ids_are_rejected(self) -> None:
         for profile in (".", ".."):
             with self.subTest(profile=profile), self.assertRaises(ValueError):

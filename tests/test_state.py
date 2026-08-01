@@ -5,11 +5,172 @@ import sqlite3
 import unittest
 from pathlib import Path
 
+from codex_broker.security import REDACTED, SecretSanitizer
+from codex_broker import state_transactions
 from codex_broker.state import StateStore
 from test_broker import config_for
 
 
 class StateStoreTests(unittest.TestCase):
+    def _thread_and_turn(self, state: StateStore) -> tuple[dict[str, object], dict[str, object]]:
+        profile = state.ensure_profile("principal_hash", "default")
+        thread = state.create_thread(
+            "owner_hash",
+            thread_id="thread-security",
+            auth_principal_hash="principal_hash",
+            auth_profile_instance_id=profile["instance_id"],
+            profile="default",
+            config_profile="default",
+            host_app=None,
+            bundle_id=None,
+            cwd=None,
+        )
+        turn = state.create_turn(
+            "owner_hash",
+            thread["thread_id"],
+            auth_principal_hash="principal_hash",
+            auth_profile_instance_id=profile["instance_id"],
+            profile="default",
+            config_profile="default",
+            host_app=None,
+            bundle_id=None,
+            cwd=None,
+            mode="reject",
+            input_items=[{"type": "text", "text": "user supplied api_key=keep-this-input"}],
+            idempotency_key=None,
+            product_correlation_id=None,
+            status="running",
+            resolved_options={"authorization": "metadata-secret"},
+        )
+        return thread, turn
+
+    def test_safe_mode_sanitizes_persistence_boundaries_but_preserves_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            state = StateStore(config_for(Path(tmp_raw)).state_db_path, sanitizer=SecretSanitizer("safe"))
+            try:
+                thread, turn = self._thread_and_turn(state)
+                state.append_event(
+                    "owner_hash", thread["thread_id"], turn["turn_id"], "message",
+                    {"text": "Bearer event-secret", "password": "field-secret"},
+                    raw_params={"api_key": "raw-secret"},
+                )
+                state.append_audit(
+                    "owner_hash", "security.test", {"detail": "api_key=audit-secret"},
+                    auth_principal_hash="principal_hash",
+                )
+                state.update_turn(
+                    "owner_hash", thread["thread_id"], turn["turn_id"],
+                    error="Bearer error-secret", public_message="secret=public-secret",
+                )
+
+                loaded_turn = state.get_turn("owner_hash", thread["thread_id"], turn["turn_id"])
+                event = state.list_events("owner_hash", thread["thread_id"])[0]
+                audit = state.list_audit_logs("owner_hash")[0]
+                self.assertEqual(loaded_turn["input"][0]["text"], "user supplied api_key=keep-this-input")
+                self.assertNotIn("metadata-secret", str(loaded_turn["resolved_options"]))
+                self.assertNotIn("event-secret", str(event["payload"]))
+                self.assertEqual(event["raw_params"]["api_key"], REDACTED)
+                self.assertNotIn("audit-secret", str(audit["payload"]))
+                self.assertNotIn("error-secret", loaded_turn["error"])
+                self.assertNotIn("public-secret", loaded_turn["public_message"])
+            finally:
+                state.close()
+
+    def test_raw_mode_keeps_non_mandatory_payloads_byte_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            state = StateStore(config_for(Path(tmp_raw)).state_db_path, sanitizer=SecretSanitizer("raw"))
+            try:
+                thread, turn = self._thread_and_turn(state)
+                payload = {"nested": ["api_key=payload-secret"], "normal": "unchanged"}
+                state.append_event(
+                    "owner_hash", thread["thread_id"], turn["turn_id"], "message", payload,
+                    raw_params={"api_key": "raw-secret"},
+                )
+                event = state.list_events("owner_hash", thread["thread_id"])[0]
+                self.assertEqual(event["payload"], payload)
+                self.assertEqual(event["raw_params"]["api_key"], REDACTED)
+            finally:
+                state.close()
+
+    def test_historical_dirty_rows_are_sanitized_on_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = config_for(Path(tmp_raw)).state_db_path
+            state = StateStore(path, sanitizer=SecretSanitizer("safe"))
+            try:
+                thread, turn = self._thread_and_turn(state)
+                with state._lock, state._conn:
+                    state._conn.execute(
+                        "insert into events(owner_hash, thread_id, turn_id, event_type, payload_json, raw_params_json, ambiguous, created_at) values (?, ?, ?, ?, ?, ?, 0, ?)",
+                        ("owner_hash", thread["thread_id"], turn["turn_id"], "legacy", '{"detail":"Bearer dirty-event"}', '{"secret":"dirty-raw"}', "2026-01-01T00:00:00Z"),
+                    )
+                    state._conn.execute(
+                        "insert into audit_logs(owner_hash, auth_principal_hash, action, payload_json, created_at) values (?, ?, ?, ?, ?)",
+                        ("owner_hash", "principal_hash", "legacy", '{"detail":"api_key=dirty-audit"}', "2026-01-01T00:00:00Z"),
+                    )
+                    state._conn.execute(
+                        "update turns set resolved_options_json = ?, error = ? where owner_hash = ? and thread_id = ? and turn_id = ?",
+                        ('{"api_key":"dirty-options"}', "Bearer dirty-error", "owner_hash", thread["thread_id"], turn["turn_id"]),
+                    )
+
+                event = state.list_events("owner_hash", thread["thread_id"])[0]
+                audit = state.list_audit_logs("owner_hash")[0]
+                loaded_turn = state.get_turn("owner_hash", thread["thread_id"], turn["turn_id"])
+                self.assertNotIn("dirty-event", str(event["payload"]))
+                self.assertEqual(event["raw_params"]["secret"], REDACTED)
+                self.assertNotIn("dirty-audit", str(audit["payload"]))
+                self.assertNotIn("dirty-options", str(loaded_turn["resolved_options"]))
+                self.assertNotIn("dirty-error", loaded_turn["error"])
+            finally:
+                state.close()
+
+    def test_low_level_finalization_is_a_defensive_sanitization_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            state = StateStore(config_for(Path(tmp_raw)).state_db_path, sanitizer=SecretSanitizer("safe"))
+            try:
+                thread, turn = self._thread_and_turn(state)
+                finalized = state_transactions.finalize_turn(
+                    state,
+                    "owner_hash",
+                    str(thread["thread_id"]),
+                    str(turn["turn_id"]),
+                    auth_principal_hash="principal_hash",
+                    status="failed",
+                    error="Bearer terminal-error",
+                    public_message="api_key=terminal-public",
+                    admin_message="access_token=terminal-admin",
+                    event_type="turn.failed",
+                    event_payload={"password": "terminal-event"},
+                    raw_params={"credential": "terminal-raw"},
+                    audit_action="turn.failure",
+                    audit_payload={"cookie": "terminal-audit"},
+                )
+                self.assertTrue(finalized)
+                with state._lock:
+                    event_row = state._conn.execute(
+                        "select payload_json, raw_params_json from events where turn_id = ?",
+                        (turn["turn_id"],),
+                    ).fetchone()
+                    audit_row = state._conn.execute(
+                        "select payload_json from audit_logs where turn_id = ?",
+                        (turn["turn_id"],),
+                    ).fetchone()
+                    turn_row = state._conn.execute(
+                        "select error, public_message, admin_message from turns where turn_id = ?",
+                        (turn["turn_id"],),
+                    ).fetchone()
+                persisted = " ".join(str(value) for value in (*event_row, *audit_row, *turn_row))
+                for canary in (
+                    "terminal-error",
+                    "terminal-public",
+                    "terminal-admin",
+                    "terminal-event",
+                    "terminal-raw",
+                    "terminal-audit",
+                ):
+                    self.assertNotIn(canary, persisted)
+            finally:
+                state.close()
+
     def test_turn_lookup_by_turn_id_is_owner_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             state = StateStore(config_for(Path(tmp_raw)).state_db_path)

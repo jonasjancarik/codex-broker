@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import re
 import time
@@ -16,11 +17,20 @@ from .auth import AuthManager
 from .bundles import BundleRegistry, ResolvedBundle
 from .config import BrokerConfig
 from .events import normalize_app_server_event, normalize_token_usage
-from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, RuntimeErrorInfo, classify_app_server_error, classify_runtime_error
+from .runtime_errors import (
+    CODEX_AUTH_REQUIRES_ADMIN,
+    SANDBOX_UNAVAILABLE,
+    SANDBOX_UNAVAILABLE_PUBLIC_MESSAGE,
+    RuntimeErrorInfo,
+    classify_app_server_error,
+    classify_runtime_error,
+)
+from .sandbox_probe import SandboxProbe
 from .scheduler_errors import ActiveTurnError, ConflictError, NotFoundError
 from . import scheduler_config, scheduler_interactions, scheduler_threads
 from .state import StateStore
-from .util import json_dumps, json_log, redact_json, utc_now
+from .security import SecretSanitizer, StreamingSecretSanitizer
+from .util import json_dumps, json_log, utc_now
 
 
 def metric_key(value: str) -> str:
@@ -29,6 +39,16 @@ def metric_key(value: str) -> str:
 
 def optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
+
+
+TEXT_DELTA_EVENT_TYPES = {
+    "message.delta",
+    "reasoning.summary.delta",
+    "plan.delta",
+    "tool.output.delta",
+}
+
+
 @dataclass
 class ThreadGate:
     binding_lock: threading.RLock = field(default_factory=threading.RLock)
@@ -46,6 +66,7 @@ class QueuedTurn:
     thread_id: str
     turn_id: str
     body: dict[str, Any]
+    danger_full_access_authorized: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,6 +87,7 @@ class BrokerTurnContext:
         codex_thread_id: str | None,
         product_correlation_id: str | None,
         debug_raw_events: bool,
+        sanitizer: SecretSanitizer | None = None,
     ) -> None:
         self.state = state
         self.owner_hash = owner_hash
@@ -83,11 +105,16 @@ class BrokerTurnContext:
         self.public_message: str | None = None
         self.admin_message: str | None = None
         self.debug_raw_events = debug_raw_events
+        self.sanitizer = sanitizer or state.sanitizer
+        self.streaming_sanitizer = StreamingSecretSanitizer(self.sanitizer)
         self.terminal_event_type: str | None = None
         self.terminal_payload: dict[str, Any] | None = None
         self.terminal_raw_method: str | None = None
         self.terminal_raw_params: dict[str, Any] | None = None
         self.terminal_ambiguous = False
+        self._stream_metadata: dict[
+            tuple[str, str], tuple[str, dict[str, Any], str, dict[str, Any], bool]
+        ] = {}
         self._lock = threading.RLock()
 
     def register_thread(self, codex_thread_id: str) -> None:
@@ -104,6 +131,7 @@ class BrokerTurnContext:
         event_type, payload = self._normalize(method, params)
         error_info: RuntimeErrorInfo | None = None
         if method == "turn/completed":
+            self._flush_stream_turn()
             turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
             status = str(turn.get("status") or "completed")
             error = turn.get("error")
@@ -115,11 +143,17 @@ class BrokerTurnContext:
             self.terminal_event_type = event_type
             self.terminal_payload = payload
             self.terminal_raw_method = method if self.debug_raw_events else None
-            self.terminal_raw_params = redact_json(params) if self.debug_raw_events else None
+            self.terminal_raw_params = self.sanitizer.redact(params) if self.debug_raw_events else None
             self.terminal_ambiguous = ambiguous
             self.completed_event.set()
         else:
-            self._append_event(event_type, payload, method, params, ambiguous=ambiguous)
+            item_id = self._completed_item_id(payload)
+            if item_id:
+                self._flush_stream_item(item_id)
+            if event_type in TEXT_DELTA_EVENT_TYPES and isinstance(payload.get("delta"), str):
+                self._append_stream_delta(event_type, payload, method, params, ambiguous=ambiguous)
+            else:
+                self._append_event(event_type, payload, method, params, ambiguous=ambiguous)
         if event_type in {"approval.requested", "approval.resolved"}:
             self.state.append_audit(
                 self.owner_hash,
@@ -143,7 +177,7 @@ class BrokerTurnContext:
         ambiguous: bool,
     ) -> None:
         raw_method = method if self.debug_raw_events else None
-        raw_params = redact_json(params) if self.debug_raw_events else None
+        raw_params = self.sanitizer.redact(params) if self.debug_raw_events else None
         self.state.append_event(
             self.owner_hash,
             self.thread_id,
@@ -158,10 +192,79 @@ class BrokerTurnContext:
             ambiguous=ambiguous,
         )
 
+    def _append_stream_delta(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        method: str,
+        params: dict[str, Any],
+        *,
+        ambiguous: bool,
+    ) -> None:
+        item_id = str(payload.get("itemId") or "")
+        stream_type = self._stream_type(event_type, payload)
+        metadata = {key: value for key, value in payload.items() if key != "delta"}
+        emitted = self.streaming_sanitizer.sanitize_delta(
+            self.turn_id,
+            item_id,
+            stream_type,
+            str(payload["delta"]),
+        )
+        if self.sanitizer.mode != "raw":
+            self._stream_metadata[(item_id, stream_type)] = (
+                event_type,
+                metadata,
+                method,
+                dict(params),
+                ambiguous,
+            )
+        if emitted:
+            self._append_event(
+                event_type,
+                {**metadata, "delta": emitted},
+                method,
+                params,
+                ambiguous=ambiguous,
+            )
+
+    def _flush_stream_item(self, item_id: str) -> None:
+        for stream_type, text in self.streaming_sanitizer.flush_item(self.turn_id, item_id).items():
+            self._append_flushed_delta(item_id, stream_type, text)
+
+    def _flush_stream_turn(self) -> None:
+        for (item_id, stream_type), text in self.streaming_sanitizer.flush_turn(self.turn_id).items():
+            self._append_flushed_delta(item_id, stream_type, text)
+
+    def _append_flushed_delta(self, item_id: str, stream_type: str, text: str) -> None:
+        metadata = self._stream_metadata.pop((item_id, stream_type), None)
+        if not metadata or not text:
+            return
+        event_type, payload, method, params, ambiguous = metadata
+        self._append_event(
+            event_type,
+            {**payload, "delta": text},
+            method,
+            params,
+            ambiguous=ambiguous,
+        )
+
+    @staticmethod
+    def _stream_type(event_type: str, payload: dict[str, Any]) -> str:
+        summary_id = payload.get("summaryId")
+        return f"{event_type}:{summary_id}" if isinstance(summary_id, str) and summary_id else event_type
+
+    @staticmethod
+    def _completed_item_id(payload: dict[str, Any]) -> str | None:
+        item = payload.get("item")
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            return None
+        return str(item["id"])
+
     def finish(self, status: str, message: str, event_type: str | None = None) -> None:
         with self._lock:
             if self.completed_event.is_set():
                 return
+            self._flush_stream_turn()
             error_info = classify_runtime_error(message)
             self.final_status = status
             self._set_error_info(error_info)
@@ -202,12 +305,16 @@ class TurnScheduler:
         auth: AuthManager,
         bundles: BundleRegistry,
         pool: AppServerPool,
+        sanitizer: SecretSanitizer | None = None,
+        sandbox_probe: SandboxProbe | None = None,
     ) -> None:
         self.config = config
         self.state = state
         self.auth = auth
         self.bundles = bundles
         self.pool = pool
+        self.sanitizer = sanitizer or state.sanitizer
+        self.sandbox_probe = sandbox_probe
         self._gates: dict[tuple[str, str], ThreadGate] = {}
         self._gates_lock = threading.RLock()
         self._shutdown = threading.Event()
@@ -229,6 +336,7 @@ class TurnScheduler:
             "turns_interrupted": 0,
             "turns_recovered": 0,
             "raw_events_pruned": 0,
+            "turns_rejected_sandbox_unavailable": 0,
         }
 
     def create_thread(self, owner_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -240,10 +348,22 @@ class TurnScheduler:
     def archive_thread(self, owner_id: str, thread_id: str) -> dict[str, Any]:
         return scheduler_threads.archive_thread(self, owner_id, thread_id)
 
-    def start_turn(self, owner_id: str, thread_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    def start_turn(
+        self,
+        owner_id: str,
+        thread_id: str,
+        body: dict[str, Any],
+        *,
+        danger_full_access_authorized: bool = False,
+    ) -> dict[str, Any]:
         if "_openaiCompat" in body:
             raise ValueError("_openaiCompat is reserved for broker-internal use.")
-        return self._start_turn(owner_id, thread_id, body)
+        return self._start_turn(
+            owner_id,
+            thread_id,
+            body,
+            danger_full_access_authorized=danger_full_access_authorized,
+        )
 
     def start_openai_turn(
         self,
@@ -253,15 +373,28 @@ class TurnScheduler:
         *,
         metadata: dict[str, Any],
         history_items: list[dict[str, Any]] | None = None,
+        danger_full_access_authorized: bool = False,
     ) -> dict[str, Any]:
         internal_body = dict(body)
         internal_body["_openaiCompat"] = OpenAICompatTurn(
             metadata=dict(metadata),
             history_items=tuple(dict(item) for item in (history_items or [])),
         )
-        return self._start_turn(owner_id, thread_id, internal_body)
+        return self._start_turn(
+            owner_id,
+            thread_id,
+            internal_body,
+            danger_full_access_authorized=danger_full_access_authorized,
+        )
 
-    def _start_turn(self, owner_id: str, thread_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _start_turn(
+        self,
+        owner_id: str,
+        thread_id: str,
+        body: dict[str, Any],
+        *,
+        danger_full_access_authorized: bool = False,
+    ) -> dict[str, Any]:
         if self._shutdown.is_set():
             raise ConflictError("Broker is shutting down.")
         compat = body.get("_openaiCompat")
@@ -303,6 +436,18 @@ class TurnScheduler:
         bundle = self.bundles.resolve(bundle_id) if bundle_id else None
         cwd = self.bundles.validate_cwd(body.get("cwd") or thread.get("cwd"), bundle)
         self._validate_config_profile_cwd(cwd, config_profile_config)
+        preview_cwd = cwd or (
+            self.config.overlay_root
+            if bundle
+            else self.config.allowed_workspace_roots[0]
+        )
+        policy_preview = self._thread_params(
+            preview_cwd,
+            body,
+            bundle,
+            config_profile_config,
+            danger_full_access_authorized=danger_full_access_authorized,
+        )
         with self._gates_lock:
             if isinstance(key, str) and key:
                 existing = self.state.find_turn_by_idempotency(owner_hash, thread_id, key)
@@ -345,13 +490,34 @@ class TurnScheduler:
                     "cwd": str(cwd) if cwd else None,
                     "codexOptions": self._request_codex_options(body),
                     "configProfileOptions": config_profile_config,
+                    "sandbox": self._request_codex_options(body).get("sandbox")
+                    or (bundle.sandbox_mode if bundle else None)
+                    or config_profile_config.get("sandbox")
+                    or "read-only",
+                    "permissionProfile": policy_preview.get("permissions"),
+                    "approvalsReviewer": policy_preview.get("approvalsReviewer"),
+                    "eventSanitizationMode": self.config.event_sanitization_mode,
+                    "sandboxPreflightStatus": (
+                        self.sandbox_probe.result().status
+                        if self.sandbox_probe and self.sandbox_probe.result()
+                        else "unavailable"
+                    ),
+                    "dangerFullAccessAuthorized": bool(
+                        danger_full_access_authorized and policy_preview.get("sandbox") == "danger-full-access"
+                    ),
                     **({"openaiCompat": compat.metadata} if isinstance(compat, OpenAICompatTurn) else {}),
                 },
                 broker_version=self.config.client_version,
             )
             if turn.pop("_created", False):
                 self._outstanding_turns += 1
-                work = QueuedTurn(owner_hash, thread_id, turn["turn_id"], dict(body))
+                work = QueuedTurn(
+                    owner_hash,
+                    thread_id,
+                    turn["turn_id"],
+                    dict(body),
+                    danger_full_access_authorized,
+                )
                 if busy:
                     gate.pending().append(work)
                     self._metric("queued_turns", 1)
@@ -448,6 +614,7 @@ class TurnScheduler:
         with self._metrics_lock:
             metrics = dict(self._metrics)
         metrics.update(self.pool.metrics())
+        metrics["secret_replacements_total"] = self.sanitizer.replacement_count
         audit_counts = self.state.count_audit_actions()
         metrics["auth_starts"] = (
             audit_counts.get("auth.device.start", 0)
@@ -466,6 +633,11 @@ class TurnScheduler:
         )
         for action, count in audit_counts.items():
             metrics[f"audit_{metric_key(action)}"] = count
+        if self.sandbox_probe:
+            probe = self.sandbox_probe.result()
+            if probe:
+                metrics[f"sandbox_preflight_status_{metric_key(probe.status)}"] = 1
+                metrics["sandbox_preflight_duration_seconds"] = probe.duration_seconds
         return metrics
 
     def note_recovered_turns(self, count: int) -> None:
@@ -509,7 +681,13 @@ class TurnScheduler:
             mode = "interrupt"
         self._shutdown_mode = mode
         self._shutdown.set()
-        json_log(self.config.json_logs, "broker.shutdown.start", mode=mode, timeoutSeconds=timeout_seconds)
+        json_log(
+            self.config.json_logs,
+            "broker.shutdown.start",
+            sanitizer=self.sanitizer,
+            mode=mode,
+            timeoutSeconds=timeout_seconds,
+        )
         if mode == "interrupt":
             self._cancel_pending_futures("Broker shutting down.")
             self._cancel_queued_turns("Broker shutting down.")
@@ -522,7 +700,13 @@ class TurnScheduler:
             self._interrupt_active_contexts("Broker shutdown drain timed out.")
             self._wait_for_workers(min(timeout_seconds, 5))
         self._executor.shutdown(wait=False, cancel_futures=True)
-        json_log(self.config.json_logs, "broker.shutdown.finish", mode=mode, remainingWorkers=self._worker_count())
+        json_log(
+            self.config.json_logs,
+            "broker.shutdown.finish",
+            sanitizer=self.sanitizer,
+            mode=mode,
+            remainingWorkers=self._worker_count(),
+        )
 
     def _interrupt_active_contexts(self, message: str) -> None:
         for context in self._active_contexts():
@@ -568,7 +752,13 @@ class TurnScheduler:
 
     def _execute_work(self, work: QueuedTurn) -> None:
         try:
-            self._run_turn(work.owner_hash, work.thread_id, work.turn_id, work.body)
+            self._run_turn(
+                work.owner_hash,
+                work.thread_id,
+                work.turn_id,
+                work.body,
+                danger_full_access_authorized=work.danger_full_access_authorized,
+            )
         finally:
             self._advance_queue(work.owner_hash, work.thread_id)
 
@@ -663,7 +853,15 @@ class TurnScheduler:
             audit_payload=audit_payload,
         )
 
-    def _run_turn(self, owner_hash: str, thread_id: str, turn_id: str, body: dict[str, Any]) -> None:
+    def _run_turn(
+        self,
+        owner_hash: str,
+        thread_id: str,
+        turn_id: str,
+        body: dict[str, Any],
+        *,
+        danger_full_access_authorized: bool = False,
+    ) -> None:
         gate = self._gate(owner_hash, thread_id)
         active_metric_incremented = False
         overlay: Path | None = None
@@ -685,6 +883,28 @@ class TurnScheduler:
             thread = self.state.get_thread(owner_hash, thread_id)
             if not turn or not thread:
                 raise NotFoundError("Turn or thread not found.")
+            preflight_error = self._sandbox_preflight_error(turn)
+            if preflight_error:
+                finalized = self.state.finalize_turn(
+                    owner_hash,
+                    thread_id,
+                    turn_id,
+                    status="failed",
+                    error=preflight_error.public_message,
+                    error_code=preflight_error.code,
+                    public_message=preflight_error.public_message,
+                    admin_message=preflight_error.admin_message,
+                    event_type="turn.failed",
+                    event_payload=preflight_error.public_payload(),
+                    auth_principal_hash=turn.get("auth_principal_hash") or owner_hash,
+                    product_correlation_id=turn.get("product_correlation_id"),
+                    codex_thread_id=thread.get("codex_thread_id"),
+                    codex_turn_id=turn.get("codex_turn_id"),
+                )
+                self._metric("turns_rejected_sandbox_unavailable", 1)
+                if finalized:
+                    self._metric("turns_failed", 1)
+                return
             turn_started_at = time.monotonic()
             duration_bundle_id = turn.get("bundle_id")
             duration_host_app = turn.get("host_app")
@@ -705,6 +925,7 @@ class TurnScheduler:
             json_log(
                 self.config.json_logs,
                 "turn.start",
+                sanitizer=self.sanitizer,
                 ownerHash=owner_hash,
                 authPrincipalHash=turn.get("auth_principal_hash"),
                 threadId=thread_id,
@@ -735,7 +956,11 @@ class TurnScheduler:
                 else None
             )
             input_items = self._build_input(turn["input"], bundle)
-            cwd = Path(turn["cwd"]).resolve() if turn.get("cwd") else overlay
+            cwd = (
+                Path(turn["cwd"]).resolve()
+                if turn.get("cwd")
+                else overlay or self.config.allowed_workspace_roots[0]
+            )
             if cwd:
                 self.bundles.validate_cwd(str(cwd), bundle)
                 self._validate_config_profile_cwd(cwd, config_profile_config)
@@ -746,12 +971,25 @@ class TurnScheduler:
                 codex_home = self.auth.profile_home(auth_principal_hash, profile)
                 self._validate_execution_auth_binding(thread, turn)
                 mcp_servers = self.bundles.mcp_servers_for_bundle(bundle, overlay) if bundle else ()
+                self.auth.refresh_profile_secrets(auth_principal_hash, profile)
+                self.sanitizer.replace_scope(
+                    f"turn:{turn_id}",
+                    (
+                        os.environ[source]
+                        for server in mcp_servers
+                        for value in server.env.values()
+                        if value.startswith("env:")
+                        for source in (value.removeprefix("env:"),)
+                        if source in os.environ
+                    ),
+                )
                 codex_config_args = self._codex_process_config_args(body, config_profile_config)
                 auth_fingerprint = self.auth.auth_fingerprint(auth_principal_hash, profile)
                 client = self.pool.get(
                     auth_principal_hash=auth_principal_hash,
                     profile=profile,
                     codex_home=codex_home,
+                    runtime_home=self.auth.runtime_home(auth_principal_hash, profile),
                     config_profile=str(turn["config_profile"]),
                     mcp_servers=mcp_servers,
                     tenant_scope_hash=owner_hash,
@@ -767,19 +1005,37 @@ class TurnScheduler:
                 codex_thread_id=thread.get("codex_thread_id"),
                 product_correlation_id=turn.get("product_correlation_id"),
                 debug_raw_events=self.config.debug_raw_events,
+                sanitizer=self.sanitizer,
             )
             context.client = client
             with self._gates_lock:
                 gate.active_context = context
             client.register_context(context)
-            codex_thread_id = self._ensure_codex_thread(client, context, thread, cwd, body, bundle, config_profile_config)
+            codex_thread_id = self._ensure_codex_thread(
+                client,
+                context,
+                thread,
+                cwd,
+                body,
+                bundle,
+                config_profile_config,
+                danger_full_access_authorized=danger_full_access_authorized,
+            )
             compat = body.get("_openaiCompat")
             if isinstance(compat, OpenAICompatTurn) and compat.history_items:
                 client.request(
                     "thread/inject_items",
                     {"threadId": codex_thread_id, "items": list(compat.history_items)},
                 )
-            params = self._turn_params(codex_thread_id, input_items, body, config_profile_config)
+            params = self._turn_params(
+                codex_thread_id,
+                input_items,
+                body,
+                config_profile_config,
+                cwd=cwd,
+                bundle=bundle,
+                danger_full_access_authorized=danger_full_access_authorized,
+            )
             result = client.request("turn/start", params)
             turn_data = result.get("turn") if isinstance(result.get("turn"), dict) else {}
             if turn_data.get("id"):
@@ -806,6 +1062,8 @@ class TurnScheduler:
                     admin_message=context.admin_message or context.error_text or "",
                 )
                 self.pool.close_profile(auth_principal_hash, profile)
+            if context.error_code == SANDBOX_UNAVAILABLE and self.sandbox_probe:
+                self.sandbox_probe.mark_unhealthy(context.admin_message or context.error_text or "")
             if finalized:
                 self._metric("turns_completed" if status == "completed" else "turns_failed", 1)
         except Exception as exc:  # noqa: BLE001 - background worker must persist failure state.
@@ -838,9 +1096,12 @@ class TurnScheduler:
                     admin_message=error_info.admin_message,
                 )
                 self.pool.close_profile(auth_principal_hash, profile)
+            if error_info.code == SANDBOX_UNAVAILABLE and self.sandbox_probe:
+                self.sandbox_probe.mark_unhealthy(error_info.admin_message)
             if finalized:
                 self._metric("turns_failed", 1)
         finally:
+            self.sanitizer.remove_scope(f"turn:{turn_id}")
             if context and client:
                 client.unregister_context(context)
             if client and bundle and bundle.hosted_tools:
@@ -859,6 +1120,7 @@ class TurnScheduler:
                 json_log(
                     self.config.json_logs,
                     "turn.finish",
+                    sanitizer=self.sanitizer,
                     ownerHash=owner_hash,
                     authPrincipalHash=final_turn.get("auth_principal_hash") if final_turn else None,
                     threadId=thread_id,
@@ -871,6 +1133,27 @@ class TurnScheduler:
                     productCorrelationId=final_turn.get("product_correlation_id") if final_turn else None,
                     durationMs=round(elapsed * 1000, 3),
                 )
+
+    def _sandbox_preflight_error(self, turn: dict[str, Any]) -> RuntimeErrorInfo | None:
+        options = turn.get("resolved_options")
+        permission_profile = options.get("permissionProfile") if isinstance(options, dict) else None
+        if permission_profile not in {"broker-read-only", "broker-workspace-write"}:
+            return None
+        if self.config.sandbox_preflight_mode != "required":
+            return None
+        result = self.sandbox_probe.result() if self.sandbox_probe else None
+        if result and result.status == "healthy":
+            return None
+        diagnostic = (
+            result.admin_diagnostic
+            if result and result.admin_diagnostic
+            else "The required managed sandbox preflight is not healthy."
+        )
+        return RuntimeErrorInfo(
+            code=SANDBOX_UNAVAILABLE,
+            public_message=SANDBOX_UNAVAILABLE_PUBLIC_MESSAGE,
+            admin_message=diagnostic,
+        )
 
     def _validate_execution_auth_binding(
         self,
@@ -893,14 +1176,24 @@ class TurnScheduler:
         body: dict[str, Any],
         bundle: ResolvedBundle | None,
         config_profile_config: dict[str, Any],
+        *,
+        danger_full_access_authorized: bool = False,
     ) -> str:
-        params = self._thread_params(cwd, body, bundle, config_profile_config)
+        params = self._thread_params(
+            cwd,
+            body,
+            bundle,
+            config_profile_config,
+            danger_full_access_authorized=danger_full_access_authorized,
+        )
         codex_thread_id = thread.get("codex_thread_id")
         if codex_thread_id:
-            client.request("thread/resume", {"threadId": codex_thread_id, **params})
+            result = client.request("thread/resume", {"threadId": codex_thread_id, **params})
+            self._record_thread_security_provenance(context, params, result)
             client.register_thread_for_context(context, str(codex_thread_id))
             return str(codex_thread_id)
         result = client.request("thread/start", params)
+        self._record_thread_security_provenance(context, params, result)
         thread_data = result.get("thread") if isinstance(result.get("thread"), dict) else {}
         codex_thread_id = str(thread_data.get("id") or "")
         if not codex_thread_id:
@@ -908,14 +1201,58 @@ class TurnScheduler:
         client.register_thread_for_context(context, codex_thread_id)
         return codex_thread_id
 
+    def _record_thread_security_provenance(
+        self,
+        context: BrokerTurnContext,
+        params: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        expected_profile = params.get("permissions")
+        active_profile = result.get("activePermissionProfile")
+        instruction_sources = result.get("instructionSources")
+        runtime_roots = result.get("runtimeWorkspaceRoots")
+        if expected_profile:
+            if not isinstance(active_profile, dict) or active_profile.get("id") != expected_profile:
+                raise AppServerError(
+                    "Pinned Codex protocol mismatch: thread response did not confirm the selected permission profile."
+                )
+            if not isinstance(instruction_sources, list) or not isinstance(runtime_roots, list):
+                raise AppServerError(
+                    "Pinned Codex protocol mismatch: thread response omitted security provenance fields."
+                )
+        if not isinstance(active_profile, dict):
+            return
+        self.state.append_audit(
+            context.owner_hash,
+            "security.runtime.provenance",
+            {
+                "permissionProfile": active_profile.get("id"),
+                "extends": active_profile.get("extends"),
+                "instructionSourceCount": len(instruction_sources) if isinstance(instruction_sources, list) else 0,
+                "runtimeWorkspaceRootCount": len(runtime_roots) if isinstance(runtime_roots, list) else 0,
+            },
+            auth_principal_hash=context.auth_principal_hash,
+            thread_id=context.thread_id,
+            turn_id=context.turn_id,
+        )
+
     def _thread_params(
         self,
         cwd: Path | None,
         body: dict[str, Any],
         bundle: ResolvedBundle | None,
         config_profile_config: dict[str, Any] | None = None,
+        *,
+        danger_full_access_authorized: bool = False,
     ) -> dict[str, Any]:
-        return scheduler_config.thread_params(self, cwd, body, bundle, config_profile_config)
+        return scheduler_config.thread_params(
+            self,
+            cwd,
+            body,
+            bundle,
+            config_profile_config,
+            danger_full_access_authorized=danger_full_access_authorized,
+        )
 
     def _turn_params(
         self,
@@ -923,8 +1260,21 @@ class TurnScheduler:
         input_items: list[dict[str, Any]],
         body: dict[str, Any],
         config_profile_config: dict[str, Any] | None = None,
+        *,
+        cwd: Path | None = None,
+        bundle: ResolvedBundle | None = None,
+        danger_full_access_authorized: bool = False,
     ) -> dict[str, Any]:
-        return scheduler_config.turn_params(self, codex_thread_id, input_items, body, config_profile_config)
+        return scheduler_config.turn_params(
+            self,
+            codex_thread_id,
+            input_items,
+            body,
+            config_profile_config,
+            cwd=cwd,
+            bundle=bundle,
+            danger_full_access_authorized=danger_full_access_authorized,
+        )
 
     def _build_input(self, input_items: list[dict[str, Any]], bundle: ResolvedBundle | None) -> list[dict[str, Any]]:
         return scheduler_config.build_input(input_items, bundle)

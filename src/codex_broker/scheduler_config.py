@@ -7,6 +7,27 @@ from typing import Any
 from .bundles import BundleError, ResolvedBundle
 
 
+_MANAGED_SANDBOX_PERMISSIONS = {
+    "read-only": "broker-read-only",
+    "workspace-write": "broker-workspace-write",
+}
+_CALLER_MANAGED_FIELDS = ("permissions", "runtimeWorkspaceRoots", "permissionProfile", "sandboxPolicy")
+_APPROVAL_REVIEWERS = {"user", "auto_review"}
+
+
+def _managed_approval_policy() -> dict[str, Any]:
+    """Allow reviewed grants without permitting an unsandboxed shell bypass."""
+    return {
+        "granular": {
+            "mcp_elicitations": True,
+            "request_permissions": True,
+            "rules": True,
+            "sandbox_approval": False,
+            "skill_approval": False,
+        }
+    }
+
+
 def request_config_profile(body: dict[str, Any], fallback: Any = "default") -> str:
     return str(body.get("configProfile") or body.get("runtimeProfile") or fallback or "default")
 
@@ -41,24 +62,139 @@ def feature_config_key(value: str) -> str:
     return f"features.{name}"
 
 
+def _reject_caller_managed_fields(body: dict[str, Any], options: dict[str, Any]) -> None:
+    for source in (body, options):
+        for field in _CALLER_MANAGED_FIELDS:
+            if field in source:
+                raise ValueError(f"{field} is managed by the broker and cannot be supplied by callers.")
+
+
+def _reject_profile_managed_fields(profile: dict[str, Any]) -> None:
+    for field in _CALLER_MANAGED_FIELDS:
+        if field in profile:
+            raise ValueError(
+                f"Configuration profile field {field} is managed by the broker; "
+                "select sandbox with read-only, workspace-write, or danger-full-access instead."
+            )
+
+
+def _effective_workspace_root(scheduler: Any, cwd: Path | None, profile: dict[str, Any]) -> str:
+    if cwd is None:
+        raise ValueError("A managed sandbox requires an effective cwd.")
+    if not cwd.is_absolute():
+        raise ValueError("Managed sandbox cwd must be absolute.")
+    effective_cwd = cwd.resolve()
+    allowed_roots = [
+        *(Path(root).expanduser().resolve() for root in scheduler.config.allowed_workspace_roots),
+        scheduler.config.overlay_root.resolve(),
+    ]
+    if not any(effective_cwd.is_relative_to(root) for root in allowed_roots):
+        raise BundleError(f"cwd is outside broker workspace roots: {effective_cwd}")
+    validate_config_profile_cwd(scheduler, effective_cwd, profile)
+    return str(effective_cwd)
+
+
+def _sandbox_choice(
+    options: dict[str, Any],
+    bundle: ResolvedBundle | None,
+    profile: dict[str, Any],
+) -> str | None:
+    # Keep the historic request > bundle > profile order for public choices only.
+    value = options.get("sandbox")
+    if value is None and bundle and bundle.sandbox_mode is not None:
+        value = bundle.sandbox_mode
+    if value is None:
+        value = profile.get("sandbox")
+    if value is None:
+        return "read-only"
+    if not isinstance(value, str) or value not in {*_MANAGED_SANDBOX_PERMISSIONS, "danger-full-access"}:
+        raise ValueError("sandbox must be read-only, workspace-write, or danger-full-access.")
+    return value
+
+
+def _execution_policy_params(
+    scheduler: Any,
+    cwd: Path | None,
+    body: dict[str, Any],
+    bundle: ResolvedBundle | None,
+    profile: dict[str, Any],
+    *,
+    danger_full_access_authorized: bool,
+) -> dict[str, Any]:
+    options = request_codex_options(body)
+    _reject_caller_managed_fields(body, options)
+    sandbox = _sandbox_choice(options, bundle, profile)
+    reviewer = codex_option(options, profile, "approvalsReviewer", "approvals_reviewer")
+    if reviewer is not None and reviewer not in _APPROVAL_REVIEWERS:
+        raise ValueError("approvalsReviewer must be user or auto_review.")
+    approval_policy = codex_option(options, profile, "approvalPolicy")
+    if reviewer == "auto_review" and approval_policy == "never":
+        raise ValueError("approvalPolicy never is incompatible with approvalsReviewer auto_review.")
+
+    params: dict[str, Any] = {}
+    if sandbox in _MANAGED_SANDBOX_PERMISSIONS:
+        params["permissions"] = _MANAGED_SANDBOX_PERMISSIONS[sandbox]
+        params["runtimeWorkspaceRoots"] = [_effective_workspace_root(scheduler, cwd, profile)]
+        params["approvalsReviewer"] = reviewer or "auto_review"
+        if approval_policy is None:
+            params["approvalPolicy"] = _managed_approval_policy()
+        elif approval_policy == "never" and params["approvalsReviewer"] == "user":
+            params["approvalPolicy"] = approval_policy
+        elif isinstance(approval_policy, dict):
+            granular = approval_policy.get("granular")
+            if not isinstance(granular, dict) or granular.get("sandbox_approval") is not False:
+                raise ValueError(
+                    "Managed sandbox approvalPolicy must disable sandbox_approval; use request_permissions for reviewed exceptions."
+                )
+            params["approvalPolicy"] = approval_policy
+        else:
+            raise ValueError(
+                "Managed sandbox approvalPolicy must use the broker granular policy or never with user review."
+            )
+    elif sandbox == "danger-full-access":
+        if not danger_full_access_authorized:
+            raise ValueError("danger-full-access requires separate authorization.")
+        params["sandbox"] = sandbox
+        if approval_policy is not None:
+            params["approvalPolicy"] = approval_policy
+        if reviewer is not None:
+            params["approvalsReviewer"] = reviewer
+    else:
+        if approval_policy is not None:
+            params["approvalPolicy"] = approval_policy
+        if reviewer is not None:
+            params["approvalsReviewer"] = reviewer
+    return params
+
+
 def thread_params(
     scheduler: Any,
     cwd: Path | None,
     body: dict[str, Any],
     bundle: ResolvedBundle | None,
     profile: dict[str, Any] | None = None,
+    *,
+    danger_full_access_authorized: bool = False,
 ) -> dict[str, Any]:
     options = request_codex_options(body)
     profile = profile or {}
     params: dict[str, Any] = {}
     if cwd:
         params["cwd"] = str(cwd)
-    for key in ("approvalPolicy", "model", "personality", "baseInstructions", "developerInstructions"):
+    for key in ("model", "personality", "baseInstructions", "developerInstructions"):
         value = codex_option(options, profile, key)
         if value is not None:
             params[key] = value
-    if options.get("sandbox") or bundle and bundle.sandbox_mode or profile.get("sandbox") is not None:
-        params["sandbox"] = options.get("sandbox") or (bundle.sandbox_mode if bundle and bundle.sandbox_mode else profile.get("sandbox"))
+    params.update(
+        _execution_policy_params(
+            scheduler,
+            cwd,
+            body,
+            bundle,
+            profile,
+            danger_full_access_authorized=danger_full_access_authorized,
+        )
+    )
     return params
 
 
@@ -68,6 +204,10 @@ def turn_params(
     input_items: list[dict[str, Any]],
     body: dict[str, Any],
     profile: dict[str, Any] | None = None,
+    *,
+    cwd: Path | None = None,
+    bundle: ResolvedBundle | None = None,
+    danger_full_access_authorized: bool = False,
 ) -> dict[str, Any]:
     options = request_codex_options(body)
     profile = profile or {}
@@ -85,6 +225,16 @@ def turn_params(
     output_schema = codex_option(options, profile, "outputSchema", "output_schema")
     if output_schema is not None:
         params["outputSchema"] = output_schema
+    params.update(
+        _execution_policy_params(
+            scheduler,
+            cwd,
+            body,
+            bundle,
+            profile,
+            danger_full_access_authorized=danger_full_access_authorized,
+        )
+    )
     return params
 
 
@@ -112,6 +262,7 @@ def config_profile_config(scheduler: Any, name: str) -> dict[str, Any]:
     profile = scheduler.config.config_profiles.get(name)
     if profile is None:
         raise ValueError(f"Unknown configuration profile: {name}")
+    _reject_profile_managed_fields(profile)
     return profile
 
 

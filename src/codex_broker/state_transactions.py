@@ -10,6 +10,10 @@ class StateConnection(Protocol):
     _lock: Any
     _events_condition: Any
 
+    def _sanitize(self, value: Any) -> Any: ...
+
+    def _redact(self, value: Any) -> Any: ...
+
     def _insert_audit_locked(self, owner_hash: str, action: str, payload: dict[str, Any], **kwargs: Any) -> int: ...
 
     def _rebuild_audit_counts_locked(self) -> None: ...
@@ -38,6 +42,12 @@ def finalize_turn(
     audit_action: str | None = None,
     audit_payload: dict[str, Any] | None = None,
 ) -> bool:
+    error = state._sanitize(error)
+    public_message = state._sanitize(public_message)
+    admin_message = state._sanitize(admin_message)
+    event_payload = state._sanitize(event_payload)
+    raw_params = state._redact(raw_params)
+    audit_payload = state._sanitize(audit_payload)
     now = utc_now()
     with state._events_condition, state._conn:
         cursor = state._conn.execute(

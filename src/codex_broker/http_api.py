@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import time
 from http import HTTPStatus
@@ -124,6 +125,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
             json_log(
                 self.broker.config.json_logs,
                 "http.request",
+                sanitizer=self.broker.sanitizer,
                 method=method,
                 endpoint=metric_endpoint,
                 status=status,
@@ -197,7 +199,15 @@ class BrokerHandler(BaseHTTPRequestHandler):
 
     def _turn_route(self, method: str, tail: list[str], owner_id: str, thread_id: str, query: dict[str, list[str]]) -> None:
         if method == "POST" and tail == []:
-            self._json(self.broker.scheduler.start_turn(owner_id, thread_id, self._read_json()), HTTPStatus.ACCEPTED)
+            self._json(
+                self.broker.scheduler.start_turn(
+                    owner_id,
+                    thread_id,
+                    self._read_json(),
+                    danger_full_access_authorized=self._danger_full_access_authorized(),
+                ),
+                HTTPStatus.ACCEPTED,
+            )
             return
         if len(tail) < 1:
             self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
@@ -329,8 +339,21 @@ class BrokerHandler(BaseHTTPRequestHandler):
             probe.unlink()
         except OSError as exc:
             errors.append(f"auth root not writable: {exc}")
+        sandbox_result = self.broker.sandbox_probe.result() or self.broker.sandbox_probe.run_once()
+        if (
+            self.broker.config.sandbox_preflight_mode == "required"
+            and sandbox_result.status != "healthy"
+        ):
+            errors.append("The command sandbox could not start.")
         status = HTTPStatus.OK if not errors else HTTPStatus.SERVICE_UNAVAILABLE
-        self._json({"status": "ready" if not errors else "not_ready", "errors": errors}, status)
+        self._json(
+            {
+                "status": "ready" if not errors else "not_ready",
+                "errors": errors,
+                "sandboxPreflight": sandbox_result.public(),
+            },
+            status,
+        )
 
     @staticmethod
     def _readable_dir(path: Path) -> bool:
@@ -354,6 +377,11 @@ class BrokerHandler(BaseHTTPRequestHandler):
         if auth == f"Bearer {key}":
             return True
         return self.headers.get("X-Codex-Broker-Key") == key
+
+    def _danger_full_access_authorized(self) -> bool:
+        expected = self.broker.config.danger_full_access_key
+        supplied = self.headers.get("X-Codex-Broker-Danger-Full-Access-Key")
+        return bool(expected and supplied and secrets.compare_digest(supplied, expected))
 
     def _read_json(self, *, allow_empty: bool = False) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or "0")
@@ -484,7 +512,20 @@ def openapi_document() -> dict[str, Any]:
             },
             "/v1/owners/{ownerId}/threads/{threadId}/turns": {
                 "post": {
-                    "parameters": [owner_param, thread_param],
+                    "parameters": [
+                        owner_param,
+                        thread_param,
+                        {
+                            "name": "X-Codex-Broker-Danger-Full-Access-Key",
+                            "in": "header",
+                            "required": False,
+                            "schema": {"type": "string", "format": "password"},
+                            "description": (
+                                "Separate deployment credential required only when codexOptions.sandbox "
+                                "selects danger-full-access. The normal broker API key is not sufficient."
+                            ),
+                        },
+                    ],
                     "requestBody": request_body(ref("TurnStartRequest")),
                     "responses": {
                         "202": json_response(ref("Turn"), "Turn accepted"),
@@ -615,10 +656,32 @@ def openapi_document() -> dict[str, Any]:
                 "Health": {"type": "object", "required": ["status"], "properties": {"status": {"const": "ok"}}},
                 "Readiness": {
                     "type": "object",
-                    "required": ["status", "errors"],
+                    "required": ["status", "errors", "sandboxPreflight"],
                     "properties": {
                         "status": {"enum": ["ready", "not_ready"]},
                         "errors": {"type": "array", "items": {"type": "string"}},
+                        "sandboxPreflight": {"$ref": "#/components/schemas/SandboxPreflight"},
+                    },
+                },
+                "SandboxPreflight": {
+                    "type": "object",
+                    "required": [
+                        "status",
+                        "platform",
+                        "backend",
+                        "codexVersion",
+                        "permissionProfile",
+                        "checkedAt",
+                        "durationSeconds",
+                    ],
+                    "properties": {
+                        "status": {"enum": ["healthy", "failed", "unsupported", "skipped"]},
+                        "platform": {"type": "string"},
+                        "backend": {"type": ["string", "null"]},
+                        "codexVersion": {"type": ["string", "null"]},
+                        "permissionProfile": {"type": "string"},
+                        "checkedAt": {"type": "string", "format": "date-time"},
+                        "durationSeconds": {"type": "number", "minimum": 0},
                     },
                 },
                 "AuditLog": {
@@ -686,8 +749,18 @@ def openapi_document() -> dict[str, Any]:
                     "type": "object",
                     "additionalProperties": True,
                     "properties": {
-                        "approvalPolicy": {"type": "string"},
-                        "sandbox": {"type": "string"},
+                        "approvalPolicy": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "object", "additionalProperties": True},
+                            ]
+                        },
+                        "approvalsReviewer": {"enum": ["user", "auto_review"]},
+                        "approvals_reviewer": {
+                            "enum": ["user", "auto_review"],
+                            "description": "Snake-case alias for approvalsReviewer.",
+                        },
+                        "sandbox": {"enum": ["read-only", "workspace-write", "danger-full-access"]},
                         "serviceTier": {
                             "type": "string",
                             "description": "Codex service-tier id for this turn, such as a Fast tier advertised by the selected model.",

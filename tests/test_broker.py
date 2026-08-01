@@ -11,6 +11,7 @@ from contextlib import redirect_stderr
 from datetime import datetime, timezone
 from http import HTTPStatus
 import unittest
+import urllib.request
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from codex_broker.app_server import AppServerClient, AppServerError, AppServerPo
 from codex_broker.bundles import BundleError, BundleRegistry
 from codex_broker.config import BrokerConfig
 from codex_broker.http_api import BrokerHandler, BrokerServices, is_unauthenticated_path, metric_path_template
+from codex_broker.services import BrokerHTTPServer
 from codex_broker.runtime_errors import (
     CODEX_AUTH_REQUIRES_ADMIN,
     CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE,
@@ -46,6 +48,8 @@ def config_for(tmp: Path, *, turn_delay: float = 0.01) -> BrokerConfig:
     os.environ.pop("FAKE_CODEX_REQUEST_MCP_ELICITATION", None)
     os.environ.pop("FAKE_CODEX_DEVICE_AUTH_DELAY", None)
     os.environ.pop("FAKE_CODEX_DEVICE_AUTH_SECRET_OUTPUT", None)
+    os.environ.pop("FAKE_CODEX_RESPONSE_SPLITS_JSON", None)
+    os.environ.pop("FAKE_CODEX_OMIT_SECURITY_PROVENANCE", None)
     workspace = tmp / "workspace"
     bundles = tmp / "bundles"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -115,6 +119,227 @@ def wait_interaction(
 
 
 class BrokerTests(unittest.TestCase):
+    def test_native_sse_never_exposes_a_registered_secret_split_across_deltas(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            server: BrokerHTTPServer | None = None
+            worker: threading.Thread | None = None
+            canary = "native-sse-unlabelled-exact-canary"
+            try:
+                services.sanitizer.register("native-sse-test", canary)
+                os.environ["FAKE_CODEX_RESPONSE_SPLITS_JSON"] = json.dumps(
+                    [canary[:7], canary[7:19], canary[19:]]
+                )
+                thread = services.scheduler.create_thread("owner-a", {})
+                started = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "stream"}]},
+                )
+                wait_turn(services, "owner-a", thread["threadId"], started["turnId"])
+
+                active_services = services
+
+                class Handler(BrokerHandler):
+                    broker = active_services
+
+                class ExpectedDisconnectServer(BrokerHTTPServer):
+                    def handle_error(self, request: Any, client_address: Any) -> None:
+                        # The test intentionally closes a long-lived SSE socket
+                        # after the terminal event; suppress that expected reset.
+                        return
+
+                server = ExpectedDisconnectServer(("127.0.0.1", 0), Handler)
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                request = urllib.request.Request(
+                    (
+                        f"http://127.0.0.1:{server.server_port}/v1/owners/owner-a/threads/"
+                        f"{thread['threadId']}/events?turnId={started['turnId']}"
+                    ),
+                    headers={
+                        "Authorization": "Bearer test-key",
+                        "Connection": "close",
+                    },
+                )
+                data_lines: list[str] = []
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+                    while True:
+                        line = response.readline().decode("utf-8")
+                        if not line:
+                            self.fail("native SSE stream closed before turn.completed")
+                        if not line.startswith("data: "):
+                            continue
+                        data_lines.append(line.removeprefix("data: ").strip())
+                        payload = json.loads(data_lines[-1])
+                        if payload.get("type") == "turn.completed":
+                            break
+
+                captured = "\n".join(data_lines)
+                self.assertNotIn(canary, captured)
+                self.assertIn("<redacted>", captured)
+            finally:
+                os.environ.pop("FAKE_CODEX_RESPONSE_SPLITS_JSON", None)
+                if server is not None:
+                    server.shutdown()
+                    server.server_close()
+                if worker is not None:
+                    worker.join(1)
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_danger_full_access_uses_a_separate_http_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw)), danger_full_access_key="danger-key")
+            services = BrokerServices.build(config)
+            handler = BrokerHandler.__new__(BrokerHandler)
+            handler.broker = services
+            try:
+                handler.headers = {"Authorization": "Bearer test-key"}
+                self.assertFalse(handler._danger_full_access_authorized())
+                handler.headers = {"X-Codex-Broker-Danger-Full-Access-Key": "wrong"}
+                self.assertFalse(handler._danger_full_access_authorized())
+                handler.headers = {"X-Codex-Broker-Danger-Full-Access-Key": "danger-key"}
+                self.assertTrue(handler._danger_full_access_authorized())
+            finally:
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_managed_turn_records_bounded_permission_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            try:
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"cwd": str(services.config.allowed_workspace_roots[0])},
+                )
+                started = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {
+                        "input": [{"type": "text", "text": "provenance"}],
+                        "codexOptions": {"sandbox": "workspace-write"},
+                    },
+                )
+                completed = wait_turn(services, "owner-a", thread["threadId"], started["turnId"])
+                self.assertEqual(completed["status"], "completed")
+                audits = services.state.list_audit_logs(
+                    services.auth.hash_owner("owner-a"),
+                    action="security.runtime.provenance",
+                )
+                self.assertEqual(audits[0]["payload"]["permissionProfile"], "broker-workspace-write")
+                self.assertEqual(audits[0]["payload"]["extends"], ":workspace")
+                self.assertEqual(audits[0]["payload"]["instructionSourceCount"], 0)
+                self.assertEqual(audits[0]["payload"]["runtimeWorkspaceRootCount"], 1)
+                self.assertNotIn(str(services.config.auth_root), json.dumps(audits[0]))
+            finally:
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_managed_turn_rejects_missing_pinned_security_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            os.environ["FAKE_CODEX_OMIT_SECURITY_PROVENANCE"] = "1"
+            try:
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"cwd": str(services.config.allowed_workspace_roots[0])},
+                )
+                started = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {
+                        "input": [{"type": "text", "text": "mismatch"}],
+                        "codexOptions": {"sandbox": "read-only"},
+                    },
+                )
+                failed = wait_turn(services, "owner-a", thread["threadId"], started["turnId"])
+                self.assertEqual(failed["status"], "failed")
+                self.assertIn("Pinned Codex protocol mismatch", failed["adminMessage"])
+            finally:
+                os.environ.pop("FAKE_CODEX_OMIT_SECURITY_PROVENANCE", None)
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_split_registered_secret_is_sanitized_before_sqlite_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            canary = "registered-canary-value"
+            services.sanitizer.register("test-canary", canary)
+            os.environ["FAKE_CODEX_RESPONSE_SPLITS_JSON"] = json.dumps(
+                ["before registered-can", "ary-value after"]
+            )
+            try:
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"cwd": str(services.config.allowed_workspace_roots[0])},
+                )
+                started = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "sanitize"}]},
+                )
+                completed = wait_turn(services, "owner-a", thread["threadId"], started["turnId"])
+                self.assertEqual(completed["status"], "completed")
+                events = services.state.list_events(
+                    services.auth.hash_owner("owner-a"),
+                    thread["threadId"],
+                    turn_id=started["turnId"],
+                )
+                rendered = json.dumps(events)
+                self.assertNotIn(canary, rendered)
+                self.assertIn("before <redacted> after", rendered)
+                with services.state._lock:
+                    rows = services.state._conn.execute(
+                        "select payload_json, raw_params_json from events where turn_id = ?",
+                        (started["turnId"],),
+                    ).fetchall()
+                persisted = "\n".join(str(value) for row in rows for value in row if value is not None)
+                self.assertNotIn(canary, persisted)
+            finally:
+                os.environ.pop("FAKE_CODEX_RESPONSE_SPLITS_JSON", None)
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_raw_mode_preserves_normalized_output_but_redacts_debug_params(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw)), event_sanitization_mode="raw")
+            services = BrokerServices.build(config)
+            canary = "raw-registered-canary"
+            services.sanitizer.register("test-canary", canary)
+            os.environ["FAKE_CODEX_RESPONSE_SPLITS_JSON"] = json.dumps(["raw-registered-", "canary"])
+            try:
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"cwd": str(services.config.allowed_workspace_roots[0])},
+                )
+                started = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "raw"}]},
+                )
+                wait_turn(services, "owner-a", thread["threadId"], started["turnId"])
+                with services.state._lock:
+                    rows = services.state._conn.execute(
+                        "select payload_json, raw_params_json from events where turn_id = ?",
+                        (started["turnId"],),
+                    ).fetchall()
+                payloads = "\n".join(str(row[0]) for row in rows)
+                raw_params = "\n".join(str(row[1]) for row in rows if row[1] is not None)
+                self.assertIn(canary, payloads)
+                self.assertNotIn(canary, raw_params)
+            finally:
+                os.environ.pop("FAKE_CODEX_RESPONSE_SPLITS_JSON", None)
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
     def test_json_log_is_structured_and_redacts_secrets(self) -> None:
         stream = io.StringIO()
         with redirect_stderr(stream):
@@ -144,7 +369,9 @@ class BrokerTests(unittest.TestCase):
             owner_hash = auth.hash_owner("user@example.com")
             home = auth.profile_home(owner_hash, "default")
             self.assertNotIn("user@example.com", str(home))
-            self.assertTrue((home / "config.toml").read_text(encoding="utf-8").strip().endswith('"file"'))
+            rendered_config = (home / "config.toml").read_text(encoding="utf-8")
+            self.assertIn('cli_auth_credentials_store = "file"', rendered_config)
+            self.assertIn('default_permissions = "broker-read-only"', rendered_config)
             result = auth.login_api_key("user@example.com", "sk-test", "default")
             self.assertEqual(result["state"], "authenticated")
             self.assertTrue((home / "auth.json").exists())

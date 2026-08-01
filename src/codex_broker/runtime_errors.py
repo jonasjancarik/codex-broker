@@ -15,6 +15,10 @@ SESSION_NOT_RESUMABLE = "session_not_resumable"
 SESSION_NOT_RESUMABLE_PUBLIC_MESSAGE = (
     "The previous Codex session could not be resumed. Start a new session from the current workspace state."
 )
+SANDBOX_UNAVAILABLE = "sandbox_unavailable"
+SANDBOX_UNAVAILABLE_PUBLIC_MESSAGE = (
+    "The managed execution sandbox is unavailable. Please contact an administrator."
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,12 @@ def classify_runtime_error(message: str) -> RuntimeErrorInfo:
             public_message=CODEX_AUTH_REQUIRES_ADMIN_PUBLIC_MESSAGE,
             admin_message=message,
         )
+    if is_sandbox_unavailable(normalized):
+        return RuntimeErrorInfo(
+            code=SANDBOX_UNAVAILABLE,
+            public_message=SANDBOX_UNAVAILABLE_PUBLIC_MESSAGE,
+            admin_message=message,
+        )
     return RuntimeErrorInfo(code="codex_runtime_error", public_message=message, admin_message=message)
 
 
@@ -75,6 +85,29 @@ def is_auth_refresh_failure(message: str) -> bool:
     if "refresh token" in normalized and "please log out and sign in again" in normalized:
         return True
     return False
+
+
+def is_sandbox_unavailable(message: str) -> bool:
+    """Recognize only actionable Bubblewrap setup failures, not generic errors.
+
+    Codex can mention a sandbox while reporting an unrelated command failure.
+    Requiring both the backend and a namespace/permission marker avoids turning
+    those errors into a misleading availability diagnosis.
+    """
+    normalized = " ".join(message.lower().split())
+    backend = "bubblewrap" in normalized or "bwrap" in normalized
+    namespace_or_permission = any(
+        marker in normalized
+        for marker in (
+            "user namespace",
+            "user namespaces",
+            "unshare",
+            "operation not permitted",
+            "permission denied",
+            "not permitted",
+        )
+    )
+    return backend and namespace_or_permission
 
 
 def classify_app_server_error(error: Any) -> RuntimeErrorInfo | None:

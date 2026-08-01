@@ -130,6 +130,7 @@ def _account_client(handler: Any, scope: Any, profile_key: str) -> Any:
         auth_principal_hash=scope.auth_principal_hash,
         profile=profile_key,
         codex_home=handler.broker.auth.profile_home(scope.auth_principal_hash, profile_key),
+        runtime_home=handler.broker.auth.runtime_home(scope.auth_principal_hash, profile_key),
         config_profile="default",
         mcp_servers=(),
         auth_fingerprint=handler.broker.auth.auth_fingerprint(scope.auth_principal_hash, profile_key),

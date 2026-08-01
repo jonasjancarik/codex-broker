@@ -17,6 +17,7 @@ from unittest.mock import patch
 from codex_broker.app_server import AppServerClient, AppServerError, AppServerPool
 from codex_broker.bundles import McpServerRef
 from codex_broker.config import BrokerConfig
+from codex_broker.security import SecretSanitizer
 from codex_broker.state import StateStore
 
 
@@ -100,6 +101,43 @@ class FakeProcess:
 
 
 class AppServerRoutingTests(unittest.TestCase):
+    def test_app_server_process_uses_auth_codex_home_and_separate_runtime_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = config_for(tmp)
+            state = StateStore(config.state_db_path)
+            pool = AppServerPool(config, state)
+            codex_home = config.auth_root / "principal_hash" / "profiles" / "default" / "codex-home"
+            runtime_home = config.runtime_home_root / "principal_hash" / "profiles" / "default"
+            codex_home.mkdir(parents=True)
+            runtime_home.mkdir(parents=True)
+            captured: dict[str, str] = {}
+            real_popen = __import__("subprocess").Popen
+
+            def capture_popen(*args: Any, **kwargs: Any) -> Any:
+                env = kwargs["env"]
+                if "CODEX_HOME" in env:
+                    captured["CODEX_HOME"] = env["CODEX_HOME"]
+                    captured["HOME"] = env["HOME"]
+                return real_popen(*args, **kwargs)
+
+            try:
+                with patch("codex_broker.app_server.subprocess.Popen", side_effect=capture_popen):
+                    pool.get(
+                        auth_principal_hash="principal_hash",
+                        profile="default",
+                        codex_home=codex_home,
+                        runtime_home=runtime_home,
+                        config_profile="default",
+                        mcp_servers=(),
+                    )
+                self.assertTrue(Path(captured["CODEX_HOME"]).samefile(codex_home))
+                self.assertTrue(Path(captured["HOME"]).samefile(runtime_home))
+                self.assertNotEqual(captured["CODEX_HOME"], captured["HOME"])
+            finally:
+                pool.close_all()
+                state.close()
+
     def test_unknown_explicit_ids_never_fall_back_across_shared_principal_contexts(self) -> None:
         client = AppServerClient.__new__(AppServerClient)
         client._contexts_lock = threading.RLock()
@@ -513,6 +551,8 @@ class AppServerRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_raw:
             client = AppServerClient.__new__(AppServerClient)
             client.config = replace(config_for(Path(tmp_raw)), json_logs=True)
+            client.sanitizer = SecretSanitizer()
+            client.sanitizer.register("profile", "unlabelled-exact-canary")
             client.auth_principal_hash = "owner_hash"
             client.profile = "default"
             client.config_profile = "default"
@@ -523,12 +563,14 @@ class AppServerRoutingTests(unittest.TestCase):
             with redirect_stderr(stream):
                 clean = client._log_stream_line(
                     "stderr",
-                    "failed Authorization: Bearer live-token access_token=secret-token api_key=sk-live_secret",
+                    "failed Authorization: Bearer live-token access_token=secret-token "
+                    "api_key=sk-live_secret unlabelled-exact-canary",
                 )
 
             self.assertNotIn("live-token", clean)
             self.assertNotIn("secret-token", clean)
             self.assertNotIn("sk-live_secret", clean)
+            self.assertNotIn("unlabelled-exact-canary", clean)
             payload = json.loads(stream.getvalue())
             self.assertEqual(payload["event"], "app_server.stderr")
             self.assertEqual(payload["authPrincipalHash"], "owner_hash")
@@ -539,11 +581,13 @@ class AppServerRoutingTests(unittest.TestCase):
             self.assertNotIn("live-token", payload["line"])
             self.assertNotIn("secret-token", payload["line"])
             self.assertNotIn("sk-live_secret", payload["line"])
+            self.assertNotIn("unlabelled-exact-canary", payload["line"])
 
     def test_invalid_stdout_log_is_redacted_before_failure_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             client = AppServerClient.__new__(AppServerClient)
             client.config = replace(config_for(Path(tmp_raw)), json_logs=True)
+            client.sanitizer = SecretSanitizer()
             client.auth_principal_hash = "owner_hash"
             client.profile = "default"
             client.config_profile = "default"

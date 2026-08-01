@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from dataclasses import replace
@@ -12,10 +13,106 @@ from codex_broker.bundles import BundleError
 from codex_broker.config import BrokerConfig
 from codex_broker.http_api import BrokerServices
 from codex_broker.openai_auth import OpenAICompatAuth, compatibility_key_digest
+from codex_broker import scheduler_config
 from test_broker import config_for
 
 
 class ConfigProfileTests(unittest.TestCase):
+    def test_security_configuration_defaults_and_runtime_home_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {"CODEX_BROKER_DATA_DIR": tmp_raw},
+            clear=True,
+        ):
+            config = BrokerConfig.from_env()
+
+        self.assertEqual(config.event_sanitization_mode, "safe")
+        self.assertEqual(config.sandbox_preflight_mode, "required" if sys.platform == "linux" else "warn")
+        self.assertEqual(config.runtime_home_root, Path(tmp_raw).resolve() / "workspaces" / "runtime-homes")
+        self.assertEqual(config.sandbox_deny_paths, ())
+        self.assertIsNone(config.danger_full_access_key)
+
+    def test_danger_full_access_key_loads_only_from_file_and_is_not_repr_visible(self) -> None:
+        secret = "danger-full-access-secret"
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = Path(tmp_raw) / "danger-full-access.key"
+            path.write_text(secret + "\n", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_BROKER_DATA_DIR": tmp_raw,
+                    "CODEX_BROKER_DANGER_FULL_ACCESS_KEY": "inline-secret-must-not-load",
+                    "CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE": str(path),
+                },
+                clear=True,
+            ):
+                config = BrokerConfig.from_env()
+
+        self.assertEqual(config.danger_full_access_key, secret)
+        self.assertNotIn(secret, repr(config))
+        self.assertNotIn("inline-secret-must-not-load", repr(config))
+
+    def test_danger_full_access_key_file_fails_closed_when_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            missing = Path(tmp_raw) / "missing.key"
+            directory = Path(tmp_raw) / "directory"
+            directory.mkdir()
+            empty = Path(tmp_raw) / "empty.key"
+            empty.write_text(" \n", encoding="utf-8")
+            cases = (
+                (missing, FileNotFoundError, "does not exist or is not a file"),
+                (directory, FileNotFoundError, "does not exist or is not a file"),
+                (empty, ValueError, "is empty"),
+            )
+            for path, error, message in cases:
+                with self.subTest(path=path), patch.dict(
+                    os.environ,
+                    {
+                        "CODEX_BROKER_DATA_DIR": tmp_raw,
+                        "CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE": str(path),
+                    },
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(error, message):
+                        BrokerConfig.from_env()
+
+    def test_security_configuration_loads_extra_absolute_deny_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {
+                "CODEX_BROKER_DATA_DIR": tmp_raw,
+                "CODEX_BROKER_EVENT_SANITIZATION_MODE": "raw",
+                "CODEX_BROKER_SANDBOX_PREFLIGHT": "disabled",
+                "CODEX_BROKER_SANDBOX_DENY_PATHS": os.pathsep.join(
+                    [str(Path(tmp_raw) / "one"), str(Path(tmp_raw) / "two")]
+                ),
+            },
+            clear=True,
+        ):
+            config = BrokerConfig.from_env()
+
+        self.assertEqual(config.event_sanitization_mode, "raw")
+        self.assertEqual(config.sandbox_preflight_mode, "disabled")
+        self.assertEqual(
+            config.sandbox_deny_paths,
+            (Path(tmp_raw, "one").resolve(), Path(tmp_raw, "two").resolve()),
+        )
+
+    def test_security_configuration_rejects_invalid_modes_and_relative_deny_paths(self) -> None:
+        cases = (
+            ("CODEX_BROKER_EVENT_SANITIZATION_MODE", "unsafe", "safe, raw"),
+            ("CODEX_BROKER_SANDBOX_PREFLIGHT", "optional", "required, warn, disabled"),
+            ("CODEX_BROKER_SANDBOX_DENY_PATHS", "relative/path", "must be absolute"),
+        )
+        for name, value, message in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+                os.environ,
+                {"CODEX_BROKER_DATA_DIR": tmp_raw, name: value},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(ValueError, message):
+                    BrokerConfig.from_env()
+
     def test_openai_compat_bindings_load_from_digest_only_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             path = Path(tmp_raw) / "bindings.json"
@@ -155,7 +252,6 @@ class ConfigProfileTests(unittest.TestCase):
                 config_profiles={
                     "review": {
                         "model": "gpt-5",
-                        "approvalPolicy": "on-request",
                         "sandbox": "workspace-write",
                         "personality": "concise",
                         "serviceTier": "flex",
@@ -185,11 +281,25 @@ class ConfigProfileTests(unittest.TestCase):
                 )
                 self.assertEqual(thread_params["cwd"], str(cwd))
                 self.assertEqual(thread_params["model"], "gpt-5.1")
-                self.assertEqual(thread_params["approvalPolicy"], "on-request")
-                self.assertEqual(thread_params["sandbox"], "workspace-write")
+                self.assertEqual(
+                    thread_params["approvalPolicy"],
+                    {
+                        "granular": {
+                            "mcp_elicitations": True,
+                            "request_permissions": True,
+                            "rules": True,
+                            "sandbox_approval": False,
+                            "skill_approval": False,
+                        }
+                    },
+                )
+                self.assertEqual(thread_params["permissions"], "broker-workspace-write")
+                self.assertEqual(thread_params["runtimeWorkspaceRoots"], [str(cwd.resolve())])
+                self.assertNotIn("sandbox", thread_params)
                 self.assertEqual(thread_params["personality"], "concise")
 
-                turn_params = services.scheduler._turn_params(
+                turn_params = scheduler_config.turn_params(
+                    services.scheduler,
                     "codex_thread_1",
                     [{"type": "text", "text": "review"}],
                     {
@@ -197,6 +307,7 @@ class ConfigProfileTests(unittest.TestCase):
                         "runtime": {"reasoningEffort": "medium", "reasoningSummary": "concise"},
                     },
                     profile,
+                    cwd=cwd,
                 )
                 self.assertEqual(turn_params["model"], "gpt-5.1-codex")
                 self.assertEqual(turn_params["serviceTier"], "fast")
@@ -204,6 +315,8 @@ class ConfigProfileTests(unittest.TestCase):
                 self.assertEqual(turn_params["personality"], "concise")
                 self.assertEqual(turn_params["summary"], "concise")
                 self.assertEqual(turn_params["outputSchema"], profile["outputSchema"])
+                self.assertEqual(turn_params["permissions"], "broker-workspace-write")
+                self.assertEqual(turn_params["runtimeWorkspaceRoots"], [str(cwd.resolve())])
 
                 process_args = services.scheduler._codex_process_config_args(
                     {
@@ -227,6 +340,164 @@ class ConfigProfileTests(unittest.TestCase):
                         ("features.multi_agent", "false"),
                     ),
                 )
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_sandbox_modes_characterize_permission_profile_wire_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            services = BrokerServices.build(config)
+            try:
+                cwd = config.allowed_workspace_roots[0]
+
+                default_policy = services.scheduler._thread_params(cwd, {}, None)
+                self.assertEqual(default_policy["permissions"], "broker-read-only")
+                self.assertEqual(default_policy["runtimeWorkspaceRoots"], [str(cwd.resolve())])
+
+                read_only = services.scheduler._thread_params(
+                    cwd,
+                    {"codexOptions": {"sandbox": "read-only"}},
+                    None,
+                )
+                self.assertEqual(read_only["permissions"], "broker-read-only")
+                self.assertNotIn("sandbox", read_only)
+                self.assertEqual(read_only["runtimeWorkspaceRoots"], [str(cwd.resolve())])
+
+                workspace_write = services.scheduler._thread_params(
+                    cwd,
+                    {"codexOptions": {"sandbox": "workspace-write"}},
+                    None,
+                )
+                self.assertEqual(workspace_write["permissions"], "broker-workspace-write")
+                self.assertNotIn("sandbox", workspace_write)
+                self.assertEqual(workspace_write["runtimeWorkspaceRoots"], [str(cwd.resolve())])
+                self.assertTrue(all(Path(root).is_absolute() for root in workspace_write["runtimeWorkspaceRoots"]))
+                self.assertEqual(workspace_write["runtimeWorkspaceRoots"].count(str(cwd.resolve())), 1)
+
+                with self.assertRaisesRegex(ValueError, "requires separate authorization"):
+                    services.scheduler._thread_params(
+                        cwd,
+                        {"codexOptions": {"sandbox": "danger-full-access"}},
+                        None,
+                    )
+                full_access = scheduler_config.thread_params(
+                    services.scheduler,
+                    cwd,
+                    {"codexOptions": {"sandbox": "danger-full-access"}},
+                    None,
+                    danger_full_access_authorized=True,
+                )
+                self.assertEqual(full_access["sandbox"], "danger-full-access")
+                self.assertNotIn("permissions", full_access)
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_config_profiles_cannot_inject_low_level_sandbox_fields(self) -> None:
+        for field, value in (
+            ("permissions", "danger-full-access"),
+            ("runtimeWorkspaceRoots", ["/"]),
+            ("permissionProfile", "danger-full-access"),
+            ("sandboxPolicy", {"type": "dangerFullAccess"}),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp_raw:
+                config = replace(
+                    config_for(Path(tmp_raw)),
+                    config_profiles={"unsafe": {"sandbox": "workspace-write", field: value}},
+                )
+                services = BrokerServices.build(config)
+                try:
+                    with self.assertRaisesRegex(ValueError, f"field {field} is managed by the broker"):
+                        services.scheduler._config_profile_config("unsafe")
+                finally:
+                    services.pool.close_all()
+                    services.state.close()
+
+    def test_thread_and_turn_params_characterize_auto_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            services = BrokerServices.build(config)
+            try:
+                thread_params = services.scheduler._thread_params(
+                    config.allowed_workspace_roots[0],
+                    {
+                        "codexOptions": {
+                            "sandbox": "workspace-write",
+                            "approvalsReviewer": "user",
+                        }
+                    },
+                    None,
+                )
+                self.assertEqual(thread_params["permissions"], "broker-workspace-write")
+                self.assertEqual(thread_params["approvalsReviewer"], "user")
+                self.assertNotIn("sandbox", thread_params)
+
+                turn_params = scheduler_config.turn_params(
+                    services.scheduler,
+                    "codex_thread_1",
+                    [{"type": "text", "text": "review"}],
+                    {
+                        "codexOptions": {
+                            "sandbox": "workspace-write",
+                            "approvalsReviewer": "user",
+                        }
+                    },
+                    cwd=config.allowed_workspace_roots[0],
+                )
+                self.assertEqual(turn_params["permissions"], "broker-workspace-write")
+                self.assertEqual(turn_params["approvalsReviewer"], "user")
+                self.assertEqual(turn_params["runtimeWorkspaceRoots"], [str(config.allowed_workspace_roots[0].resolve())])
+                self.assertNotIn("sandboxPolicy", turn_params)
+
+                auto_review = services.scheduler._turn_params(
+                    "codex_thread_1",
+                    [{"type": "text", "text": "review"}],
+                    {"codexOptions": {"approvalsReviewer": "auto_review"}},
+                    cwd=config.allowed_workspace_roots[0],
+                )
+                self.assertEqual(auto_review["approvalsReviewer"], "auto_review")
+
+                with self.assertRaisesRegex(ValueError, "approvalsReviewer.*user.*auto_review"):
+                    services.scheduler._thread_params(
+                        config.allowed_workspace_roots[0],
+                        {"codexOptions": {"approvalsReviewer": "not-a-reviewer"}},
+                        None,
+                    )
+                with self.assertRaisesRegex(ValueError, "approvalPolicy.*never.*auto_review"):
+                    services.scheduler._thread_params(
+                        config.allowed_workspace_roots[0],
+                        {
+                            "codexOptions": {
+                                "approvalPolicy": "never",
+                                "approvalsReviewer": "auto_review",
+                            }
+                        },
+                        None,
+                    )
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_managed_sandbox_rejects_low_level_overrides_and_outside_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, tempfile.TemporaryDirectory() as outside_raw:
+            config = config_for(Path(tmp_raw))
+            services = BrokerServices.build(config)
+            try:
+                cwd = config.allowed_workspace_roots[0]
+                for field in ("permissions", "runtimeWorkspaceRoots", "permissionProfile", "sandboxPolicy"):
+                    with self.subTest(field=field), self.assertRaisesRegex(ValueError, f"{field} is managed"):
+                        services.scheduler._thread_params(
+                            cwd,
+                            {"codexOptions": {"sandbox": "read-only", field: "caller-value"}},
+                            None,
+                        )
+                with self.assertRaisesRegex(BundleError, "outside broker workspace roots"):
+                    services.scheduler._thread_params(
+                        Path(outside_raw),
+                        {"codexOptions": {"sandbox": "read-only"}},
+                        None,
+                    )
             finally:
                 services.pool.close_all()
                 services.state.close()

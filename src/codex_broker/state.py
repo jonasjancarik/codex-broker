@@ -7,19 +7,30 @@ from pathlib import Path
 from typing import Any
 
 from . import state_schema, state_transactions
+from .security import SecretSanitizer
 from .util import ensure_dir, json_dumps, json_loads, random_id, utc_now
 
 
 class StateStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, sanitizer: SecretSanitizer | None = None) -> None:
         ensure_dir(path.parent)
         self.path = path
+        # Keep this boundary safe by default while allowing callers that have
+        # explicitly enabled trusted debugging to supply a raw-mode sanitizer.
+        self.sanitizer = sanitizer or SecretSanitizer()
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._events_condition = threading.Condition(self._lock)
         self._closed = False
         self._init_schema()
+
+    def _sanitize(self, value: Any) -> Any:
+        return self.sanitizer.sanitize(value)
+
+    def _redact(self, value: Any) -> Any:
+        """Redact fields which are never safe to persist verbatim."""
+        return self.sanitizer.redact(value)
 
     def __enter__(self) -> "StateStore":
         return self
@@ -279,7 +290,7 @@ class StateStore:
                     json_dumps(input_items),
                     request_fingerprint,
                     bundle_digest,
-                    json_dumps(resolved_options) if resolved_options is not None else None,
+                    json_dumps(self._sanitize(resolved_options)) if resolved_options is not None else None,
                     broker_version,
                     now,
                     now,
@@ -326,10 +337,10 @@ class StateStore:
         updates = {
             "status": status if status is not None else row["status"],
             "codex_turn_id": codex_turn_id if codex_turn_id is not None else row.get("codex_turn_id"),
-            "error": error,
+            "error": self._sanitize(error),
             "error_code": error_code,
-            "public_message": public_message,
-            "admin_message": admin_message,
+            "public_message": self._sanitize(public_message),
+            "admin_message": self._sanitize(admin_message),
             "started_at": utc_now() if started and not row.get("started_at") else row.get("started_at"),
             "completed_at": utc_now() if completed else row.get("completed_at"),
             "updated_at": utc_now(),
@@ -387,12 +398,12 @@ class StateStore:
                     thread_id,
                     turn_id,
                     event_type,
-                    json_dumps(payload),
+                    json_dumps(self._sanitize(payload)),
                     product_correlation_id,
                     codex_thread_id,
                     codex_turn_id,
                     raw_method,
-                    json_dumps(raw_params) if raw_params is not None else None,
+                    json_dumps(self._redact(raw_params)) if raw_params is not None else None,
                     1 if ambiguous else 0,
                     utc_now(),
                 ),
@@ -412,7 +423,13 @@ class StateStore:
         turn_id: str,
         **finalization: Any,
     ) -> bool:
-        return state_transactions.finalize_turn(self, owner_hash, thread_id, turn_id, **finalization)
+        sanitized = dict(finalization)
+        for field in ("error", "public_message", "admin_message", "event_payload", "audit_payload"):
+            if field in sanitized and sanitized[field] is not None:
+                sanitized[field] = self._sanitize(sanitized[field])
+        if sanitized.get("raw_params") is not None:
+            sanitized["raw_params"] = self._redact(sanitized["raw_params"])
+        return state_transactions.finalize_turn(self, owner_hash, thread_id, turn_id, **sanitized)
 
     def list_events(
         self,
@@ -493,8 +510,8 @@ class StateStore:
                     codex_turn_id,
                     kind,
                     method,
-                    json_dumps(request),
-                    json_dumps(fallback_response),
+                    json_dumps(self._sanitize(request)),
+                    json_dumps(self._sanitize(fallback_response)),
                     now,
                     self._future_timestamp(timeout_seconds),
                     now,
@@ -557,7 +574,7 @@ class StateStore:
                     updated_at = ?
                 where owner_hash = ? and interaction_id = ? and status = 'pending'
                 """,
-                (status, json_dumps(response), source, now, now, owner_hash, interaction_id),
+                (status, json_dumps(self._sanitize(response)), source, now, now, owner_hash, interaction_id),
             )
             if cursor.rowcount <= 0:
                 return self.get_interaction(owner_hash, interaction_id)
@@ -604,7 +621,7 @@ class StateStore:
                     set status = 'failed', error = ?, completed_at = ?, updated_at = ?
                     where owner_hash = ? and thread_id = ? and turn_id = ?
                     """,
-                    (message, now, now, row["owner_hash"], row["thread_id"], row["turn_id"]),
+                    (self._sanitize(message), now, now, row["owner_hash"], row["thread_id"], row["turn_id"]),
                 )
                 self._conn.execute(
                     """
@@ -617,7 +634,7 @@ class StateStore:
                         row["owner_hash"],
                         row["thread_id"],
                         row["turn_id"],
-                        json_dumps({"message": message, "recovered": True}),
+                        json_dumps(self._sanitize({"message": message, "recovered": True})),
                         row["product_correlation_id"],
                         row["thread_codex_thread_id"],
                         row["codex_turn_id"],
@@ -732,7 +749,7 @@ class StateStore:
             return self._insert_audit_locked(
                 owner_hash,
                 action,
-                payload or {},
+                self._sanitize(payload or {}),
                 auth_principal_hash=auth_principal_hash,
                 profile=profile,
                 thread_id=thread_id,
@@ -767,7 +784,7 @@ class StateStore:
                 thread_id,
                 turn_id,
                 action,
-                json_dumps(payload),
+                json_dumps(self._sanitize(payload)),
                 created_at,
             ),
         )
@@ -827,26 +844,32 @@ class StateStore:
 
     def _turn_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
+        # `input_json` is user input, and may intentionally contain a secret.
+        # Do not mutate or redact it at this persistence boundary.
         data["input"] = json_loads(data.pop("input_json"), [])
-        data["resolved_options"] = json_loads(data.pop("resolved_options_json", None), None)
+        data["resolved_options"] = self._sanitize(json_loads(data.pop("resolved_options_json", None), None))
+        for field in ("error", "public_message", "admin_message"):
+            if data.get(field) is not None:
+                data[field] = self._sanitize(data[field])
         return data
 
     def _event_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        data["payload"] = json_loads(data.pop("payload_json"), {})
+        data["payload"] = self._sanitize(json_loads(data.pop("payload_json"), {}))
         raw = data.pop("raw_params_json")
-        data["raw_params"] = json_loads(raw, None)
+        # Raw app-server parameters are a mandatory-safe sink even in raw mode.
+        data["raw_params"] = self._redact(json_loads(raw, None))
         data["ambiguous"] = bool(data["ambiguous"])
         return data
 
     def _audit_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        data["payload"] = json_loads(data.pop("payload_json"), {})
+        data["payload"] = self._sanitize(json_loads(data.pop("payload_json"), {}))
         return data
 
     def _interaction_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        data["request"] = json_loads(data.pop("request_json"), {})
-        data["response"] = json_loads(data.pop("response_json"), None)
-        data["fallback_response"] = json_loads(data.pop("fallback_json"), {})
+        data["request"] = self._sanitize(json_loads(data.pop("request_json"), {}))
+        data["response"] = self._sanitize(json_loads(data.pop("response_json"), None))
+        data["fallback_response"] = self._sanitize(json_loads(data.pop("fallback_json"), {}))
         return data

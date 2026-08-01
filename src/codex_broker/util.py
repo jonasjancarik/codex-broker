@@ -4,25 +4,21 @@ import hashlib
 import hmac
 import json
 import os
-import re
 import secrets
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-SECRET_PATTERN = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|bearer)\b\s*[:=]\s*(?:Bearer\s+)?([^\s,;]+)"
-)
-QUOTED_SECRET_FIELD_PATTERN = re.compile(
-    r"(?i)([\"'])(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|bearer|password|secret|credential|cookie)\1"
-    r"\s*:\s*([\"'])(?:Bearer\s+)?[^\"']+\3"
-)
-BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{4,})")
-OPENAI_SECRET_PATTERN = re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{3,}\b")
-SECRET_KEY_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|bearer|password|secret|credential|cookie)"
+from .security import (
+    BEARER_PATTERN,
+    OPENAI_SECRET_PATTERN,
+    QUOTED_SECRET_FIELD_PATTERN,
+    SECRET_PATTERN,
+    SENSITIVE_KEY_PATTERN as SECRET_KEY_PATTERN,
+    redact_text,
+    SecretSanitizer,
+    redact_value,
 )
 
 
@@ -45,34 +41,28 @@ def json_loads(value: str | None, default: Any = None) -> Any:
 
 
 def redact(text: str, limit: int = 4000) -> str:
-    clipped = text if len(text) <= limit else f"{text[:limit]}..."
-    redacted = QUOTED_SECRET_FIELD_PATTERN.sub(lambda match: f"{match.group(2)}=<redacted>", clipped)
-    redacted = SECRET_PATTERN.sub(lambda match: f"{match.group(1)}=<redacted>", redacted)
-    redacted = BEARER_PATTERN.sub("Bearer <redacted>", redacted)
-    return OPENAI_SECRET_PATTERN.sub("<redacted>", redacted)
+    return redact_text(text, limit)
 
 
 def redact_json(value: Any, *, string_limit: int = 4000) -> Any:
-    if isinstance(value, dict):
-        redacted: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key)
-            redacted[key_text] = "<redacted>" if SECRET_KEY_PATTERN.search(key_text) else redact_json(item, string_limit=string_limit)
-        return redacted
-    if isinstance(value, list):
-        return [redact_json(item, string_limit=string_limit) for item in value]
-    if isinstance(value, tuple):
-        return [redact_json(item, string_limit=string_limit) for item in value]
-    if isinstance(value, str):
-        return redact(value, string_limit)
-    return value
+    return redact_value(value, string_limit=string_limit)
 
 
-def json_log(enabled: bool, event: str, **fields: Any) -> None:
+def json_log(
+    enabled: bool,
+    event: str,
+    *,
+    sanitizer: SecretSanitizer | None = None,
+    **fields: Any,
+) -> None:
     if not enabled:
         return
     payload = {"ts": utc_now(), "event": event}
-    payload.update(redact_json(fields, string_limit=1200))
+    payload.update(
+        sanitizer.redact(fields)
+        if sanitizer is not None
+        else redact_json(fields, string_limit=1200)
+    )
     sys.stderr.write(json_dumps(payload) + "\n")
     sys.stderr.flush()
 

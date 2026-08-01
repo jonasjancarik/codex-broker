@@ -72,7 +72,12 @@ def handle_openai_route(
             return True
         if method == "POST" and path == "/v1/responses":
             parsed = parse_responses_request(_read_body(handler))
-            turn = _start_request(handler.broker, binding, parsed)
+            turn = _start_request(
+                handler.broker,
+                binding,
+                parsed,
+                danger_full_access_authorized=handler._danger_full_access_authorized(),
+            )
             if parsed.stream:
                 _stream_response(handler, binding, turn)
             else:
@@ -83,7 +88,12 @@ def handle_openai_route(
             return _handle_response_resource(handler, method, path, query, binding)
         if method == "POST" and path == "/v1/chat/completions":
             parsed = parse_chat_request(_read_body(handler))
-            turn = _start_request(handler.broker, binding, parsed)
+            turn = _start_request(
+                handler.broker,
+                binding,
+                parsed,
+                danger_full_access_authorized=handler._danger_full_access_authorized(),
+            )
             if parsed.stream:
                 _stream_chat(handler, binding, turn, include_usage=parsed.include_usage)
             else:
@@ -99,7 +109,12 @@ def handle_openai_route(
         handler._json(error.payload(), error.status)
         return True
     except AppServerError as exc:
-        json_log(handler.broker.config.json_logs, "openai_compat.app_server_error", message=str(exc))
+        json_log(
+            handler.broker.config.json_logs,
+            "openai_compat.app_server_error",
+            sanitizer=handler.broker.sanitizer,
+            message=str(exc),
+        )
         error = OpenAIProtocolError(
             "Codex is temporarily unavailable.",
             status=HTTPStatus.BAD_GATEWAY,
@@ -109,7 +124,12 @@ def handle_openai_route(
         handler._json(error.payload(), error.status)
         return True
     except Exception as exc:  # noqa: BLE001 - compatibility boundary must not leak internals.
-        json_log(handler.broker.config.json_logs, "openai_compat.error", message=str(exc))
+        json_log(
+            handler.broker.config.json_logs,
+            "openai_compat.error",
+            sanitizer=handler.broker.sanitizer,
+            message=str(exc),
+        )
         error = server_error("The server encountered an error while processing the request.")
         handler._json(error.payload(), error.status)
         return True
@@ -176,7 +196,13 @@ def _handle_response_resource(
     raise not_found("The requested response resource was not found.")
 
 
-def _start_request(services: Any, binding: OpenAICompatBinding, parsed: ParsedOpenAIRequest) -> dict[str, Any]:
+def _start_request(
+    services: Any,
+    binding: OpenAICompatBinding,
+    parsed: ParsedOpenAIRequest,
+    *,
+    danger_full_access_authorized: bool = False,
+) -> dict[str, Any]:
     resolved_model = _resolve_model(services, binding, parsed.requested_model)
     history: list[dict[str, Any]] = []
     if parsed.previous_response_id:
@@ -244,6 +270,7 @@ def _start_request(services: Any, binding: OpenAICompatBinding, parsed: ParsedOp
         body,
         metadata=metadata,
         history_items=history,
+        danger_full_access_authorized=danger_full_access_authorized,
     )
 
 
@@ -596,6 +623,7 @@ def _app_server_models(services: Any, binding: OpenAICompatBinding) -> list[dict
             auth_principal_hash=scope.auth_principal_hash,
             profile=profile,
             codex_home=services.auth.profile_home(scope.auth_principal_hash, profile),
+            runtime_home=services.auth.runtime_home(scope.auth_principal_hash, profile),
             config_profile=binding.config_profile,
             mcp_servers=(),
             tenant_scope_hash=scope.owner_hash,
@@ -650,6 +678,16 @@ def _model_get(services: Any, binding: OpenAICompatBinding, model_id: str) -> di
 
 def openapi_paths(ref: Any, json_response: Any, request_body: Any) -> dict[str, Any]:
     security = [{"openaiCompatBearer": []}]
+    danger_full_access_header = {
+        "name": "X-Codex-Broker-Danger-Full-Access-Key",
+        "in": "header",
+        "required": False,
+        "schema": {"type": "string", "format": "password"},
+        "description": (
+            "Separate deployment credential required only when the resolved broker configuration "
+            "selects danger-full-access. The OpenAI compatibility key is not sufficient."
+        ),
+    }
 
     def error_response(description: str) -> dict[str, Any]:
         return {
@@ -681,6 +719,7 @@ def openapi_paths(ref: Any, json_response: Any, request_body: Any) -> dict[str, 
         "/v1/responses": {
             "post": {
                 "security": security,
+                "parameters": [danger_full_access_header],
                 "requestBody": request_body(ref("OpenAIResponseCreateRequest")),
                 "responses": {
                     "200": {
@@ -737,6 +776,7 @@ def openapi_paths(ref: Any, json_response: Any, request_body: Any) -> dict[str, 
         "/v1/chat/completions": {
             "post": {
                 "security": security,
+                "parameters": [danger_full_access_header],
                 "requestBody": request_body(ref("OpenAIChatCreateRequest")),
                 "responses": {
                     "200": {

@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import shlex
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,19 @@ def _bool_env(name: str, default: bool = False) -> bool:
 def _csv(value: str | None, default: str = "") -> tuple[str, ...]:
     raw = value if value is not None else default
     return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _absolute_paths_env(name: str) -> tuple[Path, ...]:
+    raw = os.environ.get(name, "")
+    paths: list[Path] = []
+    for item in raw.split(os.pathsep):
+        if not item:
+            continue
+        path = Path(item).expanduser()
+        if not path.is_absolute():
+            raise ValueError(f"{name} entries must be absolute paths: {item!r}")
+        paths.append(path.resolve())
+    return tuple(paths)
 
 
 def _config_profiles() -> dict[str, dict[str, Any]]:
@@ -101,6 +115,21 @@ def _openai_compat_bindings() -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("OpenAI compatibility bindings must be a JSON object keyed by key digest.")
     return parsed
+
+
+def _danger_full_access_key() -> str | None:
+    path_value = os.environ.get("CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE")
+    if not path_value:
+        return None
+    path = Path(path_value).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Danger full access key file does not exist or is not a file: {path}"
+        )
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise ValueError(f"Danger full access key file is empty: {path}")
+    return value
 
 
 def _owner_hash_secret(data_dir: Path) -> str:
@@ -173,6 +202,10 @@ class BrokerConfig:
     history_retention_seconds: int = 90 * 24 * 60 * 60
     max_events_per_turn: int = 10_000
     openai_compat_bindings: dict[str, Any] = field(default_factory=dict)
+    event_sanitization_mode: str = "safe"
+    sandbox_preflight_mode: str = "required" if sys.platform == "linux" else "warn"
+    sandbox_deny_paths: tuple[Path, ...] = ()
+    danger_full_access_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.codex_command:
@@ -189,6 +222,15 @@ class BrokerConfig:
             raise ValueError("CODEX_BROKER_HISTORY_RETENTION_SECONDS must be zero or greater.")
         if self.max_events_per_turn <= 0:
             raise ValueError("CODEX_BROKER_MAX_EVENTS_PER_TURN must be greater than zero.")
+        if self.event_sanitization_mode not in {"safe", "raw"}:
+            raise ValueError("CODEX_BROKER_EVENT_SANITIZATION_MODE must be one of: safe, raw.")
+        if self.sandbox_preflight_mode not in {"required", "warn", "disabled"}:
+            raise ValueError(
+                "CODEX_BROKER_SANDBOX_PREFLIGHT must be one of: required, warn, disabled."
+            )
+        for path in self.sandbox_deny_paths:
+            if not path.is_absolute():
+                raise ValueError("CODEX_BROKER_SANDBOX_DENY_PATHS entries must be absolute paths.")
         for name, value in (
             ("CODEX_BROKER_REQUEST_TIMEOUT_SECONDS", self.request_timeout_seconds),
             ("CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS", self.host_response_timeout_seconds),
@@ -213,6 +255,10 @@ class BrokerConfig:
     @property
     def overlay_root(self) -> Path:
         return self.data_dir / "workspaces" / "overlays"
+
+    @property
+    def runtime_home_root(self) -> Path:
+        return self.data_dir / "workspaces" / "runtime-homes"
 
     @classmethod
     def from_env(cls) -> "BrokerConfig":
@@ -267,4 +313,11 @@ class BrokerConfig:
             history_retention_seconds=_int_env("CODEX_BROKER_HISTORY_RETENTION_SECONDS", 90 * 24 * 60 * 60),
             max_events_per_turn=_int_env("CODEX_BROKER_MAX_EVENTS_PER_TURN", 10_000),
             openai_compat_bindings=_openai_compat_bindings(),
+            event_sanitization_mode=os.environ.get("CODEX_BROKER_EVENT_SANITIZATION_MODE", "safe"),
+            sandbox_preflight_mode=os.environ.get(
+                "CODEX_BROKER_SANDBOX_PREFLIGHT",
+                "required" if sys.platform == "linux" else "warn",
+            ),
+            sandbox_deny_paths=_absolute_paths_env("CODEX_BROKER_SANDBOX_DENY_PATHS"),
+            danger_full_access_key=_danger_full_access_key(),
         )

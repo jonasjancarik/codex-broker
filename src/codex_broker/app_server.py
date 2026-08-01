@@ -25,6 +25,7 @@ from .interactions import (
     safe_response_for_method,
 )
 from .state import StateStore
+from .security import SecretSanitizer
 from .util import clean_process_env, env_with, json_log, random_id, redact
 
 
@@ -112,11 +113,13 @@ class AppServerClient:
         auth_principal_hash: str,
         profile: str,
         codex_home: Path,
+        runtime_home: Path,
         config_profile: str,
         pool_key_hash: str,
         state: StateStore | None = None,
         mcp_servers: tuple[McpServerRef, ...] = (),
         codex_config_args: tuple[tuple[str, str], ...] = (),
+        sanitizer: SecretSanitizer | None = None,
     ) -> None:
         self.config = config
         self.state = state
@@ -125,8 +128,10 @@ class AppServerClient:
         self.config_profile = config_profile
         self.pool_key_hash = pool_key_hash
         self.codex_home = codex_home
+        self.runtime_home = runtime_home
         self.mcp_servers = mcp_servers
         self.codex_config_args = codex_config_args
+        self.sanitizer = sanitizer or (state.sanitizer if state else SecretSanitizer(config.event_sanitization_mode))
         self.started_at = time.monotonic()
         self.last_used_at = self.started_at
         self._next_request_id = 1
@@ -150,7 +155,7 @@ class AppServerClient:
             {
                 "CODEX_HOME": str(codex_home),
                 "CODEX_CREDENTIAL_STORE": config.credential_store,
-                "HOME": str(codex_home.parent),
+                "HOME": str(runtime_home),
             },
         )
         env.update(self._mcp_process_env())
@@ -185,6 +190,7 @@ class AppServerClient:
         json_log(
             config.json_logs,
             "app_server.start",
+            sanitizer=self.sanitizer,
             authPrincipalHash=auth_principal_hash,
             profile=profile,
             configProfile=config_profile,
@@ -316,6 +322,7 @@ class AppServerClient:
         json_log(
             self.config.json_logs,
             "app_server.close",
+            sanitizer=self.sanitizer,
             authPrincipalHash=self.auth_principal_hash,
             profile=self.profile,
             configProfile=self.config_profile,
@@ -392,11 +399,12 @@ class AppServerClient:
                 self._stderr_lines = self._stderr_lines[-200:]
 
     def _log_stream_line(self, stream: str, line: str, *, limit: int = 1200) -> str:
-        clean = redact(line.rstrip(), limit)
+        clean = self.sanitizer.redact_text(line.rstrip())[:limit]
         if clean:
             json_log(
                 self.config.json_logs,
                 f"app_server.{stream}",
+                sanitizer=self.sanitizer,
                 authPrincipalHash=self.auth_principal_hash,
                 profile=self.profile,
                 configProfile=self.config_profile,
@@ -656,9 +664,16 @@ class AppServerClient:
 
 
 class AppServerPool:
-    def __init__(self, config: BrokerConfig, state: StateStore | None = None) -> None:
+    def __init__(
+        self,
+        config: BrokerConfig,
+        state: StateStore | None = None,
+        *,
+        sanitizer: SecretSanitizer | None = None,
+    ) -> None:
         self.config = config
         self.state = state
+        self.sanitizer = sanitizer or (state.sanitizer if state else SecretSanitizer(config.event_sanitization_mode))
         self._lock = threading.RLock()
         self._clients: dict[tuple[Any, ...], AppServerClient] = {}
         self._creation_locks: dict[tuple[Any, ...], PoolCreationGate] = {}
@@ -676,16 +691,19 @@ class AppServerPool:
         auth_principal_hash: str,
         profile: str,
         codex_home: Path,
+        runtime_home: Path | None = None,
         config_profile: str,
         mcp_servers: tuple[McpServerRef, ...],
         tenant_scope_hash: str | None = None,
         codex_config_args: tuple[tuple[str, str], ...] = (),
         auth_fingerprint: str | None = None,
     ) -> AppServerClient:
+        effective_runtime_home = (runtime_home or codex_home.parent).resolve()
         key = (
             auth_principal_hash,
             profile,
             auth_fingerprint or "unknown-auth",
+            str(effective_runtime_home),
             tenant_scope_hash if mcp_servers else None,
             config_profile,
             tuple(self.config.codex_command),
@@ -721,6 +739,7 @@ class AppServerPool:
                 json_log(
                     self.config.json_logs,
                     "app_server.restart",
+                    sanitizer=self.sanitizer,
                     authPrincipalHash=auth_principal_hash,
                     profile=profile,
                     configProfile=config_profile,
@@ -731,11 +750,13 @@ class AppServerPool:
                 auth_principal_hash=auth_principal_hash,
                 profile=profile,
                 codex_home=codex_home,
+                runtime_home=effective_runtime_home,
                 config_profile=config_profile,
                 pool_key_hash=key_hash,
                 state=self.state,
                 mcp_servers=mcp_servers,
                 codex_config_args=codex_config_args,
+                sanitizer=self.sanitizer,
             )
             with self._lock:
                 closed_during_start = self._closed

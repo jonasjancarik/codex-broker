@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ from typing import Any
 from .config import BrokerConfig
 from .identity import AuthPrincipalPolicy, AuthScope
 from .runtime_errors import CODEX_AUTH_REQUIRES_ADMIN, classify_runtime_error
+from .security import SENSITIVE_KEY_PATTERN, SecretSanitizer
 from .state import StateStore
 from .util import clean_process_env, ensure_dir, env_with, owner_digest, redact, utc_now
 
@@ -26,6 +28,74 @@ CONTEXT_CODE_RE = re.compile(r"\b([A-Z0-9]{6,12})\b")
 EXPIRES_IN_RE = re.compile(r"\bexpires?\s+in\s+(\d+)\s+(seconds?|minutes?|hours?)\b", re.I)
 PROFILE_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]")
 AUTH_PROBE_PROMPT = "Reply exactly: OK"
+_PATH_SEGMENT_RE = re.compile(r"^[^/\\]+$")
+_WORKSPACE_SECRET_GLOBS = (
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "*.key",
+    "*.pem",
+    "*.p12",
+    "*.pfx",
+    "**/*.key",
+    "**/*.pem",
+    "**/*.p12",
+    "**/*.pfx",
+    "id_rsa",
+    "id_ed25519",
+    "id_dsa",
+    "id_ecdsa",
+    "**/id_rsa",
+    "**/id_ed25519",
+    "**/id_dsa",
+    "**/id_ecdsa",
+)
+
+
+def _toml_string(value: str) -> str:
+    """Serialize a TOML basic string without interpolating untrusted text."""
+    return json.dumps(value)
+
+
+def render_managed_codex_config(config: BrokerConfig) -> str:
+    """Return the deterministic, broker-owned Codex configuration."""
+    denied_paths = {
+        str(config.auth_root.resolve()),
+        str(config.state_db_path.parent.resolve()),
+        "/run/secrets",
+        *(str(path.resolve()) for path in config.sandbox_deny_paths),
+    }
+
+    lines = [
+        f"cli_auth_credentials_store = {_toml_string(config.credential_store)}",
+        'default_permissions = "broker-read-only"',
+        "",
+    ]
+    profiles = (
+        ("broker-read-only", ":read-only", "read", ()),
+        ("broker-workspace-write", ":workspace", "write", (":slash_tmp", ":tmpdir")),
+    )
+    for name, extends, workspace_access, inherited_denies in profiles:
+        table = f"permissions.{name}"
+        filesystem_table = f"{table}.filesystem"
+        workspace_table = f'{filesystem_table}.":workspace_roots"'
+        lines.extend(
+            [
+                f"[{table}]",
+                f"extends = {_toml_string(extends)}",
+                "",
+                f"[{filesystem_table}]",
+                "glob_scan_max_depth = 12",
+                '":root" = "deny"',
+                '":minimal" = "read"',
+            ]
+        )
+        lines.extend(f"{_toml_string(path)} = \"deny\"" for path in (*inherited_denies, *sorted(denied_paths)))
+        lines.extend(["", f"[{workspace_table}]", f'"." = "{workspace_access}"'])
+        lines.extend(f'{_toml_string(pattern)} = "deny"' for pattern in _WORKSPACE_SECRET_GLOBS)
+        lines.append("")
+    return "\n".join(lines)
 
 
 def strip_ansi(text: str) -> str:
@@ -122,9 +192,16 @@ class DeviceAuthSession:
 
 
 class AuthManager:
-    def __init__(self, config: BrokerConfig, state: StateStore) -> None:
+    def __init__(
+        self,
+        config: BrokerConfig,
+        state: StateStore,
+        *,
+        sanitizer: SecretSanitizer | None = None,
+    ) -> None:
         self.config = config
         self.state = state
+        self.sanitizer = sanitizer or state.sanitizer
         self.policy = AuthPrincipalPolicy(config)
         self._sessions: dict[tuple[str, str], DeviceAuthSession] = {}
         self._profile_locks: dict[tuple[str, str], threading.RLock] = {}
@@ -156,7 +233,8 @@ class AuthManager:
 
     def profile_home(self, auth_principal_hash: str, profile: str = "default") -> Path:
         profile_key = self.profile_key(profile)
-        profiles_root = (self.config.auth_root / auth_principal_hash / "profiles").resolve()
+        principal_key = self._principal_path_component(auth_principal_hash)
+        profiles_root = (self.config.auth_root / principal_key / "profiles").resolve()
         home = (profiles_root / profile_key / "codex-home").resolve()
         if not home.is_relative_to(profiles_root):
             raise ValueError("Profile resolves outside the auth principal's authentication directory.")
@@ -165,6 +243,19 @@ class AuthManager:
             private_dir.chmod(0o700)
         self._ensure_config(home)
         self.state.ensure_profile(auth_principal_hash, profile_key)
+        return home
+
+    def runtime_home(self, auth_principal_hash: str, profile: str = "default") -> Path:
+        """Create the non-secret HOME used by the selected app-server profile."""
+        profile_key = self.profile_key(profile)
+        principal_key = self._principal_path_component(auth_principal_hash)
+        runtime_root = self.config.runtime_home_root.resolve()
+        home = (runtime_root / principal_key / "profiles" / profile_key).resolve()
+        if not home.is_relative_to(runtime_root):
+            raise ValueError("Profile resolves outside the broker runtime-home directory.")
+        ensure_dir(home)
+        for private_dir in (runtime_root, home.parent.parent, home.parent, home):
+            private_dir.chmod(0o700)
         return home
 
     def codex_env(self, auth_principal_hash: str, profile: str = "default") -> dict[str, str]:
@@ -193,6 +284,42 @@ class AuthManager:
         except OSError:
             return "unreadable"
         return f"sha256:{digest}:size:{stat.st_size}"
+
+    def refresh_profile_secrets(self, auth_principal_hash: str, profile: str = "default") -> None:
+        """Refresh exact sanitizer values from only the selected auth profile."""
+        profile_key = self.profile_key(profile)
+        scope = self._sanitizer_scope(auth_principal_hash, profile_key)
+        path = self.auth_file(auth_principal_hash, profile_key)
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            self.sanitizer.remove_scope(scope)
+            return
+        self.sanitizer.replace_scope(scope, self._credential_string_leaves(parsed))
+
+    def remove_profile_secrets(self, auth_principal_hash: str, profile: str = "default") -> None:
+        self.sanitizer.remove_scope(self._sanitizer_scope(auth_principal_hash, self.profile_key(profile)))
+
+    @staticmethod
+    def _credential_string_leaves(value: Any, *, sensitive: bool = False) -> set[str]:
+        values: set[str] = set()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                values.update(
+                    AuthManager._credential_string_leaves(
+                        item,
+                        sensitive=sensitive or bool(SENSITIVE_KEY_PATTERN.search(str(key))),
+                    )
+                )
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                values.update(AuthManager._credential_string_leaves(item, sensitive=sensitive))
+        elif sensitive and isinstance(value, str) and value:
+            values.add(value)
+        return values
+
+    def _sanitizer_scope(self, auth_principal_hash: str, profile: str) -> str:
+        return f"auth-profile:{self._principal_path_component(auth_principal_hash)}:{self.profile_key(profile)}"
 
     def mark_runtime_auth_failure(
         self,
@@ -600,9 +727,10 @@ class AuthManager:
             auth_file = home / "auth.json"
             if auth_file.exists():
                 auth_file.unlink()
+            self.remove_profile_secrets(principal_hash, profile_key)
             deleted = False
             if delete_profile:
-                profiles_root = (self.config.auth_root / principal_hash / "profiles").resolve()
+                profiles_root = (self.config.auth_root / self._principal_path_component(principal_hash) / "profiles").resolve()
                 profile_dir = home.parent.resolve()
                 if not profile_dir.is_relative_to(profiles_root) or profile_dir == profiles_root:
                     raise ValueError("Refusing to delete a profile outside the authentication directory.")
@@ -660,9 +788,16 @@ class AuthManager:
 
     def _ensure_config(self, home: Path) -> None:
         config_path = home / "config.toml"
-        desired = f'cli_auth_credentials_store = "{self.config.credential_store}"\n'
+        desired = render_managed_codex_config(self.config)
         if not config_path.exists() or config_path.read_text(encoding="utf-8") != desired:
             config_path.write_text(desired, encoding="utf-8")
+        config_path.chmod(0o600)
+
+    @staticmethod
+    def _principal_path_component(auth_principal_hash: str) -> str:
+        if not auth_principal_hash or auth_principal_hash in {".", ".."} or not _PATH_SEGMENT_RE.fullmatch(auth_principal_hash):
+            raise ValueError("Authentication principal hash must be one safe path component.")
+        return auth_principal_hash
 
     def _probe_command(self, home: Path) -> list[str]:
         return [

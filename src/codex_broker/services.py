@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import signal
 import threading
@@ -13,9 +14,11 @@ from .auth import AuthManager
 from .bundles import BundleRegistry
 from .config import BrokerConfig
 from .openai_auth import OpenAICompatAuth
+from .sandbox_probe import SandboxProbe
 from .scheduler import TurnScheduler
+from .security import SecretSanitizer
 from .state import StateStore
-from .util import ensure_dir
+from .util import ensure_dir, json_log
 
 
 @dataclass
@@ -27,12 +30,37 @@ class BrokerServices:
     pool: AppServerPool
     scheduler: TurnScheduler
     openai_auth: OpenAICompatAuth
+    sanitizer: SecretSanitizer
+    sandbox_probe: SandboxProbe
 
     @classmethod
     def build(cls, config: BrokerConfig) -> "BrokerServices":
-        for path in (config.data_dir, config.auth_root, config.inline_bundle_root, config.overlay_root):
+        for path in (
+            config.data_dir,
+            config.auth_root,
+            config.inline_bundle_root,
+            config.overlay_root,
+            config.runtime_home_root,
+        ):
             ensure_dir(path)
-        state = StateStore(config.state_db_path)
+        sanitizer = SecretSanitizer(config.event_sanitization_mode)
+        if config.event_sanitization_mode == "raw":
+            json_log(
+                True,
+                "broker.security.raw_event_mode",
+                sanitizer=sanitizer,
+                warning="Normalized model and runtime output will be stored and returned without credential sanitization.",
+            )
+        sanitizer.register(
+            "broker-config",
+            (
+                config.internal_key or "",
+                config.owner_hash_secret or "",
+                config.danger_full_access_key or "",
+                *(os.environ.get(name, "") for name in config.codex_passthrough_env),
+            ),
+        )
+        state = StateStore(config.state_db_path, sanitizer=sanitizer)
         recovered_turns = state.recover_incomplete_turns("Broker restarted before the turn completed.")
         state.recover_pending_interactions()
         for child in config.overlay_root.iterdir():
@@ -48,10 +76,20 @@ class BrokerServices:
             history_cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.history_retention_seconds)
             state.prune_history_before(history_cutoff.isoformat().replace("+00:00", "Z"))
         state.prune_excess_events(config.max_events_per_turn)
-        auth = AuthManager(config, state)
+        auth = AuthManager(config, state, sanitizer=sanitizer)
         bundles = BundleRegistry(config, state)
-        pool = AppServerPool(config, state)
-        scheduler = TurnScheduler(config=config, state=state, auth=auth, bundles=bundles, pool=pool)
+        pool = AppServerPool(config, state, sanitizer=sanitizer)
+        sandbox_probe = SandboxProbe(config)
+        sandbox_probe.run_once()
+        scheduler = TurnScheduler(
+            config=config,
+            state=state,
+            auth=auth,
+            bundles=bundles,
+            pool=pool,
+            sanitizer=sanitizer,
+            sandbox_probe=sandbox_probe,
+        )
         openai_auth = OpenAICompatAuth(config.openai_compat_bindings)
         scheduler.note_recovered_turns(recovered_turns)
         scheduler.note_pruned_raw_events(pruned_raw_events)
@@ -63,6 +101,8 @@ class BrokerServices:
             pool=pool,
             scheduler=scheduler,
             openai_auth=openai_auth,
+            sanitizer=sanitizer,
+            sandbox_probe=sandbox_probe,
         )
 
 
