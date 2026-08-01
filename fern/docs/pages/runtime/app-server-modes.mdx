@@ -5,25 +5,28 @@ description: "The pinned Codex app-server surfaces behind native turns, OpenAI-c
 
 # App-server modes
 
-This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.144.6`:
+This matrix is pinned to the Codex CLI app-server protocol generated from `codex-cli 0.146.0`:
 
 ```bash
-codex app-server generate-ts --out /private/tmp/codex-app-server-ts-0.144.6
-codex app-server generate-json-schema --out /private/tmp/codex-app-server-json-schema-0.144.6
+codex app-server generate-ts --experimental --out /private/tmp/codex-app-server-ts-0.146.0
+codex app-server generate-json-schema --experimental --out /private/tmp/codex-app-server-json-schema-0.146.0
 ```
 
-The generated TypeScript protocol is unchanged from `0.144.0` to `0.144.6` for the surfaces below. The generated JSON schemas differ only in property ordering.
+Compared with `0.144.6`, the `0.146.0` protocol adds `dynamicTools` and
+`experimentalRawEvents` to `thread/start` along with new app-server APIs. The
+broker-used surfaces below remain compatible and the production no-model
+sandbox canary passes with the new binary.
 
 The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `default` and `plan`. Goal tracking, review, approvals, user-input prompts, and MCP elicitations are separate app-server capabilities.
 
-| Capability | 0.144.6 app-server surface | Broker support | Host-facing surface |
+| Capability | 0.146.0 app-server surface | Broker support | Host-facing surface |
 | --- | --- | --- | --- |
 | Model and selector capabilities | `model/list`, including reasoning efforts, modalities, personality support, service tiers, defaults, visibility, and upgrade metadata | Implemented with auth-principal/profile scoping and pagination | `GET /v1/owners/{ownerId}/auth/models` |
 | Default chat/work turns | `thread/start`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt` | Implemented | Thread and turn HTTP APIs; `message.*`, `reasoning.*`, `tool.*`, and `turn.*` events |
 | Stable compatible output | `rawResponseItem/completed` | Persisted independently of optional raw-event debugging | `compat.response.output_item`; Responses and Chat Completions output |
 | Token usage | `thread/tokenUsage/updated` | Persists and validates exact turn and cumulative thread counts plus the model context window | Native `Turn.usage` and `turn.usage.updated`; OpenAI response and optional Chat stream usage |
 | Compatible response history | `thread/inject_items` | Injects validated same-owner `previous_response_id` chains before `turn/start` | Responses `previous_response_id` |
-| Caller-defined dynamic tools | Server request `item/tool/call` and `DynamicToolSpec` types exist, but 0.144.6 thread and turn start parameters expose no matching declaration field | Not mapped; compatible `tools`, `tool_choice`, tool messages, and function outputs are rejected | OpenAI-shaped `400 unsupported_parameter` |
+| Caller-defined dynamic tools | `thread/start.dynamicTools`, `DynamicToolSpec`, and server request `item/tool/call` | Not mapped; compatible `tools`, `tool_choice`, tool messages, and function outputs are rejected until the broker implements the full lifecycle | OpenAI-shaped `400 unsupported_parameter` |
 | Plan collaboration mode | `ModeKind = "default" \| "plan"`, `ThreadSettings.collaborationMode`, `turn/plan/updated`, `item/plan/delta` | Event normalization implemented | `thread.settings.updated`, `plan.updated`, `plan.delta` events |
 | Goal tracking | `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`, `thread/goal/updated`, `thread/goal/cleared` | Event normalization implemented; direct broker goal API not yet implemented | `goal.updated`, `goal.cleared` events |
 | Review mode | `review/start`, `enteredReviewMode`, `exitedReviewMode`, auto-approval review notifications | Event normalization implemented; direct broker review API not yet implemented | `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed` events |
@@ -35,24 +38,20 @@ The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `def
 
 The broker treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. Model discovery directly maps `model/list` and preserves every model field for forward compatibility.
 
-Codex 0.144.6 advertises experimental API support during app-server
-initialization, but its generated `ThreadStartParams` does not contain an
-`experimentalRawEvents` field. The broker consumes the declared
-`rawResponseItem/completed` notification without sending an unknown per-thread
-option.
+Codex 0.146.0 exposes `experimentalRawEvents` on `ThreadStartParams`. The
+broker leaves that experimental stream disabled and consumes the declared
+`rawResponseItem/completed` notification for stable compatible output.
 
-The generated protocol includes `item/tool/call` and dynamic-tool types but no
-supported field on `thread/start` or `turn/start` for declaring an OpenAI
-request's tool set. Reviewed bundle and MCP tools are also deployment policy,
-not caller-granted functions. Compatible tool semantics stay rejected until
-Codex exposes a complete declaration, call, result, cancellation, and streaming
-contract that can be mapped exactly.
+The generated protocol includes `thread/start.dynamicTools`, `item/tool/call`,
+and dynamic-tool result types. Reviewed bundle and MCP tools are deployment
+policy, not caller-granted functions, and the broker does not yet map the full
+OpenAI declaration, call, result, cancellation, and streaming lifecycle.
+Compatible tool semantics therefore remain rejected instead of being only
+partially implemented.
 
-The 0.144.6 release includes `codex-responses-api-proxy`, but that executable is
-a minimal forward proxy whose default upstream is
-`https://api.openai.com/v1/responses`. It does not translate broker-managed
-app-server threads into an OpenAI API. Codex Broker therefore owns identity
-mapping, scheduling, persistence, and REST/SSE translation.
+The 0.146.0 Linux package does not include the former
+`codex-responses-api-proxy` executable. Codex Broker continues to own identity
+mapping, scheduling, persistence, and REST/SSE translation over app-server.
 
 Future product APIs should follow these boundaries:
 

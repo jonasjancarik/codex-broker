@@ -251,11 +251,11 @@ skills, MCP servers, or broker-hosted tools. Those capabilities are assigned by
 the operator and remain governed by bundle, workspace, sandbox, and host
 authorization policy.
 
-They are not caller-defined OpenAI functions. Codex 0.144.6 declares the
-app-server request type `item/tool/call`, but its generated thread and turn
-start parameters do not expose the matching caller-tool declaration contract
-needed for an exact OpenAI mapping. Sending `tools` therefore never grants or
-selects bundle capabilities.
+They are not caller-defined OpenAI functions. Codex 0.146.0 exposes
+`dynamicTools` on `thread/start` and the `item/tool/call` request type, but the
+broker does not yet implement the complete declaration, call, result,
+cancellation, and streaming mapping needed for exact OpenAI semantics. Sending
+`tools` therefore never grants or selects bundle capabilities.
 
 ## Errors preserve the OpenAI envelope without exposing internals
 

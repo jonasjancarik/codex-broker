@@ -116,7 +116,7 @@ default; the only supported alternative is `approvalPolicy: "never"` with the
 `user` reviewer, so it never inherits an unspecified Codex approval default.
 
 The no-model sandbox preflight uses `command/exec` with its temporary workspace
-as `cwd`. Pinned Codex `0.144.6` does not expose `runtimeWorkspaceRoots` on
+as `cwd`. Pinned Codex `0.146.0` does not expose `runtimeWorkspaceRoots` on
 `command/exec`, so `cwd` is the preflight command's runtime workspace root.
 
 `danger-full-access` is intentionally outside this isolation boundary. It is
@@ -434,7 +434,7 @@ Implemented in this repo:
 - managed default-deny permission profiles with sandbox preflight/readiness checks, separated runtime homes, and separately authorized `danger-full-access`,
 - user-scoped audit log API for auth, turn, approval, interrupt, and logout events,
 - durable app-server child process lifecycle records for operational diagnosis,
-- app-server 0.144.6 model discovery and mode/capability event coverage for plan, goal, review, approvals, user input, and MCP elicitations,
+- app-server 0.146.0 model discovery and mode/capability event coverage for plan, goal, review, approvals, user input, and MCP elicitations,
 - host-mediated approval, user-input, and MCP elicitation interaction records with resolve APIs and fail-closed fallback,
 - mounted bundles, inline bundle validation, skills/prompt overlays, mounted MCP, and broker-hosted tool adapters,
 - readiness checks, Prometheus-style metrics, structured JSON logs, and schema-backed `/openapi.json`.
