@@ -105,6 +105,7 @@ Derived paths under `CODEX_BROKER_DATA_DIR`:
 | `state/broker.sqlite` | SQLite state store. |
 | `state/owner-hash.key` | Mode-`0600` persistent owner-hash key. Back it up with state and auth data. |
 | `auth/principals/<auth-principal-hash>/profiles/<profile>/codex-home` | Per-principal/profile Codex home. |
+| `workspaces/runtime-homes/<auth-principal-hash>/profiles/<profile>` | Non-secret `HOME` for the matching app-server child. |
 | `bundles/inline/<digest>/bundle.json` | Accepted inline bundle content. |
 | `workspaces/overlays/<turn-id>` | Per-turn generated files, symlinks, MCP config, and hosted-tool config. |
 
@@ -116,7 +117,10 @@ Derived paths under `CODEX_BROKER_DATA_DIR`:
 | `CODEX_CREDENTIAL_STORE` | `file` | Value written to each auth-principal/profile `config.toml` as `cli_auth_credentials_store` and passed to Codex children. |
 | `CODEX_BROKER_PASSTHROUGH_ENV` | empty | CSV allowlist of exact environment variable names copied into app-server child processes in addition to the safe base environment. |
 
-The broker always sets `CODEX_HOME`, `CODEX_CREDENTIAL_STORE`, and `HOME` for Codex auth commands and app-server children. The child process environment is otherwise scrubbed.
+The broker uses the profile `codex-home` as `CODEX_HOME`, where `auth.json` and
+the broker-managed permission configuration live. App-server children get a
+separate non-secret `HOME` under `workspaces/runtime-homes`; auth commands use
+the profile home. The child process environment is otherwise scrubbed.
 
 ## Turn execution and pooling
 
@@ -128,6 +132,9 @@ The broker always sets `CODEX_HOME`, `CODEX_CREDENTIAL_STORE`, and `HOME` for Co
 | `CODEX_BROKER_REQUEST_TIMEOUT_SECONDS` | `60` | Timeout for JSON-RPC request/response calls to an app-server child. |
 | `CODEX_BROKER_TURN_TIMEOUT_SECONDS` | `0` | Maximum wall time for a Codex turn. `0` disables broker-level turn timeout. |
 | `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS` | `30` | Time an app-server approval, permission request, user-input prompt, or MCP elicitation waits for host resolution before fallback. |
+| `CODEX_BROKER_SANDBOX_PREFLIGHT` | `required` on Linux, otherwise `warn` | Runs a bounded no-model managed-sandbox canary once at startup. `required` makes readiness and managed turns fail closed unless it is healthy; `warn` reports the result but permits work; `disabled` skips it. |
+| `CODEX_BROKER_SANDBOX_DENY_PATHS` | empty | Path-separator-delimited absolute control-plane paths to deny in every managed Codex permission profile, in addition to broker auth/state paths and `/run/secrets`. |
+| `CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE` | unset | File containing the separate key required to authorize `danger-full-access` on a request. The key is never accepted from a regular config profile or option. |
 
 For user-input prompts, Codex may provide `autoResolutionMs`; the broker uses the smaller positive value between that prompt timeout and `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`.
 
@@ -151,6 +158,7 @@ The complete manifest, overlay, MCP, and hosted-tool contract lives in
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CODEX_BROKER_DEBUG_RAW_EVENTS` | `false` | When true, persists redacted raw app-server method and params beside normalized events. |
+| `CODEX_BROKER_EVENT_SANITIZATION_MODE` | `safe` | `safe` replaces registered and sensitive-looking values in normalized persistence and all native/OpenAI egress. `raw` is trusted-debugging mode: normalized output is not transformed, but logs and raw debug fields remain redacted. |
 | `CODEX_BROKER_RAW_EVENT_RETENTION_SECONDS` | `604800` | Startup pruning window for raw app-server method/params fields. Normalized events are preserved. |
 | `CODEX_BROKER_HISTORY_RETENTION_SECONDS` | `7776000` | Retention for completed turns, normalized events, resolved interactions, audit logs, and closed-child records. `0` disables age pruning. |
 | `CODEX_BROKER_MAX_EVENTS_PER_TURN` | `10000` | Maximum normalized events retained per turn. |
@@ -158,7 +166,16 @@ The complete manifest, overlay, MCP, and hosted-tool contract lives in
 | `CODEX_BROKER_SHUTDOWN_MODE` | `interrupt` | `interrupt` or `drain`. Invalid values behave as `interrupt`. |
 | `CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` | `30` | Drain wait before interrupting leftovers when shutdown mode is `drain`. |
 
-Logs and raw event payloads are redacted for common API key, token, bearer, password, secret, credential, and cookie fields.
+Logs and raw event payloads are always redacted for registered secrets and
+common API key, token, bearer, password, secret, credential, and cookie fields.
+In `safe` mode, the same defense applies to normalized events, turns,
+interactions, audits, historical reads, SSE, native responses, and
+OpenAI-compatible responses. Streaming uses a small pending tail so a secret
+split across deltas is not exposed.
+
+Sanitization is not permission to send credentials to Codex. Host apps remain
+responsible for keeping intentionally supplied prompt and input secrets out of
+model context.
 
 ## Configuration profiles
 
@@ -179,7 +196,7 @@ fields should continue working.
 {
   "default": {
     "model": "gpt-5",
-    "approvalPolicy": "on-request",
+    "approvalsReviewer": "auto_review",
     "sandbox": "workspace-write",
     "enabledBundles": ["example-chat-v1"],
     "allowedWorkspaceRoots": ["/workspaces/app"]
@@ -203,8 +220,9 @@ Supported keys:
 
 | Key | Applies to | Description |
 | --- | --- | --- |
-| `approvalPolicy` | Codex thread | Passed to `thread/start` or `thread/resume` unless overridden by request options. |
-| `sandbox` | Codex thread | Default sandbox string. Request options win, then bundle sandbox, then profile sandbox. |
+| `approvalPolicy` | Codex thread | For managed sandboxes, the broker supplies a granular policy that allows reviewed permission requests but disables `sandbox_approval`. A caller may use `never` only with `approvalsReviewer: "user"`; other managed overrides must retain `sandbox_approval: false`. |
+| `approvalsReviewer`, `approvals_reviewer` | Codex thread | `auto_review` (the managed default) or `user`. Auto-review reviews requested exceptions; it does not relax the filesystem profile. |
+| `sandbox` | Codex thread | `read-only`, `workspace-write`, or separately authorized `danger-full-access`. Request options win, then bundle sandbox, then profile sandbox. Managed values map to broker-owned default-deny permission profiles; callers cannot supply a raw permission profile, runtime workspace roots, or sandbox policy. |
 | `model` | Codex thread and turn | Passed to thread and turn calls unless overridden. |
 | `personality` | Codex thread and turn | Passed to thread and turn calls unless overridden. |
 | `serviceTier` | Codex turn | Service-tier id passed to `turn/start`; discover Fast and other supported ids from `/auth/models`. |
@@ -217,6 +235,26 @@ Supported keys:
 | `features` | Process feature config | Object of feature names to values. |
 | `enabledBundles`, `bundleIds`, `bundles` | Broker policy | Bundle allowlist for this profile. |
 | `allowedWorkspaceRoots`, `workspaceRoots` | Broker policy | Per-profile cwd allowlist checked after global workspace or bundle validation. |
+
+Managed sandbox roots are canonicalized and must be under both the global and
+profile allowlists. The generated profiles deny `:root`, permit only the
+minimal runtime reads and selected workspace root, and explicitly deny broker
+auth/state paths, `/run/secrets`, configured extra deny paths, and common
+workspace credential filenames. `workspace-write` permits its selected root;
+`read-only` does not. The legacy `sandboxPolicy`, `permissions`,
+`permissionProfile`, and `runtimeWorkspaceRoots` fields are broker-managed and
+are rejected from callers.
+
+The cached no-model canary uses `command/exec` with its temporary workspace as
+`cwd`. Pinned Codex `0.144.6` does not support `runtimeWorkspaceRoots` on that
+command, so `cwd` is its runtime workspace root; normal thread and turn calls
+receive the broker-canonicalized `runtimeWorkspaceRoots` field.
+
+To select `danger-full-access`, configure
+`CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE` and send its value in
+`X-Codex-Broker-Danger-Full-Access-Key` with the otherwise authenticated
+request. This explicitly bypasses the managed profile; do not use it for
+untrusted work or to protect broker auth material.
 
 ### Model and reasoning selection
 

@@ -34,6 +34,7 @@ codex-broker process
   +-- AuthManager
   |     HMACs owner and auth-principal ids
   |     creates auth-principal/profile CODEX_HOME directories
+  |     creates separate non-secret runtime HOME directories for children
   |     runs codex login/status/logout commands
   |
   +-- TurnScheduler
@@ -41,6 +42,7 @@ codex-broker process
   |     enforces one active turn per broker thread
   |     runs reject, queue, and steer behavior
   |     normalizes Codex app-server notifications into broker events
+  |     gates managed turns on the cached sandbox preflight result
   |
   +-- AppServerPool
   |     starts long-lived codex app-server children
@@ -72,6 +74,8 @@ The implementation uses the Python standard library HTTP server and `subprocess`
 | `src/codex_broker/account_api.py` | Principal/profile-scoped model discovery, usage, rate-limit, and reset-credit routes. |
 | `src/codex_broker/identity.py` | Trusted owner-to-auth-principal policy and hashed scopes. |
 | `src/codex_broker/auth.py` | Auth profile normalization, profile-instance lifecycle, `CODEX_HOME`, and Codex login/status/logout. |
+| `src/codex_broker/security.py` | Registered-secret and sensitive-field sanitization, streaming split-secret protection, and mandatory raw/log redaction. |
+| `src/codex_broker/sandbox_probe.py` | Cached, bounded no-model managed-sandbox canary and runtime-health invalidation. |
 | `src/codex_broker/auth_api.py` | Auth/profile HTTP routes and OpenAPI fragments. |
 | `src/codex_broker/scheduler.py` | Thread and turn lifecycle, same-thread gates, config profiles, Codex request params, metrics. |
 | `src/codex_broker/scheduler_threads.py` | Immutable thread auth bindings and public thread/turn shapes. |
@@ -94,9 +98,10 @@ On startup, the broker:
 4. Marks abandoned `starting`, `queued`, and `running` turns as failed.
 5. Marks pending interactions failed with fallback responses.
 6. Prunes persisted raw app-server event fields when raw capture retention is enabled.
-7. Constructs native auth, compatibility auth, bundle, app-server pool, and
-   scheduler services.
-8. Starts `ThreadingHTTPServer` on `CODEX_BROKER_HOST:CODEX_BROKER_PORT`.
+7. Builds the secret sanitizer and registers broker control-plane secrets.
+8. Constructs native auth, compatibility auth, bundle, app-server pool, and
+   scheduler services, then runs the cached managed-sandbox preflight.
+9. Starts `ThreadingHTTPServer` on `CODEX_BROKER_HOST:CODEX_BROKER_PORT`.
 
 Only `GET /healthz` and `GET /readyz` are unauthenticated. Native product
 routes, `/metrics`, `/openapi.json`, and `/v1/bundles/inline` require the
@@ -124,6 +129,8 @@ key whose digest maps to a fixed server-side caller binding.
       <sha256-digest>/
         bundle.json
   workspaces/
+    runtime-homes/
+      <auth-principal-hash>/profiles/<profile>/
     overlays/
       <turn-id>/
         AGENTS.md
@@ -142,13 +149,19 @@ The default data directory is `.data`; Docker deployments usually set it to `/da
 - auth-principal Codex profiles and auth status
 - broker threads
 - turns
-- normalized events and optional redacted raw app-server fields
+- normalized events and optional, always-redacted raw app-server fields
 - bundle digests
 - app-server process diagnostics
 - user-scoped audit logs
 - pending interactions
 
 Restart recovery is conservative. Turns that were in progress before process death are failed because the app-server child that owned them is gone. Pending interactions are resolved with fallback responses so host UIs do not show stale prompts.
+
+By default, normalization is sanitized before persistence and again when
+historical records are read, so existing rows cannot bypass current secret
+registration. The same sanitizer runs immediately before native and
+OpenAI-compatible output is returned. Trusted debugging can select raw
+normalized output, but raw app-server fields and logs stay redacted.
 
 ## Compatible responses reuse the scheduler and durable event store
 
@@ -186,7 +199,14 @@ the persisted turn.
 <CODEX_BIN> app-server --listen stdio://
 ```
 
-The pool key includes auth-principal hash, Codex auth profile, auth fingerprint, `configProfile`, Codex command/version, credential-store mode, client identity fields, and process-level Codex config. Compatible children can serve isolated owner contexts. Mounted MCP declarations add owner scope because an MCP process may retain tenant state. Explicit unknown upstream thread or turn ids are never routed by single-context guessing.
+The pool uses the profile `codex-home` as `CODEX_HOME` and a separate
+non-secret runtime directory as `HOME`. Its key includes auth-principal hash,
+Codex auth profile, auth fingerprint, runtime home, `configProfile`, Codex
+command/version, credential-store mode, client identity fields, and
+process-level Codex config. Compatible children can serve isolated owner
+contexts. Mounted MCP declarations add owner scope because an MCP process may
+retain tenant state. Explicit unknown upstream thread or turn ids are never
+routed by single-context guessing.
 
 `GET /v1/owners/{ownerId}/auth/models` uses the selected principal/profile child to call App Server `model/list`. The broker does not persist the catalog; it preserves advertised reasoning, modality, personality, visibility, upgrade, and service-tier fields in the HTTP response.
 
@@ -218,7 +238,30 @@ Main controls:
 - MCP command allowlisting
 - hosted-tool URL allowlisting
 - `env:VAR` indirection for secret-looking headers and MCP environment values
-- redaction for logs and optional raw event persistence
+- default-deny managed permission profiles, canonical runtime workspace roots,
+  and explicit broker control-plane and credential-path denies
+- cached sandbox canary gating for managed work when required by deployment
+- safe sanitization on persistence, history reads, and native/OpenAI egress;
+  mandatory redaction for logs and raw event persistence
+
+Managed `read-only` and `workspace-write` requests become broker-owned
+permission profiles, not caller-provided low-level sandbox settings. They use
+`auto_review` and a granular policy that permits reviewed exceptions without
+allowing `sandbox_approval` to turn into an unsandboxed shell bypass. A failed
+required canary makes `/readyz` unhealthy and rejects managed turns before a
+model is contacted. `danger-full-access` is different: a separately configured
+per-request key authorizes it, and it does not provide the managed isolation
+guarantee.
+
+The cached no-model canary uses `command/exec` with a temporary workspace as
+`cwd`. Pinned Codex `0.144.6` has no `runtimeWorkspaceRoots` field on that
+command, so `cwd` supplies the canary's runtime workspace root. The broker
+continues to send canonicalized `runtimeWorkspaceRoots` on managed thread and
+turn calls.
+
+Sanitization is defense in depth. The host app must still avoid placing
+credentials intentionally in prompts or input items, because the model receives
+those values before any output sanitization occurs.
 
 ## Shutdown
 

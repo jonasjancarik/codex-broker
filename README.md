@@ -71,6 +71,7 @@ The broker owns generic Codex infrastructure:
 - one active turn at a time per broker thread,
 - normalized event persistence and Server-Sent Events streaming,
 - configuration profiles for model, sandbox, approval, workspace, and bundle policy,
+- default-deny managed permission profiles, sandbox preflight, and separately authorized danger access,
 - mounted bundles, inline bundle validation, skill/prompt overlays, mounted MCP servers, and broker-hosted adapter transport,
 - audit logs, structured logs, metrics, readiness checks, and recovery of abandoned turns after restart.
 
@@ -100,6 +101,36 @@ This split is important. The broker should not know what a product evidence hit 
 - **Turn**: one unit of Codex work submitted to a broker thread.
 - **Bundle**: reviewed material that can provide skills, prompts, MCP servers, hosted-tool adapters, allowed paths, and sandbox policy.
 - **Configuration profile**: a named set of broker-side defaults and policy for model, sandbox, approval mode, allowed bundles, and workspace roots. API requests choose one with `configProfile`.
+
+## Security boundaries
+
+Managed `read-only` and `workspace-write` turns use broker-owned, default-deny
+Codex permission profiles. The selected working directory is canonicalized and
+must be inside an authorized workspace root; the profile denies filesystem
+access outside its runtime workspace roots and denies broker auth/state paths
+and common workspace credential files. Routine work inside that boundary does
+not need approval. By default, eligible exceptions are reviewed with Codex's
+`auto_review` reviewer, while the broker's granular policy disallows an
+unsandboxed shell escalation. Managed mode sends that granular policy by
+default; the only supported alternative is `approvalPolicy: "never"` with the
+`user` reviewer, so it never inherits an unspecified Codex approval default.
+
+The no-model sandbox preflight uses `command/exec` with its temporary workspace
+as `cwd`. Pinned Codex `0.144.6` does not expose `runtimeWorkspaceRoots` on
+`command/exec`, so `cwd` is the preflight command's runtime workspace root.
+
+`danger-full-access` is intentionally outside this isolation boundary. It is
+available only when the deployment configures a separate secret and the caller
+also supplies it in `X-Codex-Broker-Danger-Full-Access-Key`; it is not an
+ordinary caller-selectable profile.
+
+The broker sanitizes normalized events, persisted state, history reads, native
+responses, and OpenAI-compatible responses by default. `raw` sanitization mode
+is for explicitly trusted debugging only: normalized output is retained and
+returned unchanged, but logs and raw debug event fields are still redacted.
+Host apps should avoid intentionally supplying secrets in prompts or input
+items; sanitization is defense in depth, not a substitute for keeping input
+data out of model context.
 
 ## Normal Request Flow
 
@@ -347,6 +378,24 @@ docker run --rm \
 
 Override the pinned Codex version with `--build-arg CODEX_VERSION=<version>`.
 
+Managed sandbox deployments need the shipped
+[`examples/seccomp/codex-broker.json`](examples/seccomp/codex-broker.json)
+profile. It starts from Docker Engine 29.4.0's pinned Moby seccomp v0.1.0
+default and adds only Bubblewrap's required mount/pivot-root calls,
+`umount2(MNT_DETACH)`, `clone` calls containing `CLONE_NEWUSER`, and exact
+`unshare(CLONE_NEWUSER)` or `unshare(CLONE_NEWNS)` calls. The example Compose
+service loads it with `no-new-privileges:true`:
+
+```bash
+docker compose -f examples/docker-compose.yml config
+docker compose -f examples/docker-compose.yml up -d
+```
+
+CI runs the no-model sandbox canary using the same profile before publishing an
+image. Do not replace it with `seccomp=unconfined`, privileged mode, or
+`CAP_SYS_ADMIN`; those remove the outer-container protection that makes the
+managed profile meaningful.
+
 See the Fern [deployment guide](fern/docs/pages/operations/deployment.mdx) and
 [examples/docker-compose.yml](examples/docker-compose.yml) for a Docker Compose
 example.
@@ -381,7 +430,8 @@ Implemented in this repo:
 - per-thread `reject`, `queue`, and `steer` turn behavior,
 - normalized event persistence and SSE streaming with product correlation and Codex ids,
 - optional caller-supplied broker `threadId` values for host chat or job ids,
-- optional raw app-server event capture with recursive secret redaction and bounded raw-field retention,
+- safe-by-default secret sanitization for persistence and egress, split-secret streaming protection, and mandatory redaction for logs and raw debug fields,
+- managed default-deny permission profiles with sandbox preflight/readiness checks, separated runtime homes, and separately authorized `danger-full-access`,
 - user-scoped audit log API for auth, turn, approval, interrupt, and logout events,
 - durable app-server child process lifecycle records for operational diagnosis,
 - app-server 0.144.6 model discovery and mode/capability event coverage for plan, goal, review, approvals, user input, and MCP elicitations,

@@ -104,6 +104,12 @@ and distribute each raw compatibility key separately. Compatibility keys,
 internal broker keys, and upstream Codex credentials serve different trust
 boundaries and should not be reused.
 
+If an operator intentionally enables `danger-full-access`, mount one more
+deployment-only secret and set `CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE` to
+its path. A regular authenticated request must also include that value in
+`X-Codex-Broker-Danger-Full-Access-Key`; do not distribute this key to browser
+clients or ordinary workload callers.
+
 Do not pass auth files, API keys, or access tokens as bundle content. Codex credentials are stored under hashed auth-principal/profile paths in `/data/auth`.
 
 Codex app-server children start with a scrubbed process environment. Secret-looking variables are not passed through by default. If a reviewed deployment needs a helper inside Codex to read specific environment variables, set `CODEX_BROKER_PASSTHROUGH_ENV` to exact variable names:
@@ -137,11 +143,82 @@ and [Configuration reference](configuration-reference.mdx#openai-compatible-iden
 - configured bundle roots are readable/searchable directories
 - auth data directory writability
 - internal API key presence unless unauthenticated development mode is enabled
+- the cached real managed-sandbox preflight result
+
+The preflight starts pinned Codex App Server without a model request, then runs
+`command/exec` with the broker-managed workspace permission profile. It proves
+that the command can write its temporary workspace and cannot read a protected
+canary. Pinned Codex `0.144.6` uses the command `cwd` as this canary's runtime
+workspace root; it does not expose `runtimeWorkspaceRoots` on `command/exec`.
+
+`CODEX_BROKER_SANDBOX_PREFLIGHT=required` is the Linux default. A failed or
+unsupported result makes readiness return `503` and rejects managed
+`read-only` and `workspace-write` turns before model contact. `warn` reports
+the result but keeps readiness available; `disabled` reports that the check was
+skipped. The probe runs once per broker process rather than on every readiness
+request.
 
 Compatibility bindings are optional, so readiness does not require their file.
 If `CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE` is configured, a missing, empty,
 or malformed file fails broker startup instead of silently disabling the
 compatible API.
+
+## Managed sandbox requirements
+
+The managed Codex profiles depend on Bubblewrap being able to create Linux user
+and PID namespaces. Docker's default seccomp profile can deny the required
+namespace setup even when the image and generated Codex configuration are
+otherwise valid. Use the shipped
+[`examples/seccomp/codex-broker.json`](../../../../examples/seccomp/codex-broker.json)
+profile for managed deployments. It is derived from Docker Engine 29.4.0's
+pinned Moby seccomp v0.1.0 default profile and narrows its additions to the
+Bubblewrap operations exercised by the real canary: mount and `pivot_root`,
+`umount2` with `MNT_DETACH`, `clone` calls containing `CLONE_NEWUSER`, and
+exact `unshare(CLONE_NEWUSER)` or `unshare(CLONE_NEWNS)` calls.
+
+The example Compose service supplies both
+`no-new-privileges:true` and `seccomp=./seccomp/codex-broker.json`. Validate
+the resolved configuration before starting it:
+
+```bash
+docker compose -f examples/docker-compose.yml config
+docker compose -f examples/docker-compose.yml up -d
+```
+
+CI is configured to run the no-model sandbox canary with the same profile
+before image publication:
+
+```bash
+docker run --rm \
+  --network none \
+  --read-only \
+  --security-opt no-new-privileges:true \
+  --security-opt seccomp=examples/seccomp/codex-broker.json \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1777 \
+  --tmpfs /data:rw,nosuid,nodev,uid=1000,gid=1000,mode=0700 \
+  --tmpfs /workspaces:rw,nosuid,nodev,uid=1000,gid=1000,mode=0755 \
+  --tmpfs /bundles:rw,nosuid,nodev,uid=1000,gid=1000,mode=0755 \
+  -e CODEX_BROKER_ALLOW_UNAUTHENTICATED=1 \
+  codex-broker:sandbox-canary \
+  python -m codex_broker.sandbox_probe
+```
+
+Do not work around this with `seccomp=unconfined`, privileged containers, or
+`CAP_SYS_ADMIN`: each discards the least-privilege outer-container boundary the
+broker relies on. Keep the profile pinned and re-run the real preflight whenever
+the Docker Engine baseline, profile, Bubblewrap, or Codex version changes.
+
+`approvalsReviewer: auto_review` is not a sandbox backend. It reviews eligible
+explicit permission requests under the broker's granular approval policy,
+which keeps `sandbox_approval` disabled; it cannot make a failed Bubblewrap
+boundary safe. Likewise, separately authorized `danger-full-access` bypasses
+the managed filesystem isolation and must be reserved for trusted operational
+work.
+
+If credentials may have appeared in model, tool, event, or API output before
+safe sanitization was enabled, rotate the affected credentials. Treat output
+retention and downstream logs as potentially exposed until that rotation is
+complete.
 
 ## Process lifecycle
 
