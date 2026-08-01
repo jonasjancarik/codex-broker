@@ -185,6 +185,27 @@ docker compose -f examples/docker-compose.yml config
 docker compose -f examples/docker-compose.yml up -d
 ```
 
+On Docker hosts with AppArmor, Docker's default profile denies the nested mount
+operations Bubblewrap needs even when seccomp allows the corresponding
+syscalls. Load the shipped profile and add the AppArmor Compose overlay:
+
+```bash
+sudo apparmor_parser -r -W examples/apparmor/codex-broker-bwrap
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.apparmor.yml \
+  config
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.apparmor.yml \
+  up -d
+```
+
+The profile is derived from Moby v28.0.4's `docker-default` template. It keeps
+the template's `/proc`, `/sys`, signal, and ptrace restrictions while allowing
+the user namespace, mount, unmount, and pivot-root operations covered by the
+real canary. Hosts without AppArmor should use only the base Compose file.
+
 CI is configured to run the no-model sandbox canary with the same profile
 before image publication:
 
@@ -193,6 +214,7 @@ docker run --rm \
   --network none \
   --read-only \
   --security-opt no-new-privileges:true \
+  --security-opt apparmor=codex-broker-bwrap \
   --security-opt seccomp=examples/seccomp/codex-broker.json \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1777 \
   --tmpfs /data:rw,nosuid,nodev,uid=1000,gid=1000,mode=0700 \
@@ -203,10 +225,11 @@ docker run --rm \
   python -m codex_broker.sandbox_probe
 ```
 
-Do not work around this with `seccomp=unconfined`, privileged containers, or
-`CAP_SYS_ADMIN`: each discards the least-privilege outer-container boundary the
-broker relies on. Keep the profile pinned and re-run the real preflight whenever
-the Docker Engine baseline, profile, Bubblewrap, or Codex version changes.
+Do not work around this with `seccomp=unconfined`, `apparmor=unconfined`,
+privileged containers, or `CAP_SYS_ADMIN`: each discards the least-privilege
+outer-container boundary the broker relies on. Keep both host profiles pinned
+and re-run the real preflight whenever the Docker Engine baseline, profiles,
+Bubblewrap, or Codex version changes.
 
 `approvalsReviewer: auto_review` is not a sandbox backend. It reviews eligible
 explicit permission requests under the broker's granular approval policy,

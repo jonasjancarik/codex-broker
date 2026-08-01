@@ -78,12 +78,16 @@ jobs:
           tags: codex-broker:sandbox-canary
           platforms: linux/amd64
 
+      - name: Load AppArmor profile for Bubblewrap
+        run: sudo apparmor_parser -r -W examples/apparmor/codex-broker-bwrap
+
       - name: Run no-model sandbox canary
         run: |
           docker run --rm \
             --network none \
             --read-only \
             --security-opt no-new-privileges:true \
+            --security-opt apparmor=codex-broker-bwrap \
             --security-opt seccomp=examples/seccomp/codex-broker.json \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1777 \
             --tmpfs /data:rw,nosuid,nodev,uid=1000,gid=1000,mode=0700 \

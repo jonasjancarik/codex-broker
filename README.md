@@ -396,6 +396,21 @@ image. Do not replace it with `seccomp=unconfined`, privileged mode, or
 `CAP_SYS_ADMIN`; those remove the outer-container protection that makes the
 managed profile meaningful.
 
+Docker hosts with AppArmor also need the shipped profile that preserves
+Docker's default container restrictions while allowing Bubblewrap's nested
+user-namespace mounts:
+
+```bash
+sudo apparmor_parser -r -W examples/apparmor/codex-broker-bwrap
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.apparmor.yml \
+  up -d
+```
+
+Do not substitute `apparmor=unconfined`; hosts without AppArmor should use the
+base Compose file alone.
+
 See the Fern [deployment guide](fern/docs/pages/operations/deployment.mdx) and
 [examples/docker-compose.yml](examples/docker-compose.yml) for a Docker Compose
 example.
