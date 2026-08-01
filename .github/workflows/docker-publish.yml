@@ -67,6 +67,32 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
+      # Build the runner-native image once so the no-model sandbox canary runs
+      # before the multi-platform publish step below.
+      - name: Build local image for sandbox canary
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          pull: true
+          load: true
+          tags: codex-broker:sandbox-canary
+          platforms: linux/amd64
+
+      - name: Run no-model sandbox canary
+        run: |
+          docker run --rm \
+            --network none \
+            --read-only \
+            --security-opt no-new-privileges:true \
+            --security-opt seccomp=examples/seccomp/codex-broker.json \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1777 \
+            --tmpfs /data:rw,nosuid,nodev,uid=1000,gid=1000,mode=0700 \
+            --tmpfs /workspaces:rw,nosuid,nodev,uid=1000,gid=1000,mode=0755 \
+            --tmpfs /bundles:rw,nosuid,nodev,uid=1000,gid=1000,mode=0755 \
+            -e CODEX_BROKER_ALLOW_UNAUTHENTICATED=1 \
+            codex-broker:sandbox-canary \
+            python -m codex_broker.sandbox_probe
+
       # Login against a Docker registry except on PR
       # https://github.com/docker/login-action
       - name: Log into registry ${{ env.REGISTRY }}

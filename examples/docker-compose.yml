@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       args:
-        CODEX_VERSION: "0.144.3"
+        CODEX_VERSION: "0.144.6"
     image: codex-broker:local
     environment:
       CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS: "/workspaces:/host-data"
@@ -11,6 +11,9 @@ services:
       CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES: "http://app:3000,http://host.docker.internal,http://127.0.0.1"
       CODEX_HOST_TOOL_KEY: "${CODEX_HOST_TOOL_KEY:-}"
     read_only: true
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp/codex-broker.json
     tmpfs:
       - /tmp
     volumes:

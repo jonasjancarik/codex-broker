@@ -14,7 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CODEX_BROKER_INTERNAL_KEY_FILE=/run/secrets/codex_broker_key
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tar \
+    && apt-get install -y --no-install-recommends bubblewrap ca-certificates curl tar \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
@@ -34,6 +34,11 @@ RUN set -eux; \
     ln -s /opt/codex/bin/codex /usr/local/bin/codex; \
     rm -f "/tmp/${archive}" /tmp/codex-package_SHA256SUMS; \
     codex --version
+
+# The default-deny permission profiles retain Codex's :minimal runtime reads,
+# which include /usr/local but intentionally do not expose arbitrary /opt data.
+# Install a real binary here rather than leaving the release symlink into /opt.
+RUN cp --remove-destination /opt/codex/bin/codex /usr/local/bin/codex
 
 RUN useradd --create-home --shell /usr/sbin/nologin broker \
     && mkdir -p /data /workspaces /bundles \
