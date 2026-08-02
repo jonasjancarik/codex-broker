@@ -337,16 +337,18 @@ class AppServerClient:
             args.extend(["-c", f"{key}={value}"])
         for server in self.mcp_servers:
             name = server.name.replace('"', "")
-            args.extend(["-c", f'mcp_servers."{name}".command={json.dumps(server.command)}'])
+            # Codex's `-c` parser treats quotes in dotted key paths as literal name characters.
+            config_prefix = f"mcp_servers.{name}"
+            args.extend(["-c", f"{config_prefix}.command={json.dumps(server.command)}"])
             if server.args:
-                args.extend(["-c", f'mcp_servers."{name}".args={json.dumps(list(server.args))}'])
+                args.extend(["-c", f"{config_prefix}.args={json.dumps(list(server.args))}"])
             if server.cwd:
-                args.extend(["-c", f'mcp_servers."{name}".cwd={json.dumps(str(server.cwd))}'])
+                args.extend(["-c", f"{config_prefix}.cwd={json.dumps(str(server.cwd))}"])
             if server.env:
                 config_env = {key: value for key, value in server.env.items() if not value.startswith("env:")}
                 if config_env:
                     env_items = ", ".join(f"{json.dumps(key)} = {json.dumps(value)}" for key, value in config_env.items())
-                    args.extend(["-c", f'mcp_servers."{name}".env={{ {env_items} }}'])
+                    args.extend(["-c", f"{config_prefix}.env={{ {env_items} }}"])
         return args
 
     def _mcp_process_env(self) -> dict[str, str]:

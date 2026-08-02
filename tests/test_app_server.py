@@ -406,6 +406,33 @@ class AppServerRoutingTests(unittest.TestCase):
             self.assertIn("model_verbosity=low", command)
             self.assertIn("features.image_generation=false", command)
 
+    def test_build_command_uses_bare_mcp_server_key_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            client = AppServerClient.__new__(AppServerClient)
+            client.config = config_for(Path(tmp_raw))
+            client.mcp_servers = (
+                McpServerRef(
+                    name="host_mcp",
+                    command="mcp-proxy",
+                    args=("--transport=streamablehttp", "http://app:3000/mcp"),
+                    env={"LOG_LEVEL": "info", "MCP_API_KEY": "env:MCP_SECRET_SOURCE"},
+                    cwd=Path("/bundles"),
+                ),
+            )
+            client.codex_config_args = ()
+
+            command = client._build_command()
+            config_overrides = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-c"]
+
+            self.assertIn('mcp_servers.host_mcp.command="mcp-proxy"', config_overrides)
+            self.assertIn(
+                'mcp_servers.host_mcp.args=["--transport=streamablehttp", "http://app:3000/mcp"]',
+                config_overrides,
+            )
+            self.assertIn('mcp_servers.host_mcp.cwd="/bundles"', config_overrides)
+            self.assertIn('mcp_servers.host_mcp.env={ "LOG_LEVEL" = "info" }', config_overrides)
+            self.assertFalse(any(value.startswith('mcp_servers."host_mcp"') for value in config_overrides))
+
     def test_pool_key_includes_resolved_mcp_env_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             tmp = Path(tmp_raw)
