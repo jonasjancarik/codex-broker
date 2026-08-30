@@ -17,6 +17,12 @@ profile codex-broker-bwrap flags=(attach_disconnected,mediate_deleted) {
   umount,
   pivot_root,
 
+  # Bubblewrap 0.12 mounts procfs through an inherited file descriptor rather
+  # than a path-string destination. Keep this grant limited to its fresh,
+  # hardened procfs mount rather than relaxing the outer container profile.
+  mount fstype=proc options=(rw nosuid nodev noexec) proc -> @{PROC}/@{pid}/fd/*,
+  owner @{PROC}/@{pid}/fd/ r,
+
   # Host runtimes must be able to stop and kill the container.
   signal (receive) peer=unconfined,
   signal (receive) peer=runc,
