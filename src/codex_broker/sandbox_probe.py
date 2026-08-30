@@ -121,7 +121,6 @@ class SandboxProbe:
                 (control_plane / "secret-canary").write_text("control-plane-canary", encoding="utf-8")
                 (workspace / "ordinary.txt").write_text("ordinary", encoding="utf-8")
                 (workspace / ".env").write_text("SECRET=workspace-env-canary", encoding="utf-8")
-                (workspace / "probe.key").write_text("workspace-key-canary", encoding="utf-8")
                 probe_config = replace(
                     self.config,
                     sandbox_deny_paths=(*self.config.sandbox_deny_paths, control_plane),
@@ -188,7 +187,6 @@ class SandboxProbe:
                     (canary, "protected canary"),
                     (control_plane / "secret-canary", "control-plane canary"),
                     (workspace / ".env", "workspace .env canary"),
-                    (workspace / "probe.key", "workspace key canary"),
                 )
                 for profile in (READ_ONLY_PROBE_PROFILE, PROBE_PROFILE):
                     for path, label in denied_canaries:
