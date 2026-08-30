@@ -204,9 +204,12 @@ docker compose \
 The profile is derived from Moby v28.0.4's `docker-default` template. It keeps
 the template's `/proc`, `/sys`, signal, and ptrace restrictions while allowing
 the user namespace, mount, unmount, and pivot-root operations covered by the
-real canary. It also permits Bubblewrap 0.12's fd-targeted fresh-procfs mount
-without weakening the outer profile. Hosts without AppArmor should use only the
-base Compose file.
+real canary. Hosts without AppArmor should use only the base Compose file.
+
+Codex 0.151's bundled Bubblewrap reports restrictive-container procfs failures
+using wording its built-in fallback does not yet recognize. The broker therefore
+uses the supported `--no-proc` fallback: PID isolation and the filesystem
+sandbox remain active, while the fresh procfs mount is omitted.
 
 CI is configured to run the no-model sandbox canary with the same profile
 before image publication:

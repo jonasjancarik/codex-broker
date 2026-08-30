@@ -40,6 +40,10 @@ RUN set -eux; \
 # Install a real binary here rather than leaving the release symlink into /opt.
 RUN cp --remove-destination /opt/codex/bin/codex /usr/local/bin/codex
 
+RUN mv /usr/bin/bwrap /usr/bin/bwrap-real
+
+COPY --chmod=755 scripts/codex-bwrap-no-proc /usr/bin/bwrap
+
 RUN useradd --create-home --shell /usr/sbin/nologin broker \
     && mkdir -p /data /workspaces /bundles \
     && chown -R broker:broker /data /workspaces /bundles /home/broker

@@ -1,0 +1,31 @@
+#!/usr/local/bin/python3
+"""Run Codex's bundled Bubblewrap without its unsupported fresh procfs mount."""
+
+from __future__ import annotations
+
+import os
+import sys
+
+
+BWRAP = "/usr/bin/bwrap-real"
+
+
+def main() -> None:
+    args: list[str] = []
+    iterator = iter(sys.argv[1:])
+    for argument in iterator:
+        if argument == "--proc":
+            try:
+                destination = next(iterator)
+            except StopIteration as exc:
+                raise SystemExit("Codex Bubblewrap passed --proc without a destination") from exc
+            if destination == "/proc":
+                continue
+            args.extend((argument, destination))
+            continue
+        args.append(argument)
+    os.execv(BWRAP, [BWRAP, *args])
+
+
+if __name__ == "__main__":
+    main()

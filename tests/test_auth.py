@@ -100,6 +100,8 @@ class AuthProfileTests(unittest.TestCase):
                 self.assertEqual(filesystem["/run/secrets"], "deny")
                 self.assertEqual(filesystem[":workspace_roots"]["**/.env.*"], "deny")
                 self.assertEqual(filesystem[":workspace_roots"]["**/*.pem"], "deny")
+                self.assertEqual(filesystem[":workspace_roots"]["**/id_ed25519"], "deny")
+                self.assertNotIn("id_ed25519", filesystem[":workspace_roots"])
 
     def test_managed_config_file_is_private_and_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
