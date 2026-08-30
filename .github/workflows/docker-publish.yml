@@ -41,7 +41,11 @@ jobs:
 
   build:
     needs: test
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04's current hosted-runner kernel rejects Bubblewrap's nested
+    # procfs mount despite the broker's explicit seccomp and AppArmor grants.
+    # Keep the release canary on GitHub's supported Ubuntu 22.04 runner, whose
+    # container runtime supports this required managed-sandbox operation.
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       packages: write
