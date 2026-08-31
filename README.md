@@ -409,7 +409,10 @@ docker compose -f examples/docker-compose.yml up -d
 CI runs the no-model sandbox canary using the same profile before publishing an
 image. It checks an attached overlay skill, its read-only mounted target, an
 ordinary job workspace read/write, and sibling-job sentinel, output, and skill
-paths. Do not replace it with `seccomp=unconfined`, privileged mode, or
+paths. `command/exec` has no multi-root parameter, so the canary attempts the
+mounted-skill mutation from the overlay with the production workspace-write
+profile; thread and turn tests verify the combined job-plus-overlay roots. Do
+not replace it with `seccomp=unconfined`, privileged mode, or
 `CAP_SYS_ADMIN`; those remove the outer-container protection that makes the
 managed profile meaningful.
 

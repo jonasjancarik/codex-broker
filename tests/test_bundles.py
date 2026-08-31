@@ -5,6 +5,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_broker.bundles import BundleError
 from codex_broker.http_api import BrokerServices
@@ -12,6 +13,57 @@ from test_broker import config_for, wait_turn
 
 
 class BundleRegistryTests(unittest.TestCase):
+    def test_skill_file_symlink_cannot_escape_an_allowed_bundle_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = config_for(tmp)
+            skill_dir = config.allowed_bundle_roots[0] / "linked-skill"
+            skill_dir.mkdir()
+            outside_skill = tmp / "outside-skill.md"
+            outside_skill.write_text("outside", encoding="utf-8")
+            (skill_dir / "SKILL.md").symlink_to(outside_skill)
+            bundle_dir = config.allowed_bundle_roots[0] / "linked-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.json").write_text(
+                '{"id":"linked-bundle","skills":[{"name":"linked","source":{"type":"mount","path":"'
+                + str(skill_dir)
+                + '"}}]}',
+                encoding="utf-8",
+            )
+            services = BrokerServices.build(config)
+            try:
+                with self.assertRaisesRegex(BundleError, "SKILL.md is outside allowed bundle roots"):
+                    services.bundles.resolve("linked-bundle")
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_failed_materialization_removes_its_partial_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            skill_dir = config.allowed_bundle_roots[0] / "materialized-skill"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text("skill", encoding="utf-8")
+            bundle_dir = config.allowed_bundle_roots[0] / "materialized-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.json").write_text(
+                '{"id":"materialized-bundle","skills":[{"name":"materialized","source":{"type":"mount","path":"'
+                + str(skill_dir)
+                + '"}}]}',
+                encoding="utf-8",
+            )
+            services = BrokerServices.build(config)
+            try:
+                bundle = services.bundles.resolve("materialized-bundle")
+                assert bundle is not None
+                with patch.object(Path, "symlink_to", side_effect=OSError("link denied")):
+                    with self.assertRaisesRegex(OSError, "link denied"):
+                        services.bundles.materialize(bundle, "partial-overlay")
+                self.assertFalse((config.overlay_root / "partial-overlay").exists())
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
     def test_bundle_lookup_cannot_escape_mount_or_return_a_different_manifest_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             tmp = Path(tmp_raw)

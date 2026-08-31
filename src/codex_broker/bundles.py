@@ -135,58 +135,62 @@ class BundleRegistry:
         if bundle is None:
             return None
         overlay = ensure_dir(self.config.overlay_root / turn_id)
-        ensure_dir(overlay / ".agents" / "skills")
-        for skill in bundle.skills:
-            target = materialized_skill_path(overlay, skill).parent
-            if target.exists() or target.is_symlink():
-                if target.is_dir() and not target.is_symlink():
-                    shutil.rmtree(target)
-                else:
-                    target.unlink()
-            target.symlink_to(skill.path.parent, target_is_directory=True)
-        if bundle.prompts:
-            prompts_root = ensure_dir(overlay / "prompts")
-            for prompt in bundle.prompts:
-                suffix = prompt.path.suffix or ".txt"
-                safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", prompt.name)
-                target = prompts_root / f"{safe_name}{suffix}"
+        try:
+            ensure_dir(overlay / ".agents" / "skills")
+            for skill in bundle.skills:
+                target = materialized_skill_path(overlay, skill).parent
                 if target.exists() or target.is_symlink():
                     if target.is_dir() and not target.is_symlink():
                         shutil.rmtree(target)
                     else:
                         target.unlink()
-                target.symlink_to(prompt.path)
-        if bundle.instructions:
-            (overlay / "AGENTS.md").write_text("\n\n".join(bundle.instructions), encoding="utf-8")
-        if bundle.hosted_tools:
-            adapter_config = {
-                "tools": [
-                    {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "inputSchema": tool.input_schema,
-                        "endpoint": tool.endpoint,
-                        "timeoutSeconds": tool.timeout_seconds,
-                        "maxResponseBytes": tool.max_response_bytes,
-                        "headers": tool.headers,
-                        "context": tool.context,
-                        "networkPolicy": tool.network_policy,
-                        "approvalPolicy": tool.approval_policy,
-                        "scope": tool.scope,
-                    }
-                    for tool in bundle.hosted_tools
-                ],
-                "brokerContext": adapter_context or {},
-            }
-            (overlay / "tool-adapters.json").write_text(
-                json.dumps(adapter_config, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        mcp_servers = self.mcp_servers_for_bundle(bundle, overlay)
-        if mcp_servers:
-            codex_dir = ensure_dir(overlay / ".codex")
-            (codex_dir / "config.toml").write_text(self._mcp_config_toml(mcp_servers), encoding="utf-8")
-        return overlay
+                target.symlink_to(skill.path.parent, target_is_directory=True)
+            if bundle.prompts:
+                prompts_root = ensure_dir(overlay / "prompts")
+                for prompt in bundle.prompts:
+                    suffix = prompt.path.suffix or ".txt"
+                    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", prompt.name)
+                    target = prompts_root / f"{safe_name}{suffix}"
+                    if target.exists() or target.is_symlink():
+                        if target.is_dir() and not target.is_symlink():
+                            shutil.rmtree(target)
+                        else:
+                            target.unlink()
+                    target.symlink_to(prompt.path)
+            if bundle.instructions:
+                (overlay / "AGENTS.md").write_text("\n\n".join(bundle.instructions), encoding="utf-8")
+            if bundle.hosted_tools:
+                adapter_config = {
+                    "tools": [
+                        {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "inputSchema": tool.input_schema,
+                            "endpoint": tool.endpoint,
+                            "timeoutSeconds": tool.timeout_seconds,
+                            "maxResponseBytes": tool.max_response_bytes,
+                            "headers": tool.headers,
+                            "context": tool.context,
+                            "networkPolicy": tool.network_policy,
+                            "approvalPolicy": tool.approval_policy,
+                            "scope": tool.scope,
+                        }
+                        for tool in bundle.hosted_tools
+                    ],
+                    "brokerContext": adapter_context or {},
+                }
+                (overlay / "tool-adapters.json").write_text(
+                    json.dumps(adapter_config, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            mcp_servers = self.mcp_servers_for_bundle(bundle, overlay)
+            if mcp_servers:
+                codex_dir = ensure_dir(overlay / ".codex")
+                (codex_dir / "config.toml").write_text(self._mcp_config_toml(mcp_servers), encoding="utf-8")
+            return overlay
+        except Exception:
+            self.cleanup_overlay(turn_id)
+            raise
 
     def mcp_servers_for_bundle(self, bundle: ResolvedBundle, overlay: Path | None = None) -> tuple[McpServerRef, ...]:
         servers = list(bundle.mcp_servers)
@@ -290,9 +294,12 @@ class BundleRegistry:
             if not any(is_relative_to(skill_path, root) for root in self.config.allowed_bundle_roots):
                 raise BundleError(f"Skill path is outside allowed bundle roots: {skill_path}")
             skill_md = skill_path / "SKILL.md" if skill_path.is_dir() else skill_path
-            if not skill_md.exists():
+            resolved_skill_md = skill_md.resolve()
+            if not any(is_relative_to(resolved_skill_md, root) for root in self.config.allowed_bundle_roots):
+                raise BundleError(f"Skill SKILL.md is outside allowed bundle roots: {resolved_skill_md}")
+            if not resolved_skill_md.is_file():
                 raise BundleError(f"Skill SKILL.md not found: {skill_md}")
-            skills.append(SkillRef(name=name or skill_md.parent.name, path=skill_md))
+            skills.append(SkillRef(name=name or resolved_skill_md.parent.name, path=resolved_skill_md))
         prompts: list[PromptRef] = []
         for entry in self._array(payload, "prompts"):
             if not isinstance(entry, dict):

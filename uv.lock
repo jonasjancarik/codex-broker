@@ -35,7 +35,7 @@ wheels = [
 
 [[package]]
 name = "codex-broker"
-version = "0.9.6"
+version = "0.9.7"
 source = { editable = "." }
 
 [package.dev-dependencies]

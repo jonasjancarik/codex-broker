@@ -270,8 +270,17 @@ def handle_app_server() -> int:
                 send({"id": request_id, "result": {"exitCode": 0}})
             elif "sandbox-probe-skill-v1" in command:
                 send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_SKILL_UNREADABLE") == "1" else 0}})
-            elif "normalize-report-references/SKILL.md" in command and "-w" in command:
-                send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_SKILL_WRITABLE") == "1" else 0}})
+            elif "sandbox-probe-skill-mutated" in command:
+                source = Path(os.environ["FAKE_CODEX_PROBE_SKILL_SOURCE"])
+                if os.environ.get("FAKE_CODEX_PROBE_SKILL_CONTENT_CHANGED") == "1":
+                    source.chmod(0o644)
+                    source.write_text("changed", encoding="utf-8")
+                send(
+                    {
+                        "id": request_id,
+                        "result": {"exitCode": 0 if os.environ.get("FAKE_CODEX_PROBE_SKILL_MUTABLE") == "1" else 1},
+                    }
+                )
             elif "sibling-job" in command:
                 send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_SIBLING_READABLE") == "1" else 0}})
             elif "test ! -r" in command:

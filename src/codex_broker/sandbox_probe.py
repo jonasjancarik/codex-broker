@@ -133,8 +133,9 @@ class SandboxProbe:
                 (sibling_workspace / "sibling-sentinel").write_text("sibling-job-canary", encoding="utf-8")
                 (sibling_workspace / "output").mkdir()
                 (sibling_workspace / ".agents" / "skills").mkdir(parents=True)
+                skill_marker = "sandbox-probe-skill-v1\n"
                 source_skill = mounted_skill / "SKILL.md"
-                source_skill.write_text("sandbox-probe-skill-v1\n", encoding="utf-8")
+                source_skill.write_text(skill_marker, encoding="utf-8")
                 source_skill.chmod(0o444)
                 mounted_skill.chmod(0o555)
                 attached_skill.parent.symlink_to(mounted_skill, target_is_directory=True)
@@ -146,7 +147,14 @@ class SandboxProbe:
                 config_path.write_text(render_managed_codex_config(probe_config), encoding="utf-8")
                 config_path.chmod(0o600)
                 environment = clean_process_env(self.config.codex_passthrough_env)
-                environment.update({"CODEX_HOME": str(home), "HOME": str(home), "CODEX_CREDENTIAL_STORE": self.config.credential_store})
+                environment.update(
+                    {
+                        "CODEX_HOME": str(home),
+                        "HOME": str(home),
+                        "CODEX_CREDENTIAL_STORE": self.config.credential_store,
+                        "FAKE_CODEX_PROBE_SKILL_SOURCE": str(source_skill),
+                    }
+                )
                 process = self._popen_factory(
                     [*self.config.codex_command, "app-server", "--listen", "stdio://", "--strict-config"],
                     cwd=str(workspace), env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -184,16 +192,27 @@ class SandboxProbe:
                 )
                 if not _command_succeeded(attached_skill_readable):
                     raise RuntimeError("managed sandbox could not read the attached skill overlay")
-                mounted_skill_immutable = rpc.request(
+                # command/exec cannot accept runtimeWorkspaceRoots. Running it
+                # from the overlay with the production workspace-write profile
+                # exercises the same writable overlay root that a managed turn
+                # uses for the attached native skill; multi-root wiring is
+                # covered by the thread/turn parameter tests.
+                mounted_skill_mutation = rpc.request(
                     "command/exec",
                     {
-                        "command": ["test", "!", "-w", str(attached_skill)],
+                        "command": [
+                            "sh",
+                            "-c",
+                            f"chmod u+w {attached_skill} && printf sandbox-probe-skill-mutated > {attached_skill}",
+                        ],
                         "cwd": str(overlay),
-                        "permissionProfile": READ_ONLY_PROBE_PROFILE,
+                        "permissionProfile": PROBE_PROFILE,
                     },
                 )
-                if not _command_succeeded(mounted_skill_immutable):
+                if _command_succeeded(mounted_skill_mutation):
                     raise RuntimeError("managed sandbox could modify the mounted skill target")
+                if source_skill.read_text(encoding="utf-8") != skill_marker:
+                    raise RuntimeError("mounted skill target content changed")
                 read_only_write = rpc.request(
                     "command/exec",
                     {
