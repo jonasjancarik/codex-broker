@@ -20,6 +20,12 @@ class BundleError(ValueError):
     pass
 
 
+def materialized_skill_path(overlay: Path, skill: "SkillRef") -> Path:
+    """Return the native skill path exposed from one per-turn overlay."""
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", skill.name)
+    return overlay / ".agents" / "skills" / safe_name / "SKILL.md"
+
+
 @dataclass(frozen=True)
 class SkillRef:
     name: str
@@ -129,9 +135,9 @@ class BundleRegistry:
         if bundle is None:
             return None
         overlay = ensure_dir(self.config.overlay_root / turn_id)
-        skills_root = ensure_dir(overlay / ".agents" / "skills")
+        ensure_dir(overlay / ".agents" / "skills")
         for skill in bundle.skills:
-            target = skills_root / re.sub(r"[^A-Za-z0-9_.-]", "_", skill.name)
+            target = materialized_skill_path(overlay, skill).parent
             if target.exists() or target.is_symlink():
                 if target.is_dir() and not target.is_symlink():
                     shutil.rmtree(target)
@@ -214,7 +220,7 @@ class BundleRegistry:
         if not cwd:
             return None
         path = Path(cwd).expanduser().resolve()
-        allowed = [*self.config.allowed_workspace_roots, self.config.overlay_root]
+        allowed = [*self.config.allowed_workspace_roots]
         if bundle:
             allowed.extend(bundle.allowed_paths)
         if not any(is_relative_to(path, root) for root in allowed):

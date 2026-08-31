@@ -268,6 +268,12 @@ def handle_app_server() -> int:
                 if cwd:
                     Path(str(cwd), ".sandbox-probe-write").write_text("ok", encoding="utf-8")
                 send({"id": request_id, "result": {"exitCode": 0}})
+            elif "sandbox-probe-skill-v1" in command:
+                send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_SKILL_UNREADABLE") == "1" else 0}})
+            elif "normalize-report-references/SKILL.md" in command and "-w" in command:
+                send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_SKILL_WRITABLE") == "1" else 0}})
+            elif "sibling-job" in command:
+                send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_SIBLING_READABLE") == "1" else 0}})
             elif "test ! -r" in command:
                 send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_CANARY_READABLE") == "1" else 0}})
             else:

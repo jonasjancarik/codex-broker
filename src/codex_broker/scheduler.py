@@ -436,11 +436,7 @@ class TurnScheduler:
         bundle = self.bundles.resolve(bundle_id) if bundle_id else None
         cwd = self.bundles.validate_cwd(body.get("cwd") or thread.get("cwd"), bundle)
         self._validate_config_profile_cwd(cwd, config_profile_config)
-        preview_cwd = cwd or (
-            self.config.overlay_root
-            if bundle
-            else self.config.allowed_workspace_roots[0]
-        )
+        preview_cwd = cwd or self.config.allowed_workspace_roots[0]
         policy_preview = self._thread_params(
             preview_cwd,
             body,
@@ -955,15 +951,22 @@ class TurnScheduler:
                 if bundle
                 else None
             )
-            input_items = self._build_input(turn["input"], bundle)
             cwd = (
                 Path(turn["cwd"]).resolve()
                 if turn.get("cwd")
                 else overlay or self.config.allowed_workspace_roots[0]
             )
             if cwd:
-                self.bundles.validate_cwd(str(cwd), bundle)
-                self._validate_config_profile_cwd(cwd, config_profile_config)
+                if overlay and cwd == overlay:
+                    self._validate_config_profile_cwd(
+                        cwd,
+                        config_profile_config,
+                        allow_internal_overlay=True,
+                    )
+                else:
+                    self.bundles.validate_cwd(str(cwd), bundle)
+                    self._validate_config_profile_cwd(cwd, config_profile_config)
+            input_items = self._build_input(turn["input"], bundle, overlay)
             profile = str(turn["profile"])
             auth_principal_hash = str(turn["auth_principal_hash"])
             with self.auth.profile_guard(auth_principal_hash, profile):
@@ -1019,6 +1022,8 @@ class TurnScheduler:
                 body,
                 bundle,
                 config_profile_config,
+                runtime_read_root=overlay,
+                allow_internal_overlay=bool(overlay and cwd == overlay),
                 danger_full_access_authorized=danger_full_access_authorized,
             )
             compat = body.get("_openaiCompat")
@@ -1034,6 +1039,8 @@ class TurnScheduler:
                 config_profile_config,
                 cwd=cwd,
                 bundle=bundle,
+                runtime_read_root=overlay,
+                allow_internal_overlay=bool(overlay and cwd == overlay),
                 danger_full_access_authorized=danger_full_access_authorized,
             )
             result = client.request("turn/start", params)
@@ -1178,6 +1185,8 @@ class TurnScheduler:
         config_profile_config: dict[str, Any],
         *,
         danger_full_access_authorized: bool = False,
+        runtime_read_root: Path | None = None,
+        allow_internal_overlay: bool = False,
     ) -> str:
         params = self._thread_params(
             cwd,
@@ -1185,6 +1194,8 @@ class TurnScheduler:
             bundle,
             config_profile_config,
             danger_full_access_authorized=danger_full_access_authorized,
+            runtime_read_root=runtime_read_root,
+            allow_internal_overlay=allow_internal_overlay,
         )
         codex_thread_id = thread.get("codex_thread_id")
         if codex_thread_id:
@@ -1244,6 +1255,8 @@ class TurnScheduler:
         config_profile_config: dict[str, Any] | None = None,
         *,
         danger_full_access_authorized: bool = False,
+        runtime_read_root: Path | None = None,
+        allow_internal_overlay: bool = False,
     ) -> dict[str, Any]:
         return scheduler_config.thread_params(
             self,
@@ -1252,6 +1265,8 @@ class TurnScheduler:
             bundle,
             config_profile_config,
             danger_full_access_authorized=danger_full_access_authorized,
+            runtime_read_root=runtime_read_root,
+            allow_internal_overlay=allow_internal_overlay,
         )
 
     def _turn_params(
@@ -1264,6 +1279,8 @@ class TurnScheduler:
         cwd: Path | None = None,
         bundle: ResolvedBundle | None = None,
         danger_full_access_authorized: bool = False,
+        runtime_read_root: Path | None = None,
+        allow_internal_overlay: bool = False,
     ) -> dict[str, Any]:
         return scheduler_config.turn_params(
             self,
@@ -1274,10 +1291,17 @@ class TurnScheduler:
             cwd=cwd,
             bundle=bundle,
             danger_full_access_authorized=danger_full_access_authorized,
+            runtime_read_root=runtime_read_root,
+            allow_internal_overlay=allow_internal_overlay,
         )
 
-    def _build_input(self, input_items: list[dict[str, Any]], bundle: ResolvedBundle | None) -> list[dict[str, Any]]:
-        return scheduler_config.build_input(input_items, bundle)
+    def _build_input(
+        self,
+        input_items: list[dict[str, Any]],
+        bundle: ResolvedBundle | None,
+        overlay: Path | None = None,
+    ) -> list[dict[str, Any]]:
+        return scheduler_config.build_input(input_items, bundle, overlay)
 
     def _config_profile_config(self, config_profile: str) -> dict[str, Any]:
         return scheduler_config.config_profile_config(self, config_profile)
@@ -1285,8 +1309,19 @@ class TurnScheduler:
     def _validate_config_profile_bundle(self, profile_config: dict[str, Any], bundle_id: str | None) -> None:
         scheduler_config.validate_config_profile_bundle(profile_config, bundle_id)
 
-    def _validate_config_profile_cwd(self, cwd: Path | None, profile_config: dict[str, Any]) -> None:
-        scheduler_config.validate_config_profile_cwd(self, cwd, profile_config)
+    def _validate_config_profile_cwd(
+        self,
+        cwd: Path | None,
+        profile_config: dict[str, Any],
+        *,
+        allow_internal_overlay: bool = False,
+    ) -> None:
+        scheduler_config.validate_config_profile_cwd(
+            self,
+            cwd,
+            profile_config,
+            allow_internal_overlay=allow_internal_overlay,
+        )
 
     @staticmethod
     def _request_config_profile(body: dict[str, Any], fallback: Any = "default") -> str:

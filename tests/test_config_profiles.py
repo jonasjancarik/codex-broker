@@ -375,6 +375,19 @@ class ConfigProfileTests(unittest.TestCase):
                 self.assertTrue(all(Path(root).is_absolute() for root in workspace_write["runtimeWorkspaceRoots"]))
                 self.assertEqual(workspace_write["runtimeWorkspaceRoots"].count(str(cwd.resolve())), 1)
 
+                overlay = config.overlay_root / "turn-test"
+                overlay.mkdir(parents=True)
+                with_overlay = services.scheduler._thread_params(
+                    cwd,
+                    {"codexOptions": {"sandbox": "workspace-write"}},
+                    None,
+                    runtime_read_root=overlay,
+                )
+                self.assertEqual(
+                    with_overlay["runtimeWorkspaceRoots"],
+                    [str(cwd.resolve()), str(overlay.resolve())],
+                )
+
                 with self.assertRaisesRegex(ValueError, "requires separate authorization"):
                     services.scheduler._thread_params(
                         cwd,
@@ -498,6 +511,8 @@ class ConfigProfileTests(unittest.TestCase):
                         {"codexOptions": {"sandbox": "read-only"}},
                         None,
                     )
+                with self.assertRaisesRegex(BundleError, "outside allowed workspace roots"):
+                    services.bundles.validate_cwd(str(config.overlay_root), None)
             finally:
                 services.pool.close_all()
                 services.state.close()

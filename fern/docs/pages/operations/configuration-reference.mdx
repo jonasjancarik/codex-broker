@@ -237,11 +237,14 @@ Supported keys:
 | `allowedWorkspaceRoots`, `workspaceRoots` | Broker policy | Per-profile cwd allowlist checked after global workspace or bundle validation. |
 
 Managed sandbox roots are canonicalized and must be under both the global and
-profile allowlists. The generated profiles deny `:root`, permit only the
-minimal runtime reads and selected workspace root, and explicitly deny broker
-auth/state paths, `/run/secrets`, configured extra deny paths, and common
-workspace credential filenames. `workspace-write` permits its selected root;
-`read-only` does not. The legacy `sandboxPolicy`, `permissions`,
+profile allowlists. For bundled managed turns with an explicit `cwd`, the broker
+adds only the per-turn overlay as a second runtime root so the attached native
+skill can be read; it never adds the original mounted skill source or a
+workspace parent. The generated profiles deny `:root`, permit only the minimal
+runtime reads and selected roots, and explicitly deny broker auth/state paths,
+`/run/secrets`, configured extra deny paths, and common workspace credential
+filenames. `workspace-write` permits its selected roots; `read-only` does not.
+The legacy `sandboxPolicy`, `permissions`,
 `permissionProfile`, and `runtimeWorkspaceRoots` fields are broker-managed and
 are rejected from callers.
 

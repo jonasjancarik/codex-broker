@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .bundles import BundleError, ResolvedBundle
+from .bundles import BundleError, ResolvedBundle, materialized_skill_path
 
 
 _MANAGED_SANDBOX_PERMISSIONS = {
@@ -78,20 +78,43 @@ def _reject_profile_managed_fields(profile: dict[str, Any]) -> None:
             )
 
 
-def _effective_workspace_root(scheduler: Any, cwd: Path | None, profile: dict[str, Any]) -> str:
+def _is_internal_overlay(scheduler: Any, path: Path) -> bool:
+    return path.is_relative_to(scheduler.config.overlay_root.resolve())
+
+
+def _effective_workspace_roots(
+    scheduler: Any,
+    cwd: Path | None,
+    profile: dict[str, Any],
+    runtime_read_root: Path | None = None,
+    *,
+    allow_internal_overlay: bool = False,
+) -> list[str]:
     if cwd is None:
         raise ValueError("A managed sandbox requires an effective cwd.")
     if not cwd.is_absolute():
         raise ValueError("Managed sandbox cwd must be absolute.")
     effective_cwd = cwd.resolve()
-    allowed_roots = [
-        *(Path(root).expanduser().resolve() for root in scheduler.config.allowed_workspace_roots),
-        scheduler.config.overlay_root.resolve(),
-    ]
-    if not any(effective_cwd.is_relative_to(root) for root in allowed_roots):
+    allowed_roots = [Path(root).expanduser().resolve() for root in scheduler.config.allowed_workspace_roots]
+    if not (
+        any(effective_cwd.is_relative_to(root) for root in allowed_roots)
+        or (allow_internal_overlay and _is_internal_overlay(scheduler, effective_cwd))
+    ):
         raise BundleError(f"cwd is outside broker workspace roots: {effective_cwd}")
-    validate_config_profile_cwd(scheduler, effective_cwd, profile)
-    return str(effective_cwd)
+    validate_config_profile_cwd(
+        scheduler,
+        effective_cwd,
+        profile,
+        allow_internal_overlay=allow_internal_overlay,
+    )
+    roots = [str(effective_cwd)]
+    if runtime_read_root is not None:
+        effective_read_root = runtime_read_root.resolve()
+        if not _is_internal_overlay(scheduler, effective_read_root):
+            raise BundleError(f"Runtime overlay is outside broker overlay root: {effective_read_root}")
+        if str(effective_read_root) not in roots:
+            roots.append(str(effective_read_root))
+    return roots
 
 
 def _sandbox_choice(
@@ -120,6 +143,8 @@ def _execution_policy_params(
     profile: dict[str, Any],
     *,
     danger_full_access_authorized: bool,
+    runtime_read_root: Path | None = None,
+    allow_internal_overlay: bool = False,
 ) -> dict[str, Any]:
     options = request_codex_options(body)
     _reject_caller_managed_fields(body, options)
@@ -134,7 +159,13 @@ def _execution_policy_params(
     params: dict[str, Any] = {}
     if sandbox in _MANAGED_SANDBOX_PERMISSIONS:
         params["permissions"] = _MANAGED_SANDBOX_PERMISSIONS[sandbox]
-        params["runtimeWorkspaceRoots"] = [_effective_workspace_root(scheduler, cwd, profile)]
+        params["runtimeWorkspaceRoots"] = _effective_workspace_roots(
+            scheduler,
+            cwd,
+            profile,
+            runtime_read_root,
+            allow_internal_overlay=allow_internal_overlay,
+        )
         params["approvalsReviewer"] = reviewer or "auto_review"
         if approval_policy is None:
             params["approvalPolicy"] = _managed_approval_policy()
@@ -175,6 +206,8 @@ def thread_params(
     profile: dict[str, Any] | None = None,
     *,
     danger_full_access_authorized: bool = False,
+    runtime_read_root: Path | None = None,
+    allow_internal_overlay: bool = False,
 ) -> dict[str, Any]:
     options = request_codex_options(body)
     profile = profile or {}
@@ -193,6 +226,8 @@ def thread_params(
             bundle,
             profile,
             danger_full_access_authorized=danger_full_access_authorized,
+            runtime_read_root=runtime_read_root,
+            allow_internal_overlay=allow_internal_overlay,
         )
     )
     return params
@@ -208,6 +243,8 @@ def turn_params(
     cwd: Path | None = None,
     bundle: ResolvedBundle | None = None,
     danger_full_access_authorized: bool = False,
+    runtime_read_root: Path | None = None,
+    allow_internal_overlay: bool = False,
 ) -> dict[str, Any]:
     options = request_codex_options(body)
     profile = profile or {}
@@ -233,15 +270,28 @@ def turn_params(
             bundle,
             profile,
             danger_full_access_authorized=danger_full_access_authorized,
+            runtime_read_root=runtime_read_root,
+            allow_internal_overlay=allow_internal_overlay,
         )
     )
     return params
 
 
-def build_input(input_items: list[dict[str, Any]], bundle: ResolvedBundle | None) -> list[dict[str, Any]]:
+def build_input(
+    input_items: list[dict[str, Any]],
+    bundle: ResolvedBundle | None,
+    overlay: Path | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     if bundle:
-        items.extend({"type": "skill", "name": skill.name, "path": str(skill.path)} for skill in bundle.skills)
+        if bundle.skills and overlay is None:
+            raise BundleError("A bundle skill requires a materialized per-turn overlay.")
+        assert overlay is not None or not bundle.skills
+        for skill in bundle.skills:
+            path = materialized_skill_path(overlay, skill)
+            if not path.is_file():
+                raise BundleError(f"Materialized skill is unavailable: {skill.name}")
+            items.append({"type": "skill", "name": skill.name, "path": str(path)})
         if bundle.instructions:
             items.append({"type": "text", "text": "\n\n".join(bundle.instructions), "text_elements": []})
         for prompt in bundle.prompts:
@@ -277,7 +327,13 @@ def validate_config_profile_bundle(profile: dict[str, Any], bundle_id: str | Non
         raise BundleError(f"Bundle {bundle_id} is not enabled for configuration profile.")
 
 
-def validate_config_profile_cwd(scheduler: Any, cwd: Path | None, profile: dict[str, Any]) -> None:
+def validate_config_profile_cwd(
+    scheduler: Any,
+    cwd: Path | None,
+    profile: dict[str, Any],
+    *,
+    allow_internal_overlay: bool = False,
+) -> None:
     if cwd is None:
         return
     roots = profile.get("allowedWorkspaceRoots", profile.get("workspaceRoots"))
@@ -285,8 +341,11 @@ def validate_config_profile_cwd(scheduler: Any, cwd: Path | None, profile: dict[
         return
     raw_roots = roots if isinstance(roots, list) else [roots]
     allowed_roots = [Path(str(value)).expanduser().resolve() for value in raw_roots]
-    allowed_roots.append(scheduler.config.overlay_root)
-    if not any(cwd.resolve().is_relative_to(root) for root in allowed_roots):
+    effective_cwd = cwd.resolve()
+    if not (
+        any(effective_cwd.is_relative_to(root) for root in allowed_roots)
+        or (allow_internal_overlay and _is_internal_overlay(scheduler, effective_cwd))
+    ):
         raise BundleError(f"cwd is outside configuration profile workspace roots: {cwd}")
 
 

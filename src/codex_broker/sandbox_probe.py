@@ -111,16 +111,33 @@ class SandboxProbe:
             with tempfile.TemporaryDirectory(prefix="codex-broker-sandbox-") as root_text:
                 root = Path(root_text)
                 home = root / "codex-home"
-                workspace = root / "workspace"
+                jobs = root / "jobs"
+                workspace = jobs / "own-job"
+                sibling_workspace = jobs / "sibling-job"
+                mounted_skills = root / "mounted-skills"
+                mounted_skill = mounted_skills / "normalize-report-references"
+                overlay = root / "overlays" / "turn-sandbox-probe"
+                attached_skill = overlay / ".agents" / "skills" / "normalize-report-references" / "SKILL.md"
                 canary = root / "protected-canary"
                 control_plane = workspace / "control-plane"
                 home.mkdir()
-                workspace.mkdir()
+                workspace.mkdir(parents=True)
+                sibling_workspace.mkdir(parents=True)
+                mounted_skill.mkdir(parents=True)
+                attached_skill.parent.parent.mkdir(parents=True)
                 control_plane.mkdir()
                 canary.write_text("sandbox-probe-canary", encoding="utf-8")
                 (control_plane / "secret-canary").write_text("control-plane-canary", encoding="utf-8")
                 (workspace / "ordinary.txt").write_text("ordinary", encoding="utf-8")
                 (workspace / ".env").write_text("SECRET=workspace-env-canary", encoding="utf-8")
+                (sibling_workspace / "sibling-sentinel").write_text("sibling-job-canary", encoding="utf-8")
+                (sibling_workspace / "output").mkdir()
+                (sibling_workspace / ".agents" / "skills").mkdir(parents=True)
+                source_skill = mounted_skill / "SKILL.md"
+                source_skill.write_text("sandbox-probe-skill-v1\n", encoding="utf-8")
+                source_skill.chmod(0o444)
+                mounted_skill.chmod(0o555)
+                attached_skill.parent.symlink_to(mounted_skill, target_is_directory=True)
                 probe_config = replace(
                     self.config,
                     sandbox_deny_paths=(*self.config.sandbox_deny_paths, control_plane),
@@ -153,6 +170,30 @@ class SandboxProbe:
                         f"exitCode={readable.get('exitCode')!r}; "
                         f"stderr={redact(str(readable.get('stderr') or ''))}"
                     )
+                attached_skill_readable = rpc.request(
+                    "command/exec",
+                    {
+                        "command": [
+                            "sh",
+                            "-c",
+                            f"test -r {attached_skill} && grep -qx sandbox-probe-skill-v1 {attached_skill}",
+                        ],
+                        "cwd": str(overlay),
+                        "permissionProfile": READ_ONLY_PROBE_PROFILE,
+                    },
+                )
+                if not _command_succeeded(attached_skill_readable):
+                    raise RuntimeError("managed sandbox could not read the attached skill overlay")
+                mounted_skill_immutable = rpc.request(
+                    "command/exec",
+                    {
+                        "command": ["test", "!", "-w", str(attached_skill)],
+                        "cwd": str(overlay),
+                        "permissionProfile": READ_ONLY_PROBE_PROFILE,
+                    },
+                )
+                if not _command_succeeded(mounted_skill_immutable):
+                    raise RuntimeError("managed sandbox could modify the mounted skill target")
                 read_only_write = rpc.request(
                     "command/exec",
                     {
@@ -200,6 +241,21 @@ class SandboxProbe:
                         )
                         if not _command_succeeded(denied):
                             raise RuntimeError(f"managed sandbox could read the {label} with {profile}")
+                for path, label in (
+                    (sibling_workspace / "sibling-sentinel", "sibling job sentinel"),
+                    (sibling_workspace / "output", "sibling job output"),
+                    (sibling_workspace / ".agents" / "skills", "sibling job skills"),
+                ):
+                    denied = rpc.request(
+                        "command/exec",
+                        {
+                            "command": ["test", "!", "-r", str(path)],
+                            "cwd": str(workspace),
+                            "permissionProfile": PROBE_PROFILE,
+                        },
+                    )
+                    if not _command_succeeded(denied):
+                        raise RuntimeError(f"managed sandbox could discover the {label}")
                 return self._make_result("healthy", started, backend="bubblewrap", version=version)
         except TimeoutError as exc:
             return self._make_result("failed", started, backend="bubblewrap", version=version, diagnostic=f"sandbox probe timed out: {exc}")

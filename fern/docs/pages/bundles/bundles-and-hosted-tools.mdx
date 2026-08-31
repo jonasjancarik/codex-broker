@@ -76,6 +76,20 @@ For each turn that uses a bundle, the broker materializes a temporary overlay:
 
 When a bundle turn omits `cwd`, the broker runs Codex from the overlay. Explicit host `cwd` values must still be under configured workspace roots or bundle `allowedPaths`.
 
+For a managed turn with an explicit `cwd`, the broker gives Codex exactly two
+runtime roots: the canonical `cwd` and that turn's overlay. Native skill input
+uses the overlay path
+`<overlay>/.agents/skills/<skill-name>/SKILL.md`, rather than the mounted source
+path. The overlay is disposable and deleted after the turn; it can share
+workspace-write because it contains only temporary bundle material, never
+credentials, broker state, or persistent trusted configuration. A missing
+materialized skill fails before the turn starts. The mounted source itself must
+be read-only.
+
+For job runners, pass one job directory as `cwd`. Do not pass a parent directory
+that contains sibling jobs, and do not search sibling job workspaces for a skill
+or fallback script when an attached skill is unavailable.
+
 ## Skills
 
 ```json

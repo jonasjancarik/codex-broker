@@ -115,6 +115,17 @@ unsandboxed shell escalation. Managed mode sends that granular policy by
 default; the only supported alternative is `approvalPolicy: "never"` with the
 `user` reviewer, so it never inherits an unspecified Codex approval default.
 
+For a bundled managed turn with an explicit working directory, the broker
+passes exactly two runtime roots: that canonical working directory and the
+turn's ephemeral overlay. Native skill input always names
+`<overlay>/.agents/skills/<skill>/SKILL.md`, never the original mounted source
+path. The overlay contains only disposable bundle material and is removed when
+the turn ends; it may share the workspace-write profile, but it contains no
+broker state, credentials, or persistent trusted configuration. Mount skill
+sources read-only. A missing materialized skill fails the turn before Codex
+starts work. Job hosts must supply the individual job directory as `cwd`, not a
+parent directory containing other jobs.
+
 The no-model sandbox preflight uses `command/exec` with its temporary workspace
 as `cwd`. Pinned Codex `0.146.0` does not expose `runtimeWorkspaceRoots` on
 `command/exec`, so `cwd` is the preflight command's runtime workspace root.
@@ -216,6 +227,10 @@ For broker-hosted adapters, the broker acts as a transport shim. It validates th
 The host endpoint must still enforce product authorization and implement app-specific behavior.
 
 If a bundle instruction or skill tells Codex to use a CLI, that command must already be available inside the broker/Codex runtime: installed in the broker image, mounted into the broker container, present in the mounted workspace, or runnable through the workspace's package manager. For structured tool use, declare an MCP server and allowlist its command with `CODEX_BROKER_ALLOWED_TOOL_COMMANDS`.
+
+Mounted skills are versioned, trusted read-only inputs. A turn must not search
+sibling workspaces for a missing skill or reuse scripts found there; that is an
+isolation defect, not a recovery path.
 
 For example, the sample chat bundle declares `host.evidence.search`. The broker exposes it to Codex, but the actual evidence lookup happens in the host app's `POST /internal/codex/tools/evidence-search` endpoint. The host app validates `CODEX_HOST_TOOL_KEY` and decides what evidence results mean.
 
@@ -392,7 +407,9 @@ docker compose -f examples/docker-compose.yml up -d
 ```
 
 CI runs the no-model sandbox canary using the same profile before publishing an
-image. Do not replace it with `seccomp=unconfined`, privileged mode, or
+image. It checks an attached overlay skill, its read-only mounted target, an
+ordinary job workspace read/write, and sibling-job sentinel, output, and skill
+paths. Do not replace it with `seccomp=unconfined`, privileged mode, or
 `CAP_SYS_ADMIN`; those remove the outer-container protection that makes the
 managed profile meaningful.
 

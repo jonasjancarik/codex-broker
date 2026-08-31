@@ -547,7 +547,14 @@ class BrokerTests(unittest.TestCase):
                 bundles=registry,
                 pool=AppServerPool(config),
             )
-            input_items = scheduler._build_input([{"type": "text", "text": "Host turn.", "text_elements": []}], bundle)
+            with self.assertRaisesRegex(BundleError, "materialized per-turn overlay"):
+                scheduler._build_input([{"type": "text", "text": "Host turn.", "text_elements": []}], bundle)
+            input_items = scheduler._build_input(
+                [{"type": "text", "text": "Host turn.", "text_elements": []}],
+                bundle,
+                overlay,
+            )
+            self.assertEqual(input_items[0]["path"], str(overlay / ".agents" / "skills" / "demo" / "SKILL.md"))
             self.assertEqual(input_items[2]["name"], "legacy")
             self.assertEqual(input_items[2]["text"], "Legacy host prompt.")
             fake_client = AppServerClient.__new__(AppServerClient)

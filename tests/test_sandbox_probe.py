@@ -126,6 +126,22 @@ class SandboxProbeTests(unittest.TestCase):
         self.assertIn("protected canary", result.admin_diagnostic or "")
         self.assertNotIn("sandbox-probe-canary", result.admin_diagnostic or "")
 
+    def test_attached_skill_and_sibling_job_canaries_fail_without_path_leaks(self) -> None:
+        cases = (
+            ("FAKE_CODEX_PROBE_SKILL_UNREADABLE", "attached skill overlay"),
+            ("FAKE_CODEX_PROBE_SKILL_WRITABLE", "mounted skill target"),
+            ("FAKE_CODEX_PROBE_SIBLING_READABLE", "sibling job"),
+        )
+        for environment, capability in cases:
+            with self.subTest(environment=environment), tempfile.TemporaryDirectory() as raw, patch.dict(
+                os.environ,
+                {environment: "1"},
+            ):
+                result = SandboxProbe(config_for(Path(raw)), platform_name="linux").run_once()
+            self.assertEqual(result.status, "failed")
+            self.assertIn(capability, result.admin_diagnostic or "")
+            self.assertNotIn(str(Path(raw)), result.admin_diagnostic or "")
+
     def test_read_only_profile_must_reject_workspace_write(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch.dict(
             os.environ,
