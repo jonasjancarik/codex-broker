@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import errno
+import os
 import re
 import shutil
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +27,229 @@ def materialized_skill_path(overlay: Path, skill: "SkillRef") -> Path:
     """Return the native skill path exposed from one per-turn overlay."""
     safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", skill.name)
     return overlay / ".agents" / "skills" / safe_name / "SKILL.md"
+
+
+@dataclass(frozen=True)
+class SkillSnapshotLimits:
+    """Bound work and storage consumed by one mounted skill snapshot."""
+
+    max_files: int = 1_024
+    max_directories: int = 1_024
+    max_depth: int = 16
+    max_total_bytes: int = 32 * 1024 * 1024
+    max_file_bytes: int = 8 * 1024 * 1024
+
+
+DEFAULT_SKILL_SNAPSHOT_LIMITS = SkillSnapshotLimits()
+
+
+@dataclass(frozen=True)
+class SkillSnapshot:
+    source_path: str
+    source_identity: str
+    sha256: str
+    file_count: int
+    total_bytes: int
+
+    def audit_payload(self, name: str) -> dict[str, Any]:
+        return {
+            "name": name,
+            "sourcePath": self.source_path,
+            "sourceIdentity": self.source_identity,
+            "snapshotSha256": self.sha256,
+            "fileCount": self.file_count,
+            "totalBytes": self.total_bytes,
+        }
+
+
+@dataclass
+class _SnapshotTraversal:
+    limits: SkillSnapshotLimits
+    digest: Any
+    file_count: int = 0
+    directory_count: int = 1
+    total_bytes: int = 0
+    saw_skill_file: bool = False
+
+
+def snapshot_skill_directory(
+    source: Path,
+    destination: Path,
+    *,
+    limits: SkillSnapshotLimits = DEFAULT_SKILL_SNAPSHOT_LIMITS,
+) -> SkillSnapshot:
+    """Securely copy and hash one mounted skill into an ephemeral overlay.
+
+    The traversal only opens entries relative to an already-open parent
+    directory descriptor. `O_NOFOLLOW` prevents symlink replacement from
+    escaping the mounted tree, and `O_NONBLOCK` ensures unsupported FIFOs never
+    stall materialization. Source bytes are copied and hashed from the same file
+    descriptor; no checked source path is reopened by pathname.
+    """
+    _require_secure_snapshot_platform()
+    _validate_snapshot_limits(limits)
+    source_fd = _open_source_directory(source)
+    try:
+        source_metadata = os.fstat(source_fd)
+        digest = hashlib.sha256(b"codex-broker-skill-snapshot-v2\\0")
+        traversal = _SnapshotTraversal(limits=limits, digest=digest)
+        try:
+            destination.mkdir(mode=0o700)
+            _snapshot_directory(source_fd, destination, (), 0, traversal, source_metadata.st_mode)
+            destination.chmod(_snapshot_directory_mode(source_metadata.st_mode))
+        except OSError as exc:
+            raise BundleError(f"Could not copy mounted skill into its per-turn snapshot: {source}") from exc
+        if not traversal.saw_skill_file:
+            raise BundleError("Mounted skill is missing SKILL.md.")
+        return SkillSnapshot(
+            source_path=str(source),
+            source_identity=f"posix:{source_metadata.st_dev}:{source_metadata.st_ino}",
+            sha256=digest.hexdigest(),
+            file_count=traversal.file_count,
+            total_bytes=traversal.total_bytes,
+        )
+    finally:
+        os.close(source_fd)
+
+
+def _require_secure_snapshot_platform() -> None:
+    required = ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK", "O_CLOEXEC")
+    if os.name != "posix" or any(not hasattr(os, flag) for flag in required):
+        raise BundleError("Mounted skill snapshots require POSIX directory-descriptor support.")
+
+
+def _validate_snapshot_limits(limits: SkillSnapshotLimits) -> None:
+    if any(
+        value <= 0
+        for value in (
+            limits.max_files,
+            limits.max_directories,
+            limits.max_depth,
+            limits.max_total_bytes,
+            limits.max_file_bytes,
+        )
+    ):
+        raise ValueError("Skill snapshot limits must all be greater than zero.")
+    if limits.max_file_bytes > limits.max_total_bytes:
+        raise ValueError("Skill snapshot max_file_bytes cannot exceed max_total_bytes.")
+
+
+def _open_source_directory(source: Path) -> int:
+    try:
+        descriptor = os.open(
+            source,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        raise BundleError(f"Mounted skill directory is unavailable: {source}") from exc
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.close(descriptor)
+        raise BundleError(f"Mounted skill directory is not a directory: {source}")
+    return descriptor
+
+
+def _snapshot_directory(
+    source_fd: int,
+    destination: Path,
+    parts: tuple[str, ...],
+    depth: int,
+    traversal: _SnapshotTraversal,
+    source_mode: int,
+) -> None:
+    # scandir takes ownership of a supplied descriptor, so give it a duplicate
+    # and retain the opened parent descriptor used by all child opens below.
+    with os.scandir(os.dup(source_fd)) as entries:
+        names = sorted(entry.name for entry in entries)
+    for name in names:
+        relative_parts = (*parts, name)
+        relative = "/".join(relative_parts)
+        entry_depth = depth + 1
+        if entry_depth > traversal.limits.max_depth:
+            raise BundleError(f"Mounted skill exceeds maximum snapshot depth at {relative}.")
+        entry_fd = _open_child(source_fd, name, relative)
+        try:
+            metadata = os.fstat(entry_fd)
+            if stat.S_ISDIR(metadata.st_mode):
+                traversal.directory_count += 1
+                if traversal.directory_count > traversal.limits.max_directories:
+                    raise BundleError("Mounted skill exceeds the maximum snapshot directory count.")
+                target = destination / name
+                target.mkdir(mode=0o700)
+                _update_snapshot_digest(traversal.digest, b"D", relative)
+                _snapshot_directory(entry_fd, target, relative_parts, entry_depth, traversal, metadata.st_mode)
+                target.chmod(_snapshot_directory_mode(metadata.st_mode))
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise BundleError(f"Mounted skill contains an unsupported entry: {relative}")
+            traversal.file_count += 1
+            if traversal.file_count > traversal.limits.max_files:
+                raise BundleError("Mounted skill exceeds the maximum snapshot file count.")
+            if metadata.st_size > traversal.limits.max_file_bytes:
+                raise BundleError(f"Mounted skill file exceeds the per-file snapshot byte limit: {relative}")
+            _snapshot_file(entry_fd, destination / name, relative, metadata.st_mode, traversal)
+            if relative == "SKILL.md":
+                traversal.saw_skill_file = True
+        finally:
+            os.close(entry_fd)
+    destination.chmod(_snapshot_directory_mode(source_mode))
+
+
+def _open_child(parent_fd: int, name: str, relative: str) -> int:
+    try:
+        return os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise BundleError(f"Mounted skill contains a symbolic link: {relative}") from exc
+        raise BundleError(f"Mounted skill entry is unavailable: {relative}") from exc
+
+
+def _snapshot_file(
+    source_fd: int,
+    destination: Path,
+    relative: str,
+    source_mode: int,
+    traversal: _SnapshotTraversal,
+) -> None:
+    _update_snapshot_digest(traversal.digest, b"F", relative)
+    copied = 0
+    with destination.open("xb") as target:
+        while chunk := os.read(source_fd, 1024 * 1024):
+            copied += len(chunk)
+            if copied > traversal.limits.max_file_bytes:
+                raise BundleError(f"Mounted skill file exceeds the per-file snapshot byte limit: {relative}")
+            traversal.total_bytes += len(chunk)
+            if traversal.total_bytes > traversal.limits.max_total_bytes:
+                raise BundleError("Mounted skill exceeds the total snapshot byte limit.")
+            traversal.digest.update(chunk)
+            target.write(chunk)
+    destination.chmod(_snapshot_file_mode(source_mode))
+
+
+def _update_snapshot_digest(digest: Any, kind: bytes, relative: str) -> None:
+    encoded = relative.encode("utf-8", "surrogateescape")
+    digest.update(kind)
+    digest.update(len(encoded).to_bytes(4, "big"))
+    digest.update(encoded)
+
+
+def _snapshot_file_mode(mode: int) -> int:
+    """Retain read/execute bits but never inherit source write permissions."""
+    return (stat.S_IMODE(mode) & 0o555) or 0o444
+
+
+def _snapshot_directory_mode(mode: int) -> int:
+    """Keep a snapshot traversable and removable by the broker owner.
+
+    Workspace-write may still alter this disposable copy; its directory mode is
+    not an isolation boundary. The original mounted source is never linked or
+    written, and its per-turn snapshot is deleted during turn cleanup.
+    """
+    return (stat.S_IMODE(mode) & 0o555) | 0o700
 
 
 @dataclass(frozen=True)
@@ -78,10 +304,23 @@ class ResolvedBundle:
     digest: str
 
 
+@dataclass(frozen=True)
+class MaterializedOverlay:
+    path: Path
+    skill_snapshots: tuple[SkillSnapshot, ...]
+
+
 class BundleRegistry:
-    def __init__(self, config: BrokerConfig, state: StateStore) -> None:
+    def __init__(
+        self,
+        config: BrokerConfig,
+        state: StateStore,
+        *,
+        skill_snapshot_limits: SkillSnapshotLimits = DEFAULT_SKILL_SNAPSHOT_LIMITS,
+    ) -> None:
         self.config = config
         self.state = state
+        self.skill_snapshot_limits = skill_snapshot_limits
         ensure_dir(config.inline_bundle_root)
         ensure_dir(config.overlay_root)
 
@@ -132,11 +371,21 @@ class BundleRegistry:
         turn_id: str,
         adapter_context: dict[str, Any] | None = None,
     ) -> Path | None:
+        materialized = self.materialize_with_provenance(bundle, turn_id, adapter_context)
+        return materialized.path if materialized else None
+
+    def materialize_with_provenance(
+        self,
+        bundle: ResolvedBundle | None,
+        turn_id: str,
+        adapter_context: dict[str, Any] | None = None,
+    ) -> MaterializedOverlay | None:
         if bundle is None:
             return None
         overlay = ensure_dir(self.config.overlay_root / turn_id)
         try:
             ensure_dir(overlay / ".agents" / "skills")
+            skill_snapshots: list[SkillSnapshot] = []
             for skill in bundle.skills:
                 target = materialized_skill_path(overlay, skill).parent
                 if target.exists() or target.is_symlink():
@@ -144,7 +393,13 @@ class BundleRegistry:
                         shutil.rmtree(target)
                     else:
                         target.unlink()
-                target.symlink_to(skill.path.parent, target_is_directory=True)
+                skill_snapshots.append(
+                    snapshot_skill_directory(
+                        skill.path.parent,
+                        target,
+                        limits=self.skill_snapshot_limits,
+                    )
+                )
             if bundle.prompts:
                 prompts_root = ensure_dir(overlay / "prompts")
                 for prompt in bundle.prompts:
@@ -187,7 +442,7 @@ class BundleRegistry:
             if mcp_servers:
                 codex_dir = ensure_dir(overlay / ".codex")
                 (codex_dir / "config.toml").write_text(self._mcp_config_toml(mcp_servers), encoding="utf-8")
-            return overlay
+            return MaterializedOverlay(overlay, tuple(skill_snapshots))
         except Exception:
             self.cleanup_overlay(turn_id)
             raise

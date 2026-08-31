@@ -239,9 +239,10 @@ Supported keys:
 Managed sandbox roots are canonicalized and must be under both the global and
 profile allowlists. For bundled managed turns with an explicit `cwd`, the broker
 adds only the per-turn overlay as a second runtime root so the attached native
-skill can be read; it never adds the original mounted skill source or a
-workspace parent. The generated profiles deny `:root`, permit only the minimal
-runtime reads and selected roots, and explicitly deny broker auth/state paths,
+skill snapshot can be read; it never adds the original mounted skill source or
+a workspace parent. The snapshot is content-digest verified, unique to its turn,
+and rejects symbolic links and non-regular entries. The generated profiles deny
+`:root`, permit only the minimal runtime reads and selected roots, and explicitly deny broker auth/state paths,
 `/run/secrets`, configured extra deny paths, and common workspace credential
 filenames. `workspace-write` permits its selected roots; `read-only` does not.
 The legacy `sandboxPolicy`, `permissions`,
@@ -251,7 +252,10 @@ are rejected from callers.
 The cached no-model canary uses `command/exec` with its temporary workspace as
 `cwd`. Pinned Codex `0.151.0` does not support `runtimeWorkspaceRoots` on that
 command, so `cwd` is its runtime workspace root; normal thread and turn calls
-receive the broker-canonicalized `runtimeWorkspaceRoots` field.
+receive the broker-canonicalized `runtimeWorkspaceRoots` field. The canary
+therefore proves the materialized snapshot path under the production profile,
+while parameter tests assert the exact ordered `[cwd, overlay]` runtime roots
+used by normal managed calls.
 
 To select `danger-full-access`, configure
 `CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE` and send its value in

@@ -280,7 +280,11 @@ def handle_app_server() -> int:
                 send(
                     {
                         "id": request_id,
-                        "result": {"exitCode": 0 if os.environ.get("FAKE_CODEX_PROBE_SKILL_MUTABLE") == "1" else 1},
+                        "result": {
+                            "exitCode": 1
+                            if os.environ.get("FAKE_CODEX_PROBE_SKILL_SNAPSHOT_IMMUTABLE") == "1"
+                            else 0
+                        },
                     }
                 )
             elif "sibling-job" in command:
