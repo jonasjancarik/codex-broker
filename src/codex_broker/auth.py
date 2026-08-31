@@ -30,14 +30,8 @@ PROFILE_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]")
 AUTH_PROBE_PROMPT = "Reply exactly: OK"
 _PATH_SEGMENT_RE = re.compile(r"^[^/\\]+$")
 _WORKSPACE_SECRET_GLOBS = (
-    ".env",
-    ".env.*",
     "**/.env",
     "**/.env.*",
-    "*.key",
-    "*.pem",
-    "*.p12",
-    "*.pfx",
     "**/*.key",
     "**/*.pem",
     "**/*.p12",
@@ -47,6 +41,10 @@ _WORKSPACE_SECRET_GLOBS = (
     "**/id_dsa",
     "**/id_ecdsa",
 )
+# Codex 0.151 materializes `:workspace_roots` deny globs for every runtime
+# root, and its `**/` glob prefix matches zero or more path components. Each
+# recursive pattern therefore denies both the root file and nested copies; do
+# not add exact root masks, because Bubblewrap may try to create absent paths.
 
 
 def _toml_string(value: str) -> str:

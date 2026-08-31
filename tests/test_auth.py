@@ -92,16 +92,40 @@ class AuthProfileTests(unittest.TestCase):
             self.assertEqual(workspace_write["filesystem"][":workspace_roots"]["."], "write")
             self.assertEqual(workspace_write["filesystem"][":slash_tmp"], "deny")
             self.assertEqual(workspace_write["filesystem"][":tmpdir"], "deny")
+            recursive_secret_globs = {
+                "**/.env",
+                "**/.env.*",
+                "**/*.key",
+                "**/*.pem",
+                "**/*.p12",
+                "**/*.pfx",
+                "**/id_rsa",
+                "**/id_ed25519",
+                "**/id_dsa",
+                "**/id_ecdsa",
+            }
+            redundant_root_masks = {
+                ".env",
+                ".env.*",
+                "*.key",
+                "*.pem",
+                "*.p12",
+                "*.pfx",
+                "id_rsa",
+                "id_ed25519",
+                "id_dsa",
+                "id_ecdsa",
+            }
             for profile in (read_only, workspace_write):
                 filesystem = profile["filesystem"]
                 self.assertEqual(filesystem["glob_scan_max_depth"], 12)
                 self.assertEqual(filesystem[str(config.auth_root.resolve())], "deny")
                 self.assertEqual(filesystem[str(config.state_db_path.parent.resolve())], "deny")
                 self.assertEqual(filesystem["/run/secrets"], "deny")
-                self.assertEqual(filesystem[":workspace_roots"]["**/.env.*"], "deny")
-                self.assertEqual(filesystem[":workspace_roots"]["**/*.pem"], "deny")
-                self.assertEqual(filesystem[":workspace_roots"]["**/id_ed25519"], "deny")
-                self.assertNotIn("id_ed25519", filesystem[":workspace_roots"])
+                workspace_denies = filesystem[":workspace_roots"]
+                self.assertTrue(recursive_secret_globs.issubset(workspace_denies))
+                self.assertTrue(all(workspace_denies[pattern] == "deny" for pattern in recursive_secret_globs))
+                self.assertTrue(redundant_root_masks.isdisjoint(workspace_denies))
 
     def test_managed_config_file_is_private_and_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:

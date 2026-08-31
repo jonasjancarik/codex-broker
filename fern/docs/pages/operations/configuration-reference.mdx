@@ -245,6 +245,10 @@ and rejects symbolic links and non-regular entries. The generated profiles deny
 `:root`, permit only the minimal runtime reads and selected roots, and explicitly deny broker auth/state paths,
 `/run/secrets`, configured extra deny paths, and common workspace credential
 filenames. `workspace-write` permits its selected roots; `read-only` does not.
+Credential deny rules use Codex 0.151 root-inclusive recursive `**/` patterns,
+which protect both a workspace root and nested paths. Exact root masks are
+intentionally omitted because Bubblewrap can try to materialize absent exact
+deny targets when a turn has multiple runtime roots.
 The legacy `sandboxPolicy`, `permissions`,
 `permissionProfile`, and `runtimeWorkspaceRoots` fields are broker-managed and
 are rejected from callers.
