@@ -933,8 +933,8 @@ class TurnScheduler:
             )
             bundle = self.bundles.resolve(turn.get("bundle_id")) if turn.get("bundle_id") else None
             config_profile_config = self._config_profile_config(str(turn["config_profile"]))
-            overlay = (
-                self.bundles.materialize(
+            materialized_overlay = (
+                self.bundles.materialize_with_provenance(
                     bundle,
                     turn_id,
                     adapter_context={
@@ -951,6 +951,27 @@ class TurnScheduler:
                 if bundle
                 else None
             )
+            overlay = materialized_overlay.path if materialized_overlay else None
+            if materialized_overlay and materialized_overlay.skill_snapshots:
+                self.state.append_audit(
+                    owner_hash,
+                    "security.bundle_skill_snapshot",
+                    {
+                        "bundleDigest": bundle.digest if bundle else None,
+                        "skills": [
+                            snapshot.audit_payload(skill.name)
+                            for skill, snapshot in zip(
+                                bundle.skills,
+                                materialized_overlay.skill_snapshots,
+                                strict=True,
+                            )
+                        ],
+                    },
+                    auth_principal_hash=str(turn["auth_principal_hash"]),
+                    profile=str(turn["profile"]),
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                )
             cwd = (
                 Path(turn["cwd"]).resolve()
                 if turn.get("cwd")

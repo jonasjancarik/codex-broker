@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -15,7 +16,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .auth import render_managed_codex_config
+from .bundles import BundleRegistry, materialized_skill_path
 from .config import BrokerConfig
+from .state import StateStore
 from .util import clean_process_env, redact, utc_now
 
 
@@ -106,6 +109,7 @@ class SandboxProbe:
 
     def _run_linux(self, started: float) -> SandboxProbeResult:
         process: Any | None = None
+        state: StateStore | None = None
         version = self._safe_version()
         try:
             with tempfile.TemporaryDirectory(prefix="codex-broker-sandbox-") as root_text:
@@ -114,17 +118,15 @@ class SandboxProbe:
                 jobs = root / "jobs"
                 workspace = jobs / "own-job"
                 sibling_workspace = jobs / "sibling-job"
-                mounted_skills = root / "mounted-skills"
-                mounted_skill = mounted_skills / "normalize-report-references"
-                overlay = root / "overlays" / "turn-sandbox-probe"
-                attached_skill = overlay / ".agents" / "skills" / "normalize-report-references" / "SKILL.md"
+                bundle_root = root / "bundles"
+                bundle_dir = bundle_root / "sandbox-probe"
+                mounted_skill = bundle_dir / "skills" / "normalize-report-references"
                 canary = root / "protected-canary"
                 control_plane = workspace / "control-plane"
                 home.mkdir()
                 workspace.mkdir(parents=True)
                 sibling_workspace.mkdir(parents=True)
                 mounted_skill.mkdir(parents=True)
-                attached_skill.parent.parent.mkdir(parents=True)
                 control_plane.mkdir()
                 canary.write_text("sandbox-probe-canary", encoding="utf-8")
                 (control_plane / "secret-canary").write_text("control-plane-canary", encoding="utf-8")
@@ -138,11 +140,43 @@ class SandboxProbe:
                 source_skill.write_text(skill_marker, encoding="utf-8")
                 source_skill.chmod(0o444)
                 mounted_skill.chmod(0o555)
-                attached_skill.parent.symlink_to(mounted_skill, target_is_directory=True)
                 probe_config = replace(
                     self.config,
+                    data_dir=root / "broker-data",
+                    allowed_bundle_roots=(bundle_root,),
                     sandbox_deny_paths=(*self.config.sandbox_deny_paths, control_plane),
                 )
+                bundle_dir.mkdir(exist_ok=True)
+                (bundle_dir / "bundle.json").write_text(
+                    json.dumps(
+                        {
+                            "id": "sandbox-probe",
+                            "skills": [
+                                {
+                                    "name": "normalize-report-references",
+                                    "source": {"type": "mount", "path": str(mounted_skill)},
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                state = StateStore(probe_config.state_db_path)
+                bundles = BundleRegistry(probe_config, state)
+                bundle = bundles.resolve("sandbox-probe")
+                assert bundle is not None
+                overlay = bundles.materialize(bundle, "turn-sandbox-probe")
+                assert overlay is not None
+                sibling_overlay = bundles.materialize(bundle, "turn-sibling-probe")
+                assert sibling_overlay is not None
+                attached_skill = materialized_skill_path(overlay, bundle.skills[0])
+                sibling_skill = materialized_skill_path(sibling_overlay, bundle.skills[0])
+                if attached_skill.is_symlink() or attached_skill.parent.is_symlink():
+                    raise RuntimeError("managed sandbox materialized the attached skill as a symlink")
+                if attached_skill.stat().st_ino == source_skill.stat().st_ino:
+                    raise RuntimeError("managed sandbox materialized the attached skill as a linked source")
+                if sibling_skill.stat().st_ino == attached_skill.stat().st_ino:
+                    raise RuntimeError("managed sandbox reused a skill snapshot across jobs")
                 config_path = home / "config.toml"
                 config_path.write_text(render_managed_codex_config(probe_config), encoding="utf-8")
                 config_path.chmod(0o600)
@@ -153,6 +187,7 @@ class SandboxProbe:
                         "HOME": str(home),
                         "CODEX_CREDENTIAL_STORE": self.config.credential_store,
                         "FAKE_CODEX_PROBE_SKILL_SOURCE": str(source_skill),
+                        "FAKE_CODEX_PROBE_SKILL_SNAPSHOT": str(attached_skill),
                     }
                 )
                 process = self._popen_factory(
@@ -192,12 +227,15 @@ class SandboxProbe:
                 )
                 if not _command_succeeded(attached_skill_readable):
                     raise RuntimeError("managed sandbox could not read the attached skill overlay")
+                snapshot_marker = attached_skill.read_text(encoding="utf-8")
+                snapshot_mode = attached_skill.stat().st_mode & 0o777
+                snapshot_digest = hashlib.sha256(attached_skill.read_bytes()).hexdigest()
                 # command/exec cannot accept runtimeWorkspaceRoots. Running it
-                # from the overlay with the production workspace-write profile
-                # exercises the same writable overlay root that a managed turn
-                # uses for the attached native skill; multi-root wiring is
+                # from the materialized overlay with the production
+                # workspace-write profile verifies that the attached snapshot
+                # remains read-only during a managed turn; multi-root wiring is
                 # covered by the thread/turn parameter tests.
-                mounted_skill_mutation = rpc.request(
+                snapshot_mutation = rpc.request(
                     "command/exec",
                     {
                         "command": [
@@ -209,8 +247,14 @@ class SandboxProbe:
                         "permissionProfile": PROBE_PROFILE,
                     },
                 )
-                if _command_succeeded(mounted_skill_mutation):
-                    raise RuntimeError("managed sandbox could modify the mounted skill target")
+                if _command_succeeded(snapshot_mutation):
+                    raise RuntimeError("managed sandbox could modify the attached skill snapshot")
+                if attached_skill.read_text(encoding="utf-8") != snapshot_marker:
+                    raise RuntimeError("attached skill snapshot content changed")
+                if attached_skill.stat().st_mode & 0o777 != snapshot_mode:
+                    raise RuntimeError("attached skill snapshot mode changed")
+                if hashlib.sha256(attached_skill.read_bytes()).hexdigest() != snapshot_digest:
+                    raise RuntimeError("attached skill snapshot digest changed")
                 if source_skill.read_text(encoding="utf-8") != skill_marker:
                     raise RuntimeError("mounted skill target content changed")
                 if source_skill.stat().st_mode & 0o777 != 0o444:
@@ -266,6 +310,7 @@ class SandboxProbe:
                     (sibling_workspace / "sibling-sentinel", "sibling job sentinel"),
                     (sibling_workspace / "output", "sibling job output"),
                     (sibling_workspace / ".agents" / "skills", "sibling job skills"),
+                    (sibling_skill, "sibling job skill snapshot"),
                 ):
                     denied = rpc.request(
                         "command/exec",
@@ -277,6 +322,10 @@ class SandboxProbe:
                     )
                     if not _command_succeeded(denied):
                         raise RuntimeError(f"managed sandbox could discover the {label}")
+                bundles.cleanup_overlay("turn-sandbox-probe")
+                bundles.cleanup_overlay("turn-sibling-probe")
+                if overlay.exists() or sibling_overlay.exists():
+                    raise RuntimeError("managed sandbox did not remove per-turn skill snapshots")
                 return self._make_result("healthy", started, backend="bubblewrap", version=version)
         except TimeoutError as exc:
             return self._make_result("failed", started, backend="bubblewrap", version=version, diagnostic=f"sandbox probe timed out: {exc}")
@@ -285,6 +334,8 @@ class SandboxProbe:
         finally:
             if process is not None:
                 _reap(process)
+            if state is not None:
+                state.close()
 
     def _make_result(self, status: str, started: float, *, backend: str | None, version: str | None = None, diagnostic: str | None = None) -> SandboxProbeResult:
         return SandboxProbeResult(status, self.platform_name, backend, version, PROBE_PROFILE, utc_now(), max(0.0, self._monotonic() - started), redact(diagnostic) if diagnostic else None)

@@ -119,11 +119,17 @@ For a bundled managed turn with an explicit working directory, the broker
 passes exactly two runtime roots: that canonical working directory and the
 turn's ephemeral overlay. Native skill input always names
 `<overlay>/.agents/skills/<skill>/SKILL.md`, never the original mounted source
-path. The overlay contains only disposable bundle material and is removed when
-the turn ends; it may share the workspace-write profile, but it contains no
-broker state, credentials, or persistent trusted configuration. Mount skill
-sources read-only. A missing materialized skill fails the turn before Codex
-starts work. Job hosts must supply the individual job directory as `cwd`, not a
+path. The broker snapshots the mounted skill directory into that unique,
+per-turn path, verifies its content digest before Codex starts, and rejects
+symbolic links or non-regular entries. The overlay contains only disposable
+bundle material and is removed when the turn ends; it may share the
+workspace-write profile, but it contains no broker state, credentials, or
+persistent trusted configuration. Attached skill snapshots remain read-only
+during managed turns, including `workspace-write`; executable supporting files
+retain their execute bits. Mount skill sources must be trusted host inputs and
+read-only to the broker during a turn. The Linux release path uses POSIX
+descriptor-relative snapshotting and fails closed where that support is
+unavailable. Job hosts must supply the individual job directory as `cwd`, not a
 parent directory containing other jobs.
 
 The no-model sandbox preflight uses `command/exec` with its temporary workspace
@@ -407,13 +413,13 @@ docker compose -f examples/docker-compose.yml up -d
 ```
 
 CI runs the no-model sandbox canary using the same profile before publishing an
-image. It checks an attached overlay skill, its read-only mounted target, an
+image. It checks an attached overlay snapshot, its read-only mounted source, an
 ordinary job workspace read/write, and sibling-job sentinel, output, and skill
-paths. `command/exec` has no multi-root parameter, so the canary attempts the
-mounted-skill mutation from the overlay with the production workspace-write
-profile; thread and turn tests verify the combined job-plus-overlay roots. Do
-not publish an image until a release-time Linux container canary has also
-exercised the actual job-plus-overlay roots. Do not replace it with
+paths. `command/exec` has no multi-root parameter, so the canary runs from the
+snapshot root and proves that neither the snapshot nor its mounted source can
+be modified. Parameter tests assert the exact ordered `[cwd, overlay]` roots on
+normal thread and turn calls. Do not publish an image until a release-time Linux
+container canary has also exercised the actual job-plus-overlay roots. Do not replace it with
 `seccomp=unconfined`, privileged mode, or
 `CAP_SYS_ADMIN`; those remove the outer-container protection that makes the
 managed profile meaningful.

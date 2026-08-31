@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 import unittest
@@ -7,7 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_broker.bundles import BundleError
+from codex_broker import bundles as bundles_module
+from codex_broker.bundles import BundleError, SkillSnapshotLimits, materialized_skill_path
 from codex_broker.http_api import BrokerServices
 from test_broker import config_for, wait_turn
 
@@ -38,12 +40,18 @@ class BundleRegistryTests(unittest.TestCase):
                 services.pool.close_all()
                 services.state.close()
 
-    def test_failed_materialization_removes_its_partial_overlay(self) -> None:
+    def test_skill_snapshot_is_per_turn_digest_verified_and_never_a_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             config = config_for(Path(tmp_raw))
             skill_dir = config.allowed_bundle_roots[0] / "materialized-skill"
             skill_dir.mkdir()
-            (skill_dir / "SKILL.md").write_text("skill", encoding="utf-8")
+            (skill_dir / "SKILL.md").write_text("skill-v1", encoding="utf-8")
+            (skill_dir / "references").mkdir()
+            (skill_dir / "references" / "guide.md").write_text("guide-v1", encoding="utf-8")
+            executable = skill_dir / "scripts" / "check.sh"
+            executable.parent.mkdir()
+            executable.write_text("#!/bin/sh\necho checked\n", encoding="utf-8")
+            executable.chmod(0o755)
             bundle_dir = config.allowed_bundle_roots[0] / "materialized-bundle"
             bundle_dir.mkdir()
             (bundle_dir / "bundle.json").write_text(
@@ -56,13 +64,223 @@ class BundleRegistryTests(unittest.TestCase):
             try:
                 bundle = services.bundles.resolve("materialized-bundle")
                 assert bundle is not None
-                with patch.object(Path, "symlink_to", side_effect=OSError("link denied")):
-                    with self.assertRaisesRegex(OSError, "link denied"):
-                        services.bundles.materialize(bundle, "partial-overlay")
+                first = services.bundles.materialize(bundle, "first-turn")
+                assert first is not None
+                first_skill = materialized_skill_path(first, bundle.skills[0])
+                self.assertFalse(first_skill.parent.is_symlink())
+                self.assertEqual(first_skill.read_text(encoding="utf-8"), "skill-v1")
+                self.assertEqual((first_skill.parent / "references" / "guide.md").read_text(encoding="utf-8"), "guide-v1")
+                snapshot_script = first_skill.parent / "scripts" / "check.sh"
+                self.assertEqual(snapshot_script.read_text(encoding="utf-8"), "#!/bin/sh\necho checked\n")
+                self.assertTrue(snapshot_script.stat().st_mode & 0o111)
+                self.assertNotEqual(first_skill.stat().st_ino, (skill_dir / "SKILL.md").stat().st_ino)
+
+                (skill_dir / "SKILL.md").write_text("skill-v2", encoding="utf-8")
+                second = services.bundles.materialize(bundle, "second-turn")
+                assert second is not None
+                second_skill = materialized_skill_path(second, bundle.skills[0])
+                self.assertEqual(first_skill.read_text(encoding="utf-8"), "skill-v1")
+                self.assertEqual(second_skill.read_text(encoding="utf-8"), "skill-v2")
+                self.assertNotEqual(first_skill.stat().st_ino, second_skill.stat().st_ino)
+                self.assertFalse(first_skill.parent.is_symlink())
+                self.assertFalse(second_skill.parent.is_symlink())
+
+                services.bundles.cleanup_overlay("first-turn")
+                self.assertFalse(first.exists())
+                self.assertTrue(second.exists())
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_skill_snapshot_rejects_symlinked_supporting_files_and_removes_partial_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            skill_dir = config.allowed_bundle_roots[0] / "linked-supporting-file"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text("skill", encoding="utf-8")
+            outside = Path(tmp_raw) / "outside.txt"
+            outside.write_text("outside", encoding="utf-8")
+            (skill_dir / "reference.txt").symlink_to(outside)
+            bundle_dir = config.allowed_bundle_roots[0] / "linked-supporting-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.json").write_text(
+                '{"id":"linked-supporting-bundle","skills":[{"name":"linked","source":{"type":"mount","path":"'
+                + str(skill_dir)
+                + '"}}]}',
+                encoding="utf-8",
+            )
+            services = BrokerServices.build(config)
+            try:
+                bundle = services.bundles.resolve("linked-supporting-bundle")
+                assert bundle is not None
+                with self.assertRaisesRegex(BundleError, "symbolic link"):
+                    services.bundles.materialize(bundle, "partial-overlay")
                 self.assertFalse((config.overlay_root / "partial-overlay").exists())
             finally:
                 services.pool.close_all()
                 services.state.close()
+
+    @unittest.skipUnless(os.name == "posix", "descriptor-relative snapshots require POSIX")
+    def test_skill_snapshot_rejects_entry_swapped_to_symlink_after_enumeration_without_leaking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            skill_dir, bundle = self._bundle_with_skill(config, "raced-symlink")
+            (skill_dir / "checked.txt").write_text("safe", encoding="utf-8")
+            outside = Path(tmp_raw) / "outside-secret.txt"
+            outside.write_text("outside-snapshot-secret", encoding="utf-8")
+            services = BrokerServices.build(config)
+            try:
+                resolved = services.bundles.resolve(bundle)
+                assert resolved is not None
+                original_open_child = bundles_module._open_child
+                swapped = False
+
+                def swap_after_enumeration(parent_fd: int, name: str, relative: str) -> int:
+                    nonlocal swapped
+                    if name == "checked.txt" and not swapped:
+                        swapped = True
+                        (skill_dir / name).unlink()
+                        (skill_dir / name).symlink_to(outside)
+                    return original_open_child(parent_fd, name, relative)
+
+                with patch.object(bundles_module, "_open_child", side_effect=swap_after_enumeration):
+                    with self.assertRaisesRegex(BundleError, "symbolic link") as raised:
+                        services.bundles.materialize(resolved, "raced-overlay")
+                self.assertTrue(swapped)
+                self.assertNotIn("outside-snapshot-secret", str(raised.exception))
+                self.assertNotIn(str(outside), str(raised.exception))
+                self.assertFalse((config.overlay_root / "raced-overlay").exists())
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    @unittest.skipUnless(os.name == "posix", "descriptor-relative snapshots require POSIX")
+    def test_skill_snapshot_rejects_fifo_swapped_after_enumeration_without_hanging(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw))
+            skill_dir, bundle = self._bundle_with_skill(config, "raced-fifo")
+            (skill_dir / "checked.txt").write_text("safe", encoding="utf-8")
+            services = BrokerServices.build(config)
+            try:
+                resolved = services.bundles.resolve(bundle)
+                assert resolved is not None
+                original_open_child = bundles_module._open_child
+
+                def swap_after_enumeration(parent_fd: int, name: str, relative: str) -> int:
+                    if name == "checked.txt":
+                        (skill_dir / name).unlink()
+                        os.mkfifo(skill_dir / name)
+                    return original_open_child(parent_fd, name, relative)
+
+                started = time.monotonic()
+                with patch.object(bundles_module, "_open_child", side_effect=swap_after_enumeration):
+                    with self.assertRaisesRegex(BundleError, "unsupported entry"):
+                        services.bundles.materialize(resolved, "fifo-overlay")
+                self.assertLess(time.monotonic() - started, 1)
+                self.assertFalse((config.overlay_root / "fifo-overlay").exists())
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_skill_snapshot_budgets_fail_and_remove_partial_overlays(self) -> None:
+        cases = (
+            (
+                "file-count",
+                SkillSnapshotLimits(1, 10, 10, 1_024, 1_024),
+                lambda skill: (skill / "extra.txt").write_text("extra", encoding="utf-8"),
+                "file count",
+            ),
+            (
+                "depth",
+                SkillSnapshotLimits(10, 10, 1, 1_024, 1_024),
+                lambda skill: (
+                    (skill / "nested").mkdir(),
+                    (skill / "nested" / "note.txt").write_text("note", encoding="utf-8"),
+                ),
+                "depth",
+            ),
+            (
+                "total-bytes",
+                SkillSnapshotLimits(10, 10, 10, 5, 5),
+                lambda skill: (skill / "extra.txt").write_text("x", encoding="utf-8"),
+                "total snapshot byte limit",
+            ),
+            (
+                "file-bytes",
+                SkillSnapshotLimits(10, 10, 10, 1_024, 1),
+                lambda skill: None,
+                "per-file snapshot byte limit",
+            ),
+        )
+        for name, limits, prepare, message in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp_raw:
+                config = config_for(Path(tmp_raw))
+                skill_dir, bundle_id = self._bundle_with_skill(config, f"budget-{name}")
+                prepare(skill_dir)
+                services = BrokerServices.build(config)
+                try:
+                    services.bundles.skill_snapshot_limits = limits
+                    bundle = services.bundles.resolve(bundle_id)
+                    assert bundle is not None
+                    with self.assertRaisesRegex(BundleError, message):
+                        services.bundles.materialize(bundle, f"budget-{name}")
+                    self.assertFalse((config.overlay_root / f"budget-{name}").exists())
+                finally:
+                    services.pool.close_all()
+                    services.state.close()
+
+    def test_skill_snapshot_provenance_is_audited_before_turn_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = config_for(Path(tmp_raw), turn_delay=0.01)
+            skill_dir, bundle_id = self._bundle_with_skill(config, "audited-snapshot")
+            (skill_dir / "SKILL.md").write_text("private skill body", encoding="utf-8")
+            services = BrokerServices.build(config)
+            try:
+                thread = services.scheduler.create_thread(
+                    "owner-a",
+                    {"bundleId": bundle_id, "cwd": str(config.allowed_workspace_roots[0])},
+                )
+                started = services.scheduler.start_turn(
+                    "owner-a",
+                    thread["threadId"],
+                    {"input": [{"type": "text", "text": "use the attached skill"}]},
+                )
+                completed = wait_turn(services, "owner-a", thread["threadId"], started["turnId"])
+                self.assertEqual(completed["status"], "completed")
+                audits = services.state.list_audit_logs(
+                    services.auth.hash_owner("owner-a"),
+                    action="security.bundle_skill_snapshot",
+                    thread_id=thread["threadId"],
+                    turn_id=started["turnId"],
+                )
+                self.assertEqual(len(audits), 1)
+                payload = audits[0]["payload"]
+                self.assertEqual(payload["bundleDigest"], services.state.get_turn(
+                    services.auth.hash_owner("owner-a"), thread["threadId"], started["turnId"]
+                )["bundle_digest"])
+                self.assertEqual(payload["skills"][0]["name"], "audited-snapshot")
+                self.assertEqual(payload["skills"][0]["sourcePath"], str(skill_dir.resolve()))
+                self.assertRegex(payload["skills"][0]["sourceIdentity"], r"^posix:\d+:\d+$")
+                self.assertRegex(payload["skills"][0]["snapshotSha256"], r"^[0-9a-f]{64}$")
+                self.assertNotIn("private skill body", str(payload))
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    @staticmethod
+    def _bundle_with_skill(config: object, bundle_id: str) -> tuple[Path, str]:
+        bundle_root = config.allowed_bundle_roots[0]  # type: ignore[attr-defined]
+        skill_dir = bundle_root / bundle_id / "skills" / "attached"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("skill", encoding="utf-8")
+        bundle_dir = bundle_root / bundle_id
+        (bundle_dir / "bundle.json").write_text(
+            '{"id":"' + bundle_id + '","skills":[{"name":"' + bundle_id + '","source":{"type":"mount","path":"'
+            + str(skill_dir)
+            + '"}}]}',
+            encoding="utf-8",
+        )
+        return skill_dir, bundle_id
 
     def test_bundle_lookup_cannot_escape_mount_or_return_a_different_manifest_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:

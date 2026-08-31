@@ -68,7 +68,7 @@ For each turn that uses a bundle, the broker materializes a temporary overlay:
 ```text
 <data_dir>/workspaces/overlays/<turn-id>/
   AGENTS.md
-  .agents/skills/<skill-name> -> mounted skill directory
+  .agents/skills/<skill-name>/SKILL.md  # verified per-turn snapshot
   .codex/config.toml
   prompts/<prompt-name>.<ext> -> mounted prompt file
   tool-adapters.json
@@ -80,11 +80,17 @@ For a managed turn with an explicit `cwd`, the broker gives Codex exactly two
 runtime roots: the canonical `cwd` and that turn's overlay. Native skill input
 uses the overlay path
 `<overlay>/.agents/skills/<skill-name>/SKILL.md`, rather than the mounted source
-path. The overlay is disposable and deleted after the turn; it can share
-workspace-write because it contains only temporary bundle material, never
-credentials, broker state, or persistent trusted configuration. A missing
-materialized skill fails before the turn starts. The mounted source itself must
-be read-only.
+path. The broker copies the full mounted skill directory into this unique,
+per-turn snapshot and verifies its digest before the turn starts. Snapshot
+trees reject symbolic links and non-regular entries so every resolved path stays
+inside the authorized overlay. The overlay is disposable and deleted after the
+turn; it can share workspace-write because it contains only temporary bundle
+material, never credentials, broker state, or persistent trusted configuration.
+Attached skill snapshots remain read-only during managed turns, including
+workspace-write, while executable supporting files retain their execute bits.
+The mounted source is a trusted host input and must be read-only to the broker
+while a turn runs. Linux releases require POSIX descriptor-relative snapshot
+support; the broker fails closed where that support is unavailable.
 
 For job runners, pass one job directory as `cwd`. Do not pass a parent directory
 that contains sibling jobs, and do not search sibling job workspaces for a skill

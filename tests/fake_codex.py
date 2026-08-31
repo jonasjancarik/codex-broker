@@ -272,6 +272,12 @@ def handle_app_server() -> int:
                 send({"id": request_id, "result": {"exitCode": 1 if os.environ.get("FAKE_CODEX_PROBE_SKILL_UNREADABLE") == "1" else 0}})
             elif "sandbox-probe-skill-mutated" in command:
                 source = Path(os.environ["FAKE_CODEX_PROBE_SKILL_SOURCE"])
+                snapshot = Path(os.environ["FAKE_CODEX_PROBE_SKILL_SNAPSHOT"])
+                if os.environ.get("FAKE_CODEX_PROBE_SNAPSHOT_CONTENT_CHANGED") == "1":
+                    snapshot.chmod(0o644)
+                    snapshot.write_text("changed", encoding="utf-8")
+                if os.environ.get("FAKE_CODEX_PROBE_SNAPSHOT_MODE_CHANGED") == "1":
+                    snapshot.chmod(0o644)
                 if os.environ.get("FAKE_CODEX_PROBE_SKILL_CONTENT_CHANGED") == "1":
                     source.chmod(0o644)
                     source.write_text("changed", encoding="utf-8")
@@ -280,7 +286,11 @@ def handle_app_server() -> int:
                 send(
                     {
                         "id": request_id,
-                        "result": {"exitCode": 0 if os.environ.get("FAKE_CODEX_PROBE_SKILL_MUTABLE") == "1" else 1},
+                        "result": {
+                            "exitCode": 0
+                            if os.environ.get("FAKE_CODEX_PROBE_SKILL_SNAPSHOT_MUTABLE") == "1"
+                            else 1
+                        },
                     }
                 )
             elif "sibling-job" in command:

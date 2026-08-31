@@ -129,7 +129,9 @@ class SandboxProbeTests(unittest.TestCase):
     def test_attached_skill_and_sibling_job_canaries_fail_without_path_leaks(self) -> None:
         cases = (
             ("FAKE_CODEX_PROBE_SKILL_UNREADABLE", "attached skill overlay"),
-            ("FAKE_CODEX_PROBE_SKILL_MUTABLE", "mounted skill target"),
+            ("FAKE_CODEX_PROBE_SKILL_SNAPSHOT_MUTABLE", "attached skill snapshot"),
+            ("FAKE_CODEX_PROBE_SNAPSHOT_CONTENT_CHANGED", "attached skill snapshot content changed"),
+            ("FAKE_CODEX_PROBE_SNAPSHOT_MODE_CHANGED", "attached skill snapshot mode changed"),
             ("FAKE_CODEX_PROBE_SKILL_CONTENT_CHANGED", "mounted skill target content changed"),
             ("FAKE_CODEX_PROBE_SKILL_MODE_CHANGED", "mounted skill target mode changed"),
             ("FAKE_CODEX_PROBE_SIBLING_READABLE", "sibling job"),
