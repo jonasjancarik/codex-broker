@@ -124,9 +124,11 @@ per-turn path, verifies its content digest before Codex starts, and rejects
 symbolic links or non-regular entries. The overlay contains only disposable
 bundle material and is removed when the turn ends; it may share the
 workspace-write profile, but it contains no broker state, credentials, or
-persistent trusted configuration. Mount skill sources must be trusted host
-inputs and read-only to the broker during a turn. The Linux release path uses
-POSIX descriptor-relative snapshotting and fails closed where that support is
+persistent trusted configuration. Attached skill snapshots remain read-only
+during managed turns, including `workspace-write`; executable supporting files
+retain their execute bits. Mount skill sources must be trusted host inputs and
+read-only to the broker during a turn. The Linux release path uses POSIX
+descriptor-relative snapshotting and fails closed where that support is
 unavailable. Job hosts must supply the individual job directory as `cwd`, not a
 parent directory containing other jobs.
 
@@ -414,10 +416,10 @@ CI runs the no-model sandbox canary using the same profile before publishing an
 image. It checks an attached overlay snapshot, its read-only mounted source, an
 ordinary job workspace read/write, and sibling-job sentinel, output, and skill
 paths. `command/exec` has no multi-root parameter, so the canary runs from the
-snapshot root and proves that only the disposable copy changes. Parameter tests
-assert the exact ordered `[cwd, overlay]` roots on normal thread and turn calls.
-Do not publish an image until a release-time Linux container canary has also
-exercised the actual job-plus-overlay roots. Do not replace it with
+snapshot root and proves that neither the snapshot nor its mounted source can
+be modified. Parameter tests assert the exact ordered `[cwd, overlay]` roots on
+normal thread and turn calls. Do not publish an image until a release-time Linux
+container canary has also exercised the actual job-plus-overlay roots. Do not replace it with
 `seccomp=unconfined`, privileged mode, or
 `CAP_SYS_ADMIN`; those remove the outer-container protection that makes the
 managed profile meaningful.

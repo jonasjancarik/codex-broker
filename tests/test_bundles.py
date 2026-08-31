@@ -48,6 +48,10 @@ class BundleRegistryTests(unittest.TestCase):
             (skill_dir / "SKILL.md").write_text("skill-v1", encoding="utf-8")
             (skill_dir / "references").mkdir()
             (skill_dir / "references" / "guide.md").write_text("guide-v1", encoding="utf-8")
+            executable = skill_dir / "scripts" / "check.sh"
+            executable.parent.mkdir()
+            executable.write_text("#!/bin/sh\necho checked\n", encoding="utf-8")
+            executable.chmod(0o755)
             bundle_dir = config.allowed_bundle_roots[0] / "materialized-bundle"
             bundle_dir.mkdir()
             (bundle_dir / "bundle.json").write_text(
@@ -66,6 +70,9 @@ class BundleRegistryTests(unittest.TestCase):
                 self.assertFalse(first_skill.parent.is_symlink())
                 self.assertEqual(first_skill.read_text(encoding="utf-8"), "skill-v1")
                 self.assertEqual((first_skill.parent / "references" / "guide.md").read_text(encoding="utf-8"), "guide-v1")
+                snapshot_script = first_skill.parent / "scripts" / "check.sh"
+                self.assertEqual(snapshot_script.read_text(encoding="utf-8"), "#!/bin/sh\necho checked\n")
+                self.assertTrue(snapshot_script.stat().st_mode & 0o111)
                 self.assertNotEqual(first_skill.stat().st_ino, (skill_dir / "SKILL.md").stat().st_ino)
 
                 (skill_dir / "SKILL.md").write_text("skill-v2", encoding="utf-8")

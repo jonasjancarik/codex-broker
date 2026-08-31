@@ -86,6 +86,8 @@ trees reject symbolic links and non-regular entries so every resolved path stays
 inside the authorized overlay. The overlay is disposable and deleted after the
 turn; it can share workspace-write because it contains only temporary bundle
 material, never credentials, broker state, or persistent trusted configuration.
+Attached skill snapshots remain read-only during managed turns, including
+workspace-write, while executable supporting files retain their execute bits.
 The mounted source is a trusted host input and must be read-only to the broker
 while a turn runs. Linux releases require POSIX descriptor-relative snapshot
 support; the broker fails closed where that support is unavailable.

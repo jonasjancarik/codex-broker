@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -186,6 +187,7 @@ class SandboxProbe:
                         "HOME": str(home),
                         "CODEX_CREDENTIAL_STORE": self.config.credential_store,
                         "FAKE_CODEX_PROBE_SKILL_SOURCE": str(source_skill),
+                        "FAKE_CODEX_PROBE_SKILL_SNAPSHOT": str(attached_skill),
                     }
                 )
                 process = self._popen_factory(
@@ -225,10 +227,13 @@ class SandboxProbe:
                 )
                 if not _command_succeeded(attached_skill_readable):
                     raise RuntimeError("managed sandbox could not read the attached skill overlay")
+                snapshot_marker = attached_skill.read_text(encoding="utf-8")
+                snapshot_mode = attached_skill.stat().st_mode & 0o777
+                snapshot_digest = hashlib.sha256(attached_skill.read_bytes()).hexdigest()
                 # command/exec cannot accept runtimeWorkspaceRoots. Running it
                 # from the materialized overlay with the production
-                # workspace-write profile exercises the same disposable
-                # snapshot root as a managed turn; multi-root wiring is
+                # workspace-write profile verifies that the attached snapshot
+                # remains read-only during a managed turn; multi-root wiring is
                 # covered by the thread/turn parameter tests.
                 snapshot_mutation = rpc.request(
                     "command/exec",
@@ -242,8 +247,14 @@ class SandboxProbe:
                         "permissionProfile": PROBE_PROFILE,
                     },
                 )
-                if not _command_succeeded(snapshot_mutation):
-                    raise RuntimeError("managed sandbox could not modify the disposable attached skill snapshot")
+                if _command_succeeded(snapshot_mutation):
+                    raise RuntimeError("managed sandbox could modify the attached skill snapshot")
+                if attached_skill.read_text(encoding="utf-8") != snapshot_marker:
+                    raise RuntimeError("attached skill snapshot content changed")
+                if attached_skill.stat().st_mode & 0o777 != snapshot_mode:
+                    raise RuntimeError("attached skill snapshot mode changed")
+                if hashlib.sha256(attached_skill.read_bytes()).hexdigest() != snapshot_digest:
+                    raise RuntimeError("attached skill snapshot digest changed")
                 if source_skill.read_text(encoding="utf-8") != skill_marker:
                     raise RuntimeError("mounted skill target content changed")
                 if source_skill.stat().st_mode & 0o777 != 0o444:
