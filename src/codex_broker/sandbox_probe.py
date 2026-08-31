@@ -213,6 +213,8 @@ class SandboxProbe:
                     raise RuntimeError("managed sandbox could modify the mounted skill target")
                 if source_skill.read_text(encoding="utf-8") != skill_marker:
                     raise RuntimeError("mounted skill target content changed")
+                if source_skill.stat().st_mode & 0o777 != 0o444:
+                    raise RuntimeError("mounted skill target mode changed")
                 read_only_write = rpc.request(
                     "command/exec",
                     {

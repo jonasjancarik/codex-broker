@@ -131,6 +131,7 @@ class SandboxProbeTests(unittest.TestCase):
             ("FAKE_CODEX_PROBE_SKILL_UNREADABLE", "attached skill overlay"),
             ("FAKE_CODEX_PROBE_SKILL_MUTABLE", "mounted skill target"),
             ("FAKE_CODEX_PROBE_SKILL_CONTENT_CHANGED", "mounted skill target content changed"),
+            ("FAKE_CODEX_PROBE_SKILL_MODE_CHANGED", "mounted skill target mode changed"),
             ("FAKE_CODEX_PROBE_SIBLING_READABLE", "sibling job"),
         )
         for environment, capability in cases:

@@ -275,6 +275,8 @@ def handle_app_server() -> int:
                 if os.environ.get("FAKE_CODEX_PROBE_SKILL_CONTENT_CHANGED") == "1":
                     source.chmod(0o644)
                     source.write_text("changed", encoding="utf-8")
+                if os.environ.get("FAKE_CODEX_PROBE_SKILL_MODE_CHANGED") == "1":
+                    source.chmod(0o644)
                 send(
                     {
                         "id": request_id,
