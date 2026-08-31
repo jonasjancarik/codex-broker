@@ -19,7 +19,7 @@ from .auth import render_managed_codex_config
 from .bundles import BundleRegistry, materialized_skill_path
 from .config import BrokerConfig
 from .state import StateStore
-from .util import clean_process_env, redact, utc_now
+from .util import clean_process_env, ensure_dir, redact, utc_now
 
 
 PROBE_PROFILE = "broker-workspace-write"
@@ -142,10 +142,17 @@ class SandboxProbe:
                 mounted_skill.chmod(0o555)
                 probe_config = replace(
                     self.config,
-                    data_dir=root / "broker-data",
                     allowed_bundle_roots=(bundle_root,),
                     sandbox_deny_paths=(*self.config.sandbox_deny_paths, control_plane),
                 )
+                for path in (
+                    probe_config.data_dir,
+                    probe_config.auth_root,
+                    probe_config.inline_bundle_root,
+                    probe_config.overlay_root,
+                    probe_config.runtime_home_root,
+                ):
+                    ensure_dir(path)
                 bundle_dir.mkdir(exist_ok=True)
                 (bundle_dir / "bundle.json").write_text(
                     json.dumps(

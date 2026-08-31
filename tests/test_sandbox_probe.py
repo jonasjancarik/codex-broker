@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -9,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from codex_broker.auth import render_managed_codex_config
 from codex_broker.config import BrokerConfig
 from codex_broker.runtime_errors import SANDBOX_UNAVAILABLE, classify_runtime_error
 from codex_broker.sandbox_probe import PROBE_PROFILE, SandboxProbe
@@ -118,6 +120,21 @@ class SandboxProbeTests(unittest.TestCase):
             self.assertEqual(result.public()["status"], "healthy")
             self.assertNotIn("adminDiagnostic", result.public())
             self.assertIs(probe.run_once(), result)
+
+    def test_probe_keeps_broker_state_denies_under_configured_data_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = replace(config_for(root), data_dir=root / "configured-data")
+            fixture_state = root / "broker-data" / "state"
+            probe_config = replace(
+                config,
+                allowed_bundle_roots=(root / "bundle-fixture",),
+                sandbox_deny_paths=(root / "workspace" / "control-plane",),
+            )
+            rendered = render_managed_codex_config(probe_config)
+
+            self.assertIn(json.dumps(str((root / "configured-data" / "state").resolve())), rendered)
+            self.assertNotIn(json.dumps(str(fixture_state.resolve())), rendered)
 
     def test_readable_canary_fails_without_leaking_contents(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {"FAKE_CODEX_PROBE_CANARY_READABLE": "1"}):
