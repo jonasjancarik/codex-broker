@@ -113,14 +113,27 @@ class OpenAICompatApiTests(unittest.TestCase):
         self.assertEqual(models["object"], "list")
         self.assertEqual(
             [model["id"] for model in models["data"]],
-            ["gpt-5.6-sol", "gpt-compatible"],
+            ["gpt-5.6", "gpt-5.6-sol", "gpt-compatible"],
         )
         model = self._request("GET", "/v1/models/gpt-compatible")
         self.assertEqual(model["id"], "gpt-compatible")
         self.assertEqual(model["object"], "model")
+        default_alias = self._request("GET", "/v1/models/gpt-5.6")
+        self.assertEqual(default_alias["id"], "gpt-5.6")
         with self.assertRaises(urllib.error.HTTPError) as hidden:
             self._request("GET", "/v1/models/gpt-5.6-terra")
         self.assertEqual(hidden.exception.code, 404)
+
+    def test_builtin_alias_routes_without_explicit_configuration(self) -> None:
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps({"model": "gpt-5.6-sol"})
+        response = self._request("POST", "/v1/responses", {"model": "gpt-5.6", "input": "Hello"})
+        self.assertEqual(response["status"], "completed")
+        self.assertEqual(response["model"], "gpt-5.6")
+        completion = self._request("POST", "/v1/chat/completions", {
+            "model": "gpt-5.6", "messages": [{"role": "user", "content": "Hello"}],
+        })
+        self.assertEqual(completion["model"], "gpt-5.6")
+        self.assertEqual(completion["choices"][0]["message"]["content"], "hello")
 
     def test_responses_sync_retrieve_and_input_items(self) -> None:
         schema = {

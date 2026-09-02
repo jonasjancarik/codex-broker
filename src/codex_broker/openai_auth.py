@@ -8,6 +8,7 @@ from typing import Any
 
 
 _DIGEST_RE = re.compile(r"^sha256:([0-9a-f]{64})$")
+_DEFAULT_MODEL_ALIASES = {"gpt-5.6": "gpt-5.6-sol"}
 
 
 class OpenAICompatAuthError(ValueError):
@@ -24,6 +25,9 @@ class OpenAICompatBinding:
     bundle_id: str | None = None
     cwd: str | None = None
     model_aliases: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "model_aliases", {**_DEFAULT_MODEL_ALIASES, **self.model_aliases})
 
     @classmethod
     def from_json(cls, value: Any) -> "OpenAICompatBinding":

@@ -255,6 +255,11 @@ decoded image data, with a 32 MiB JSON body limit on compatible requests.
 Native turn-create and steer bodies also allow up to 32 MiB; other broker routes
 retain the default 1,000,000-byte JSON body limit.
 
+The built-in model alias is `gpt-5.6` → `gpt-5.6-sol`. Custom `modelAliases`
+extend this default per binding, with explicit custom entries taking precedence.
+Omitted or empty custom maps retain the default. Alias targets must be available
+in Codex's model catalog; canonical model ids remain usable directly.
+
 Unknown fields and unsupported behavior must fail with OpenAI-shaped errors.
 In particular, caller-defined tools, tool choice, tool messages, `store: false`,
 sampling/logprob controls, `max_output_tokens` on Responses, background mode,

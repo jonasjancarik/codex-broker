@@ -125,16 +125,14 @@ store its SHA-256 digest in a JSON file, and start the broker with
     "ownerId": "service-account-1",
     "profile": "default",
     "configProfile": "default",
-    "hostApp": "openai-sdk",
-    "modelAliases": {
-      "gpt-5.6": "gpt-5.6-sol"
-    }
+    "hostApp": "openai-sdk"
   }
 }
 ```
 
 The raw key is distributed to the client, not stored in the binding file. Once
-configured, only the base URL and API key change:
+configured, only the base URL and API key change. The built-in `gpt-5.6` alias
+resolves to `gpt-5.6-sol`; no alias configuration is needed:
 
 ```python
 from openai import OpenAI

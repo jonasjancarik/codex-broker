@@ -335,6 +335,9 @@ print(response.output_text)
 ```
 
 The façade is Responses-first and also provides a Chat Completions adapter. It
+includes the built-in alias `gpt-5.6` → `gpt-5.6-sol`. Each binding's optional
+`modelAliases` extends the defaults and can override matching names. Aliases
+require an available Codex model; canonical model names work directly. It
 supports text and base64 image input, streaming, response retrieval,
 input-item retrieval, cancellation, response chaining, reasoning controls,
 service tiers, and JSON Schema output. Compatible requests accept at most 10
