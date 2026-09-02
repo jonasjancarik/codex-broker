@@ -316,7 +316,11 @@ def handle_app_server() -> int:
                         {"reasoningEffort": "ultra", "description": "Maximum reasoning with delegation"},
                     ],
                     "defaultReasoningEffort": "medium",
-                    "inputModalities": ["text", "image"],
+                    "inputModalities": (
+                        ["text"]
+                        if os.environ.get("FAKE_CODEX_DISABLE_IMAGE_INPUT") == "1"
+                        else ["text", "image"]
+                    ),
                     "supportsPersonality": True,
                     "additionalSpeedTiers": ["fast"],
                     "serviceTiers": [
@@ -338,7 +342,11 @@ def handle_app_server() -> int:
                         {"reasoningEffort": "medium", "description": "Balanced reasoning"},
                     ],
                     "defaultReasoningEffort": "medium",
-                    "inputModalities": ["text", "image"],
+                    "inputModalities": (
+                        ["text"]
+                        if os.environ.get("FAKE_CODEX_DISABLE_IMAGE_INPUT") == "1"
+                        else ["text", "image"]
+                    ),
                     "supportsPersonality": False,
                     "additionalSpeedTiers": [],
                     "serviceTiers": [],
@@ -437,6 +445,10 @@ def handle_app_server() -> int:
             send({"method": "thread/resumed", "params": {"threadId": params.get("threadId"), "thread": {"id": params.get("threadId")}}})
         elif method == "thread/inject_items":
             thread_id = str(params.get("threadId"))
+            mismatch = expected_params_match("FAKE_CODEX_EXPECT_INJECT_ITEMS", {"items": params.get("items")})
+            if mismatch:
+                send({"id": request_id, "error": {"code": -32602, "message": mismatch}})
+                continue
             injected_threads.add(thread_id)
             send({"id": request_id, "result": {}})
         elif method == "turn/start":
@@ -444,6 +456,23 @@ def handle_app_server() -> int:
             if mismatch:
                 send({"id": request_id, "error": {"code": -32602, "message": mismatch}})
                 continue
+            forbidden = os.environ.get("FAKE_CODEX_FORBID_TURN_PARAMS")
+            if forbidden:
+                forbidden_keys = json.loads(forbidden)
+                if not isinstance(forbidden_keys, list) or not all(isinstance(key, str) for key in forbidden_keys):
+                    raise ValueError("FAKE_CODEX_FORBID_TURN_PARAMS must contain a JSON string array")
+                present = [key for key in forbidden_keys if key in params]
+                if present:
+                    send(
+                        {
+                            "id": request_id,
+                            "error": {
+                                "code": -32602,
+                                "message": f"FAKE_CODEX_FORBID_TURN_PARAMS found {present!r}",
+                            },
+                        }
+                    )
+                    continue
             if os.environ.get("FAKE_CODEX_HANG_ON_TURN_START_ONCE") == "1":
                 marker = auth_home() / ".fake-hung-turn-start-once"
                 if not marker.exists():

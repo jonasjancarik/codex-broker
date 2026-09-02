@@ -387,7 +387,15 @@ class BrokerHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or "0")
         if length <= 0:
             return {} if allow_empty else (_ for _ in ()).throw(ValueError("JSON request body is required."))
-        if length > 1_000_000:
+        input_route = metric_path_template(urlparse(self.path).path) in {
+            "v1/responses",
+            "v1/chat/completions",
+            "v1/owners/ownerId/threads/threadId/turns",
+            "v1/owners/ownerId/threads/threadId/turns/turnId/steer",
+        }
+        max_bytes = 32 * 1024 * 1024 if input_route else 1_000_000
+        if length > max_bytes:
+            self.close_connection = True
             raise ValueError("JSON request body is too large.")
         data = self.rfile.read(length)
         parsed = json.loads(data.decode("utf-8"))
@@ -744,7 +752,17 @@ def openapi_document() -> dict[str, Any]:
                         "updatedAt": {"type": "string"},
                     },
                 },
-                "InputItem": {"type": "object", "additionalProperties": True},
+                "InputItem": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "description": (
+                        "A Codex app-server input part, forwarded unchanged. Mix text parts "
+                        "(type: text, text) and image parts (type: image, url, optional detail) "
+                        "in order, or send images alone. Inline images use base64 data URLs. "
+                        "Native localImage parts refer to paths readable by the Codex runtime. "
+                        "Turn create and steer JSON bodies may be up to 32 MiB."
+                    ),
+                },
                 "CodexOptions": {
                     "type": "object",
                     "additionalProperties": True,

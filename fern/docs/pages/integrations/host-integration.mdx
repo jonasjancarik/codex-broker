@@ -15,7 +15,7 @@ Your backend remains the public product API. The broker is private infrastructur
 | Surface | Best fit | Identity |
 | --- | --- | --- |
 | Native owner-scoped API | Product backends that need explicit threads, turns, event replay, interactions, auth management, bundles, and audit routes | Internal broker key plus server-selected `ownerId` |
-| OpenAI-compatible API | Existing OpenAI SDK integrations that need text Responses or Chat Completions without adopting broker-specific request shapes | Compatibility key mapped to a fixed server-side binding |
+| OpenAI-compatible API | Existing OpenAI SDK integrations that need text or image Responses or Chat Completions without adopting broker-specific request shapes | Compatibility key mapped to a fixed server-side binding |
 
 Both surfaces use the same scheduler, Codex profiles, policy, app-server pool,
 and durable state. The compatible surface intentionally exposes fewer controls.
@@ -58,6 +58,27 @@ Choose stable product ids and send them consistently:
 Avoid raw secrets as owner ids. Use a service-account id when per-user auth is not needed.
 
 Configure shared accounts with `CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON` or its file equivalent. A client-supplied principal must match policy or the broker returns `403`. Two mapped owners share credentials and upstream totals, never threads, events, interactions, or audits.
+
+## Native turns can carry inline images
+
+Native turn input is forwarded to Codex as an ordered list. Mix text items with
+`type: "image"` items, or send images alone. An inline image uses a base64 data
+URL in `url`; a native `localImage` item can instead refer to a path readable by
+the Codex runtime. Native turn-create and steer JSON bodies may be up to 32 MiB.
+
+```json
+{
+  "input": [
+    { "type": "text", "text": "Describe this image." },
+    {
+      "type": "image",
+      "url": "data:image/jpeg;base64,<base64-bytes>",
+      "detail": "auto"
+    }
+  ],
+  "mode": "queue"
+}
+```
 
 ## Chat apps
 

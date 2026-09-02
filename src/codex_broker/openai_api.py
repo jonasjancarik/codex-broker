@@ -203,11 +203,19 @@ def _start_request(
     *,
     danger_full_access_authorized: bool = False,
 ) -> dict[str, Any]:
-    resolved_model = _resolve_model(services, binding, parsed.requested_model)
     history: list[dict[str, Any]] = []
     if parsed.previous_response_id:
         history.extend(_previous_history(services, binding, parsed.previous_response_id))
     history.extend(dict(item) for item in parsed.request_history)
+    requires_images = any(
+        part.get("type") == "input_image"
+        for item in [*history, *parsed.canonical_input]
+        for part in (item.get("content") or [])
+        if isinstance(part, dict)
+    )
+    resolved_model = _resolve_model(
+        services, binding, parsed.requested_model, requires_images=requires_images
+    )
     thread_body: dict[str, Any] = {
         "profile": binding.profile,
         "configProfile": binding.config_profile,
@@ -648,16 +656,26 @@ def _visible_models(services: Any, binding: OpenAICompatBinding) -> dict[str, st
     return available
 
 
-def _resolve_model(services: Any, binding: OpenAICompatBinding, requested: str) -> str:
-    visible = _visible_models(services, binding)
-    resolved = visible.get(requested)
-    if resolved is None:
+def _resolve_model(
+    services: Any, binding: OpenAICompatBinding, requested: str, *, requires_images: bool = False
+) -> str:
+    catalog = {
+        item.get("model") or item.get("id"): item
+        for item in _app_server_models(services, binding)
+        if isinstance(item.get("model") or item.get("id"), str)
+    }
+    target = binding.model_aliases.get(requested)
+    resolved = target if target in catalog else requested
+    model = catalog.get(resolved)
+    if model is None:
         raise OpenAIProtocolError(
             f"The model {requested!r} does not exist or is not available to this compatibility key.",
             status=HTTPStatus.NOT_FOUND,
             param="model",
             code="model_not_found",
         )
+    if requires_images and "image" not in (model.get("inputModalities") or []):
+        raise invalid("The selected model does not advertise image input support.", "model")
     return resolved
 
 
@@ -799,7 +817,111 @@ def openapi_paths(ref: Any, json_response: Any, request_body: Any) -> dict[str, 
 
 def openapi_schemas() -> dict[str, Any]:
     open_object = {"type": "object", "additionalProperties": True}
+    image_detail = {"type": "string", "enum": ["auto", "low", "high", "original"]}
+    ignored_cap = {
+        "description": (
+            "Accepted for client compatibility and discarded, regardless of its value. "
+            "Codex Broker does not enforce an output-token limit."
+        )
+    }
     return {
+        "OpenAIImageDataURL": {
+            "type": "string",
+            "pattern": "^data:image/(png|jpeg|webp|gif);base64,",
+            "description": (
+                "Inline base64 PNG, JPEG, WebP, or GIF. Remote URLs, local paths, and file IDs "
+                "are unsupported. At most 10 images and 20 MiB of decoded image data per request."
+            ),
+        },
+        "OpenAIResponseContentPart": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                        "type": {"enum": ["input_text", "output_text"]},
+                        "text": {"type": "string"},
+                    },
+                },
+                {
+                    "type": "object",
+                    "required": ["type", "image_url"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "type": {"const": "input_image"},
+                        "image_url": {"$ref": "#/components/schemas/OpenAIImageDataURL"},
+                        "detail": image_detail,
+                    },
+                },
+            ],
+        },
+        "OpenAIResponseInputMessage": {
+            "type": "object",
+            "required": ["role", "content"],
+            "description": (
+                "User messages accept ordered text/image parts or images alone. Other roles "
+                "accept text only; assistant parts use output_text, all others use input_text. "
+                "The final input message must have the user role."
+            ),
+            "properties": {
+                "type": {"const": "message"},
+                "role": {"enum": ["system", "developer", "user", "assistant"]},
+                "content": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1},
+                        {
+                            "type": "array", "minItems": 1,
+                            "items": {"$ref": "#/components/schemas/OpenAIResponseContentPart"},
+                        },
+                    ]
+                },
+            },
+        },
+        "OpenAIChatMessage": {
+            "type": "object",
+            "required": ["role", "content"],
+            "description": "Only user messages accept image parts. Text and images retain their order.",
+            "properties": {
+                "role": {"enum": ["system", "developer", "user", "assistant"]},
+                "name": {"type": "string"},
+                "content": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1},
+                        {
+                            "type": "array", "minItems": 1,
+                            "items": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "required": ["type", "text"],
+                                        "properties": {
+                                            "type": {"const": "text"}, "text": {"type": "string"},
+                                        },
+                                    },
+                                    {
+                                        "type": "object",
+                                        "required": ["type", "image_url"],
+                                        "additionalProperties": False,
+                                        "properties": {
+                                            "type": {"const": "image_url"},
+                                            "image_url": {
+                                                "type": "object",
+                                                "required": ["url"],
+                                                "additionalProperties": False,
+                                                "properties": {
+                                                    "url": {"$ref": "#/components/schemas/OpenAIImageDataURL"},
+                                                    "detail": image_detail,
+                                                },
+                                            },
+                                        },
+                                    },
+                                ]
+                            },
+                        },
+                    ]
+                },
+            },
+        },
         "OpenAIError": {
             "type": "object",
             "required": ["error"],
@@ -825,11 +947,20 @@ def openapi_schemas() -> dict[str, Any]:
         },
         "OpenAIResponseCreateRequest": {
             "type": "object",
+            "description": "Accepts text and inline images with an image-capable model. JSON body limit: 32 MiB.",
             "required": ["model", "input"],
             "additionalProperties": False,
             "properties": {
                 "model": {"type": "string"},
-                "input": {},
+                "input": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1},
+                        {
+                            "type": "array", "minItems": 1,
+                            "items": {"$ref": "#/components/schemas/OpenAIResponseInputMessage"},
+                        },
+                    ]
+                },
                 "instructions": {"type": "string"},
                 "stream": {"type": "boolean"},
                 "previous_response_id": {"type": "string"},
@@ -844,16 +975,22 @@ def openapi_schemas() -> dict[str, Any]:
         "OpenAIItemList": open_object,
         "OpenAIChatCreateRequest": {
             "type": "object",
+            "description": "Accepts text and inline images with an image-capable model. JSON body limit: 32 MiB.",
             "required": ["model", "messages"],
             "additionalProperties": False,
             "properties": {
                 "model": {"type": "string"},
-                "messages": {"type": "array", "items": open_object},
+                "messages": {
+                    "type": "array", "minItems": 1,
+                    "items": {"$ref": "#/components/schemas/OpenAIChatMessage"},
+                },
                 "stream": {"type": "boolean"},
                 "stream_options": open_object,
                 "reasoning_effort": {"type": "string"},
                 "service_tier": {"type": "string"},
                 "response_format": open_object,
+                "max_tokens": ignored_cap,
+                "max_completion_tokens": ignored_cap,
                 "metadata": {"type": "object", "additionalProperties": {"type": "string"}},
                 "store": {"const": True},
             },

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import replace
 import json
 import os
+import struct
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -25,13 +28,28 @@ from codex_broker.openai_protocol import (
     turn_id_from_response,
 )
 from codex_broker.services import BrokerHTTPServer, BrokerServices
-from test_broker import config_for
+from test_broker import config_for, wait_turn
 
 
 COMPAT_KEY = "sk-codex-broker-test"
 OWNER = "openai-client"
 OTHER_COMPAT_KEY = "sk-codex-broker-other"
 OTHER_OWNER = "openai-client-other"
+
+
+def png_data_url(*, padding_bytes: int = 0) -> str:
+    """Build a valid 1x1 PNG, optionally padded with a valid ancillary chunk."""
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+
+    raw = b"\x89PNG\r\n\x1a\n"
+    raw += chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+    raw += chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))
+    if padding_bytes:
+        raw += chunk(b"tEXt", b"padding\0" + (b"x" * padding_bytes))
+    raw += chunk(b"IEND", b"")
+    return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
 
 
 class OpenAICompatApiTests(unittest.TestCase):
@@ -82,6 +100,9 @@ class OpenAICompatApiTests(unittest.TestCase):
         os.environ.pop("FAKE_CODEX_REQUIRE_INJECT_BEFORE_TURN", None)
         os.environ.pop("FAKE_CODEX_EXPECT_THREAD_PARAMS", None)
         os.environ.pop("FAKE_CODEX_EXPECT_TURN_PARAMS", None)
+        os.environ.pop("FAKE_CODEX_EXPECT_INJECT_ITEMS", None)
+        os.environ.pop("FAKE_CODEX_FORBID_TURN_PARAMS", None)
+        os.environ.pop("FAKE_CODEX_DISABLE_IMAGE_INPUT", None)
         os.environ.pop("FAKE_CODEX_OMIT_RAW_RESPONSE", None)
         os.environ.pop("FAKE_CODEX_MALFORMED_TOKEN_USAGE", None)
         os.environ.pop("FAKE_CODEX_TURN_COMPLETED_ERROR", None)
@@ -193,6 +214,121 @@ class OpenAICompatApiTests(unittest.TestCase):
         )
         self.assertEqual(second["previous_response_id"], first["id"])
         self.assertEqual(second["status"], "completed")
+
+    def test_image_history_is_persisted_retrieved_after_restart_and_injected_in_order(self) -> None:
+        image = png_data_url()
+        earlier = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Earlier"}],
+        }
+        user = {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe this."},
+                {"type": "input_image", "image_url": image, "detail": "high"},
+            ],
+        }
+        os.environ["FAKE_CODEX_REQUIRE_INJECT_BEFORE_TURN"] = "1"
+        os.environ["FAKE_CODEX_EXPECT_INJECT_ITEMS"] = json.dumps({"items": [earlier]})
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {
+                "model": "gpt-5.6-sol",
+                "input": [
+                    {"type": "text", "text": "Describe this.", "text_elements": []},
+                    {"type": "image", "url": image, "detail": "high"},
+                ],
+            }
+        )
+        first = self._request(
+            "POST",
+            "/v1/responses",
+            {"model": "gpt-compatible", "input": [earlier, user]},
+        )
+        expected_items = self._request("GET", f"/v1/responses/{first['id']}/input_items")
+        self.assertEqual(expected_items["data"], [earlier, user])
+
+        self._restart_broker()
+        retrieved_items = self._request("GET", f"/v1/responses/{first['id']}/input_items")
+        self.assertEqual(retrieved_items["data"], [earlier, user])
+
+        raw_output = {
+            "id": "msg1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "hello"}],
+        }
+        os.environ["FAKE_CODEX_EXPECT_INJECT_ITEMS"] = json.dumps(
+            {"items": [earlier, user, raw_output]}
+        )
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {
+                "model": "gpt-5.6-sol",
+                "input": [{"type": "text", "text": "Follow up", "text_elements": []}],
+            }
+        )
+        second = self._request(
+            "POST",
+            "/v1/responses",
+            {
+                "model": "gpt-compatible",
+                "previous_response_id": first["id"],
+                "input": "Follow up",
+            },
+        )
+        self.assertEqual(second["status"], "completed")
+
+    def test_image_only_responses_and_chat_inputs_are_forwarded(self) -> None:
+        image = png_data_url()
+        expected = [{"type": "image", "url": image}]
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {"model": "gpt-5.6-sol", "input": expected}
+        )
+        response = self._request(
+            "POST",
+            "/v1/responses",
+            {
+                "model": "gpt-compatible",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_image", "image_url": image}],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(response["status"], "completed")
+
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {"model": "gpt-5.6-sol", "input": expected}
+        )
+        completion = self._request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": image}}],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(completion["choices"][0]["message"]["content"], "hello")
+
+        thread = self._request(
+            "POST", f"/v1/owners/{OWNER}/threads", {}, api_key="test-key"
+        )
+        turn = self._request(
+            "POST",
+            f"/v1/owners/{OWNER}/threads/{thread['threadId']}/turns",
+            {"input": expected, "codexOptions": {"model": "gpt-5.6-sol"}},
+            api_key="test-key",
+        )
+        completed = wait_turn(self.services, OWNER, thread["threadId"], turn["turnId"])
+        self.assertEqual(completed["status"], "completed")
 
     def test_response_resources_are_owner_scoped_by_the_binding(self) -> None:
         created = self._request(
@@ -467,6 +603,172 @@ class OpenAICompatApiTests(unittest.TestCase):
                 temperature=0.2,
             )
         self.assertEqual(raised.exception.code, "unsupported_parameter")
+
+    def test_official_openai_sdk_forwards_images_for_sync_and_streaming(self) -> None:
+        image = png_data_url()
+        client = OpenAI(
+            base_url=f"{self.base_url}/v1",
+            api_key=COMPAT_KEY,
+            timeout=10,
+            max_retries=0,
+        )
+        response_input = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Describe this."},
+                    {"type": "input_image", "image_url": image, "detail": "low"},
+                ],
+            }
+        ]
+        turn_input = [
+            {"type": "text", "text": "Describe this.", "text_elements": []},
+            {"type": "image", "url": image, "detail": "low"},
+        ]
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {"model": "gpt-5.6-sol", "input": turn_input}
+        )
+        response = client.responses.create(model="gpt-compatible", input=response_input)
+        self.assertEqual(response.output_text, "hello")
+
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {"model": "gpt-5.6-sol", "input": turn_input}
+        )
+        response_events = list(
+            client.responses.create(model="gpt-compatible", input=response_input, stream=True)
+        )
+        self.assertEqual(response_events[-1].type, "response.completed")
+
+        chat_input = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this."},
+                    {"type": "image_url", "image_url": {"url": image, "detail": "low"}},
+                ],
+            }
+        ]
+        chat_turn_input = [
+            {"type": "text", "text": "Describe this.", "text_elements": []},
+            {"type": "image", "url": image, "detail": "low"},
+        ]
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {"model": "gpt-5.6-sol", "input": chat_turn_input}
+        )
+        completion = client.chat.completions.create(model="gpt-compatible", messages=chat_input)
+        self.assertEqual(completion.choices[0].message.content, "hello")
+
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {"model": "gpt-5.6-sol", "input": chat_turn_input}
+        )
+        chunks = list(
+            client.chat.completions.create(
+                model="gpt-compatible",
+                messages=chat_input,
+                stream=True,
+            )
+        )
+        self.assertEqual("".join(chunk.choices[0].delta.content or "" for chunk in chunks), "hello")
+        client.close()
+
+    def test_chat_token_caps_accept_arbitrary_values_and_are_not_forwarded(self) -> None:
+        image = png_data_url()
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {
+                "model": "gpt-5.6-sol",
+                "input": [{"type": "image", "url": image}],
+            }
+        )
+        os.environ["FAKE_CODEX_FORBID_TURN_PARAMS"] = json.dumps(
+            ["max_tokens", "max_completion_tokens"]
+        )
+        completion = self._request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": image}}],
+                    }
+                ],
+                "max_tokens": {"arbitrary": [1, 2, 3]},
+                "max_completion_tokens": "also arbitrary",
+            },
+        )
+        self.assertEqual(completion["choices"][0]["message"]["content"], "hello")
+
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
+            {
+                "model": "gpt-5.6-sol",
+                "input": [{"type": "image", "url": image}],
+            }
+        )
+        numeric = self._request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": image}}],
+                    }
+                ],
+                "max_tokens": 17,
+                "max_completion_tokens": 23,
+            },
+        )
+        self.assertEqual(numeric["choices"][0]["message"]["content"], "hello")
+
+    def test_inline_image_request_over_one_megabyte_is_accepted(self) -> None:
+        image = png_data_url(padding_bytes=1_100_000)
+        self.assertGreater(len(json.dumps({"model": "gpt-compatible", "input": [image]})), 1_000_000)
+        response = self._request(
+            "POST",
+            "/v1/responses",
+            {
+                "model": "gpt-compatible",
+                "input": [{"role": "user", "content": [{"type": "input_image", "image_url": image}]}],
+            },
+        )
+        self.assertEqual(response["status"], "completed")
+
+    def test_image_input_requires_model_image_modality_including_history(self) -> None:
+        image = png_data_url()
+        first = self._request(
+            "POST",
+            "/v1/responses",
+            {
+                "model": "gpt-compatible",
+                "input": [{"role": "user", "content": [{"type": "input_image", "image_url": image}]}],
+            },
+        )
+        os.environ["FAKE_CODEX_DISABLE_IMAGE_INPUT"] = "1"
+        # The fake App Server inherits its model fixture at process start.
+        # Restart the broker so the capability change is visible to a fresh process.
+        self._restart_broker()
+        with self.assertRaises(urllib.error.HTTPError) as direct:
+            self._request(
+                "POST",
+                "/v1/responses",
+                {
+                    "model": "gpt-compatible",
+                    "input": [{"role": "user", "content": [{"type": "input_image", "image_url": image}]}],
+                },
+            )
+        self.assertEqual(direct.exception.code, 400)
+        direct_error = json.loads(direct.exception.read().decode("utf-8"))["error"]
+        self.assertEqual(direct_error["param"], "model")
+
+        with self.assertRaises(urllib.error.HTTPError) as history:
+            self._request(
+                "POST",
+                "/v1/responses",
+                {"model": "gpt-compatible", "previous_response_id": first["id"], "input": "Follow up"},
+            )
+        self.assertEqual(history.exception.code, 400)
 
     def test_official_sdk_can_cancel_an_active_streamed_response(self) -> None:
         os.environ["FAKE_CODEX_TURN_DELAY"] = "1"

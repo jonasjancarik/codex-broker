@@ -5,8 +5,8 @@ description: "Use Codex Broker through OpenAI SDKs with server-bound identity, R
 
 # The supported OpenAI API subset works as a drop-in endpoint
 
-Codex Broker exposes a deliberately bounded OpenAI-compatible API. Existing
-OpenAI SDK clients can use the supported text workflow by changing their base
+Codex Broker exposes a defined subset of the OpenAI API. Existing
+OpenAI SDK clients can use the supported text and image workflow by changing their base
 URL and API key; the broker then runs the request through its existing Codex
 identity, scheduler, persistence, and app-server controls.
 
@@ -108,11 +108,11 @@ for the complete environment contract.
 | --- | --- |
 | `GET /v1/models` | Lists direct model names and aliases available to the binding. |
 | `GET /v1/models/{model}` | Retrieves one available direct model or alias. |
-| `POST /v1/responses` | Creates synchronous or streamed text responses. |
+| `POST /v1/responses` | Creates synchronous or streamed text responses from text and image input. |
 | `GET /v1/responses/{responseId}` | Reconstructs a persisted compatible response. |
-| `GET /v1/responses/{responseId}/input_items` | Lists the normalized text input persisted for a response. |
+| `GET /v1/responses/{responseId}/input_items` | Lists the normalized text and image input persisted for a response. |
 | `POST /v1/responses/{responseId}/cancel` | Interrupts an active response and returns its updated state. |
-| `POST /v1/chat/completions` | Provides synchronous or streamed text Chat Completions over the same scheduler. |
+| `POST /v1/chat/completions` | Provides synchronous or streamed Chat Completions from text and image input. |
 
 Completed responses prefer Codex raw response items when available. Codex
 versions that omit those events are reconstructed from their persisted
@@ -122,7 +122,7 @@ after a broker restart.
 Responses requests accept:
 
 - `model`
-- a non-empty string input, or text message items ending in a user message
+- a non-empty string input, or message items with ordered text and user-only image content ending in a user message
 - `instructions`
 - `stream`
 - `previous_response_id`
@@ -158,11 +158,47 @@ response = client.responses.create(
 )
 ```
 
-## Chat Completions supports text conversation adapters
+Responses image input uses a base64 data URL in a user content item. The broker
+accepts `input_text` and `input_image` items in their supplied order, including
+image-only user messages. The selected model must advertise image input support.
+Only PNG, JPEG, WEBP, and GIF data URLs are accepted; remote URLs, file IDs, and
+local file paths are not accepted on the compatible API. The optional `detail`
+value may be `auto`, `low`, `high`, or `original`.
+
+```python
+import base64
+from pathlib import Path
+
+image_data = base64.b64encode(Path("receipt.png").read_bytes()).decode("ascii")
+response = client.responses.create(
+    model="gpt-compatible",
+    input=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Extract the receipt text."},
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/png;base64,{image_data}",
+                },
+            ],
+        }
+    ],
+)
+print(response.output_text)
+```
+
+For a Karakeep-style OCR workflow, send each image as an `input_image` item
+alongside the extraction instruction and persist the returned text in the host
+application. Codex Broker does not provide an embeddings endpoint; create or
+query embeddings in the host application if that workflow needs semantic search.
+
+## Chat Completions supports ordered text and image content
 
 Chat Completions accepts:
 
-- text-only `messages`
+- `messages` whose user `content` is text, images, or an ordered mixture of both,
+  including image-only content
 - `system` and `developer` instructions
 - `stream`
 - `reasoning_effort`
@@ -176,7 +212,19 @@ completion = client.chat.completions.create(
     model="gpt-compatible",
     messages=[
         {"role": "system", "content": "Answer concisely."},
-        {"role": "user", "content": "What changed?"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What does this screenshot show?"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/jpeg;base64,<base64-bytes>",
+                        "detail": "auto",
+                    },
+                },
+            ],
+        },
     ],
 )
 
@@ -184,7 +232,24 @@ print(completion.choices[0].message.content)
 ```
 
 Responses should be preferred for new integrations. Chat Completions exists for
-applications whose current abstraction is message-based.
+applications whose current abstraction is message-based. Its `detail` value may
+be `auto`, `low`, `high`, or `original`.
+
+## Image and token limits are explicit
+
+For images supplied in the current request, the compatible API enforces at most
+10 images, no more than 20 MiB per image, and no more than 20 MiB total decoded
+image data. The JSON request body limit for compatible Responses and Chat
+Completions requests is 32 MiB. These limits count images supplied in the current
+request; previously stored images are also replayed when chaining responses with
+`previous_response_id`. Native turn-create and steer requests also allow 32 MiB
+JSON bodies. Other routes retain the default 1,000,000-byte limit.
+
+Chat Completions accepts `max_tokens` and `max_completion_tokens` for client
+compatibility, then discards them unconditionally. Any values are accepted,
+including sending both fields together, and neither field imposes an output
+limit. Responses `max_output_tokens` remains rejected as an unsupported
+parameter.
 
 ## Streaming follows each API's native framing
 
@@ -229,14 +294,18 @@ Every compatible response runs on a fresh broker thread. When a request supplies
 The client receives the requested model name, while the mapped Codex model id is
 kept in private broker execution metadata.
 
+Normalized image items are persisted with the response just like text items.
+`GET /v1/responses/{responseId}/input_items` returns them, and a subsequent
+`previous_response_id` request replays them as part of the retained history.
+
 ## Unsupported semantics fail instead of changing behavior
 
 The broker rejects fields it cannot honor exactly:
 
 - `tools`, `tool_choice`, function calls, tool messages, and function outputs
 - `store: false` and response deletion
-- temperature, top-p, penalties, logprobs, seed, token bias, and token caps
-- images, audio, files, remote input, and other non-text content
+- temperature, top-p, penalties, logprobs, seed, and token bias
+- audio, files, remote input, and other unsupported non-text content
 - background or deferred execution
 - unknown fields whose behavior could affect output or persistence
 

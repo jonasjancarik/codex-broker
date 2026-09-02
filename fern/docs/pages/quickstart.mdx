@@ -150,10 +150,12 @@ response = client.responses.create(
 print(response.output_text)
 ```
 
-This surface supports text-based Responses and Chat Completions, including
-streaming, retrieval, cancellation, response chaining, reasoning controls,
-service tiers, and JSON Schema output. It rejects caller-defined tools and
-other fields the broker cannot honor exactly.
+This surface supports text and base64 image input in Responses and Chat
+Completions, including streaming, retrieval, cancellation, response chaining,
+reasoning controls, service tiers, and JSON Schema output. It rejects
+caller-defined tools and other fields the broker cannot honor exactly. See
+[OpenAI compatibility](integrations/openai-compatibility.mdx) for image formats,
+limits, and the token-cap behavior.
 
 Before adapting an existing client, read
 [OpenAI compatibility](integrations/openai-compatibility.mdx) for the endpoint

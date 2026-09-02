@@ -201,6 +201,29 @@ Example turn create:
 
 Use `idempotencyKey` when a host may retry the same request. A repeated turn create with the same user or service account, broker thread, and idempotency key returns the original broker turn instead of starting duplicate Codex work.
 
+Native turns forward ordered text and image input items to Codex. Inline images
+use a base64 data URL; a native `localImage` item may instead name a path that
+the Codex runtime can read. For example:
+
+```json
+{
+  "input": [
+    { "type": "text", "text": "Read this receipt." },
+    {
+      "type": "image",
+      "url": "data:image/png;base64,<base64-bytes>",
+      "detail": "auto"
+    }
+  ]
+}
+```
+
+Native turn-create and steer JSON bodies may be up to 32 MiB, as may compatible
+Responses and Chat Completions requests. Other routes retain the default
+1,000,000-byte JSON body limit. Compatible image input
+has its own limits and data-URL restrictions; see the Fern
+[OpenAI compatibility guide](fern/docs/pages/integrations/openai-compatibility.mdx).
+
 ## Same-Thread Turn Behavior
 
 The broker enforces one active turn at a time per broker thread. The `mode` field tells the broker what to do when another turn is already active:
@@ -306,12 +329,18 @@ print(response.output_text)
 ```
 
 The façade is Responses-first and also provides a Chat Completions adapter. It
-supports text input, streaming, response retrieval, input-item retrieval,
-cancellation, response chaining, reasoning controls, service tiers, and JSON
-Schema output. It fails closed for caller-defined tools, `store: false`,
-sampling and logprob controls, token caps, background mode, and non-text input.
+supports text and base64 image input, streaming, response retrieval,
+input-item retrieval, cancellation, response chaining, reasoning controls,
+service tiers, and JSON Schema output. Compatible requests accept at most 10
+images, 20 MiB per image, and 20 MiB total decoded image data; their JSON body
+limit is 32 MiB. Chat `max_tokens` and `max_completion_tokens` are accepted and
+discarded without imposing an output cap, while Responses `max_output_tokens`
+is rejected. It fails closed for caller-defined tools, `store: false`,
+sampling and logprob controls, background mode, and unsupported content.
 Reviewed Codex bundles and MCP tools remain deployment policy; OpenAI request
-`tools` are not treated as equivalent capabilities. See the Fern
+`tools` are not treated as equivalent capabilities. Compatible images must be
+PNG, JPEG, WEBP, or GIF base64 data URLs; remote URLs, file IDs, and local paths
+are not accepted. See the Fern
 [OpenAI compatibility guide](fern/docs/pages/integrations/openai-compatibility.mdx)
 for the exact compatibility contract.
 

@@ -931,6 +931,7 @@
       },
       "InputItem": {
         "additionalProperties": true,
+        "description": "A Codex app-server input part, forwarded unchanged. Mix text parts (type: text, text) and image parts (type: image, url, optional detail) in order, or send images alone. Inline images use base64 data URLs. Native localImage parts refer to paths readable by the Codex runtime. Turn create and steer JSON bodies may be up to 32 MiB.",
         "type": "object"
       },
       "Interaction": {
@@ -1165,12 +1166,19 @@
       },
       "OpenAIChatCreateRequest": {
         "additionalProperties": false,
+        "description": "Accepts text and inline images with an image-capable model. JSON body limit: 32 MiB.",
         "properties": {
+          "max_completion_tokens": {
+            "description": "Accepted for client compatibility and discarded, regardless of its value. Codex Broker does not enforce an output-token limit."
+          },
+          "max_tokens": {
+            "description": "Accepted for client compatibility and discarded, regardless of its value. Codex Broker does not enforce an output-token limit."
+          },
           "messages": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/OpenAIChatMessage"
             },
+            "minItems": 1,
             "type": "array"
           },
           "metadata": {
@@ -1209,6 +1217,92 @@
         ],
         "type": "object"
       },
+      "OpenAIChatMessage": {
+        "description": "Only user messages accept image parts. Text and images retain their order.",
+        "properties": {
+          "content": {
+            "oneOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "items": {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "text"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "text"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "image_url": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "detail": {
+                              "enum": [
+                                "auto",
+                                "low",
+                                "high",
+                                "original"
+                              ],
+                              "type": "string"
+                            },
+                            "url": {
+                              "$ref": "#/components/schemas/OpenAIImageDataURL"
+                            }
+                          },
+                          "required": [
+                            "url"
+                          ],
+                          "type": "object"
+                        },
+                        "type": {
+                          "const": "image_url"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "image_url"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "system",
+              "developer",
+              "user",
+              "assistant"
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "type": "object"
+      },
       "OpenAIError": {
         "properties": {
           "error": {
@@ -1220,6 +1314,11 @@
           "error"
         ],
         "type": "object"
+      },
+      "OpenAIImageDataURL": {
+        "description": "Inline base64 PNG, JPEG, WebP, or GIF. Remote URLs, local paths, and file IDs are unsupported. At most 10 images and 20 MiB of decoded image data per request.",
+        "pattern": "^data:image/(png|jpeg|webp|gif);base64,",
+        "type": "string"
       },
       "OpenAIItemList": {
         "additionalProperties": true,
@@ -1270,10 +1369,72 @@
         "additionalProperties": true,
         "type": "object"
       },
+      "OpenAIResponseContentPart": {
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "input_text",
+                  "output_text"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "detail": {
+                "enum": [
+                  "auto",
+                  "low",
+                  "high",
+                  "original"
+                ],
+                "type": "string"
+              },
+              "image_url": {
+                "$ref": "#/components/schemas/OpenAIImageDataURL"
+              },
+              "type": {
+                "const": "input_image"
+              }
+            },
+            "required": [
+              "type",
+              "image_url"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "OpenAIResponseCreateRequest": {
         "additionalProperties": false,
+        "description": "Accepts text and inline images with an image-capable model. JSON body limit: 32 MiB.",
         "properties": {
-          "input": {},
+          "input": {
+            "oneOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenAIResponseInputMessage"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            ]
+          },
           "instructions": {
             "type": "string"
           },
@@ -1310,6 +1471,42 @@
         "required": [
           "model",
           "input"
+        ],
+        "type": "object"
+      },
+      "OpenAIResponseInputMessage": {
+        "description": "User messages accept ordered text/image parts or images alone. Other roles accept text only; assistant parts use output_text, all others use input_text. The final input message must have the user role.",
+        "properties": {
+          "content": {
+            "oneOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenAIResponseContentPart"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            ]
+          },
+          "role": {
+            "enum": [
+              "system",
+              "developer",
+              "user",
+              "assistant"
+            ]
+          },
+          "type": {
+            "const": "message"
+          }
+        },
+        "required": [
+          "role",
+          "content"
         ],
         "type": "object"
       },

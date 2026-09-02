@@ -11,7 +11,7 @@ compatible API.
 
 ## OpenAI SDKs
 
-For compatible text Responses or Chat Completions, use the official OpenAI SDK
+For compatible text or image Responses and Chat Completions, use the official OpenAI SDK
 with a broker-issued compatibility key:
 
 ```python
@@ -41,8 +41,10 @@ const client = new OpenAI({
 The compatibility surface does not expose native broker thread, interaction,
 auth-management, or audit routes. See
 [OpenAI compatibility](../integrations/openai-compatibility.mdx) before
-reusing an integration that sends tools, non-text content, sampling controls,
-or `store: false`.
+reusing an integration that sends tools, unsupported non-text content, sampling
+controls, or `store: false`. Compatible image input must use base64 data URLs.
+Chat `max_tokens` and `max_completion_tokens` are accepted and ignored, while
+Responses `max_output_tokens` is rejected.
 
 ## Native Python client
 

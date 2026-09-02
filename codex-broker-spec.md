@@ -214,7 +214,10 @@ Turn create example:
 
 ```json
 {
-  "input": [{ "type": "text", "text": "Answer the user." }],
+  "input": [
+    { "type": "text", "text": "Read the attached image." },
+    { "type": "image", "url": "data:image/png;base64,<base64-bytes>", "detail": "auto" }
+  ],
   "mode": "queue",
   "configProfile": "default",
   "productCorrelationId": "chat-123:turn-456",
@@ -236,16 +239,27 @@ Early failures and interruptions may complete without usage.
 OpenAI-compatible routes use a separate bearer credential whose SHA-256 digest
 maps to a fixed compatibility binding. Request bodies and headers cannot select
 owner, auth principal, profile, configuration profile, host app, bundle, or
-workspace. Compatible Responses support text input, synchronous and typed SSE
-delivery, retrieval, input-item retrieval, cancellation, response chaining,
-reasoning/service-tier controls, metadata, and text or JSON Schema output. Chat
-Completions is a text adapter over the same scheduler and persistence.
+workspace. Compatible Responses support text and base64 image input,
+synchronous and typed SSE delivery, retrieval, input-item retrieval,
+cancellation, response chaining, reasoning/service-tier controls, metadata, and
+text or JSON Schema output. Chat Completions supports ordered text and base64
+image content over the same scheduler and persistence. Images are retained in
+history like text. Compatible image input accepts only PNG, JPEG, WEBP, and GIF
+data URLs; remote URLs, file IDs, and local paths are rejected, and the selected
+model must support image input. Each current request allows at most 10 images,
+20 MiB per image, and 20 MiB total decoded image data, with a 32 MiB JSON body
+limit on compatible requests.
+Native turn-create and steer bodies also allow up to 32 MiB; other broker routes
+retain the default 1,000,000-byte JSON body limit.
 
 Unknown fields and unsupported behavior must fail with OpenAI-shaped errors.
-In particular, caller-defined tools, tool choice, tool messages, `store:
-false`, sampling/logprob/token-cap controls, background mode, and non-text
-input are not silently approximated. Reviewed bundle/MCP tools remain
-deployment policy and are never inferred from an OpenAI `tools` request.
+In particular, caller-defined tools, tool choice, tool messages, `store: false`,
+sampling/logprob controls, `max_output_tokens` on Responses, background mode,
+and unsupported content are not silently approximated. Chat
+`max_tokens` and `max_completion_tokens` are compatibility fields that are
+accepted and discarded for every value, including when both are supplied; they
+do not cap output. Reviewed bundle/MCP tools remain deployment policy and are
+never inferred from an OpenAI `tools` request.
 
 ## Events
 

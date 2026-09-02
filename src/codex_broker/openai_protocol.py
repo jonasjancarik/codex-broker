@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
@@ -9,6 +10,14 @@ from typing import Any
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
 _TERMINAL_STATUSES = {"completed", "failed", "timed_out", "interrupted", "cancelled"}
+_DATA_IMAGE_URL_RE = re.compile(r"^data:(image/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$")
+
+# Limits apply to decoded image bytes, rather than the larger base64 request body.
+OPENAI_MAX_IMAGES_PER_REQUEST = 10
+OPENAI_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+OPENAI_MAX_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
+_IMAGE_DETAILS = {"auto", "low", "high", "original"}
+_MAX_DATA_IMAGE_URL_CHARS = len("data:image/jpeg;base64,") + 4 * ((OPENAI_MAX_IMAGE_BYTES + 2) // 3)
 
 
 class OpenAIProtocolError(Exception):
@@ -58,7 +67,19 @@ class ParsedOpenAIRequest:
     include_usage: bool = False
 
     def turn_input(self) -> list[dict[str, Any]]:
-        return [{"type": "text", "text": self.current_text, "text_elements": []}]
+        current = self.canonical_input[-1]
+        input_items: list[dict[str, Any]] = []
+        for part in current["content"]:
+            if part["type"] == "input_text":
+                input_items.append({"type": "text", "text": part["text"], "text_elements": []})
+            elif part["type"] == "input_image":
+                item = {"type": "image", "url": part["image_url"]}
+                if part.get("detail") is not None:
+                    item["detail"] = part["detail"]
+                input_items.append(item)
+            else:  # ParsedOpenAIRequest only exposes a final user message.
+                raise AssertionError(f"Unsupported current input part {part['type']!r}.")
+        return input_items
 
 
 def parse_responses_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
@@ -124,6 +145,10 @@ def parse_chat_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
         "response_format",
         "metadata",
         "store",
+        # Client compatibility only: Codex has no output-token cap to enforce.
+        # These values are deliberately neither validated nor forwarded.
+        "max_tokens",
+        "max_completion_tokens",
     }
     _reject_unknown(body, allowed)
     model = _required_string(body, "model")
@@ -147,6 +172,7 @@ def parse_chat_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
     base_parts: list[str] = []
     developer_parts: list[str] = []
     conversation: list[dict[str, Any]] = []
+    image_counter = _ImageCounter()
     for index, raw in enumerate(messages):
         if not isinstance(raw, dict):
             raise invalid("Every message must be an object.", f"messages.{index}")
@@ -157,13 +183,14 @@ def parse_chat_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
         if unsupported_keys:
             key = sorted(unsupported_keys)[0]
             raise unsupported(f"Message field {key!r} is not supported.", f"messages.{index}.{key}")
-        text = _chat_content_text(raw.get("content"), f"messages.{index}.content")
+        content = _chat_content_parts(raw.get("content"), role, f"messages.{index}.content", image_counter)
+        text = _parts_text(content)
         if role == "system":
             base_parts.append(text)
         elif role == "developer":
             developer_parts.append(text)
         else:
-            conversation.append(_canonical_message(role, text))
+            conversation.append(_canonical_message(role, content))
     if not conversation or conversation[-1]["role"] != "user":
         raise unsupported("The final non-instruction Chat message must have role 'user'.", "messages")
     current = _message_text(conversation[-1])
@@ -483,6 +510,7 @@ def _parse_response_input(value: Any) -> tuple[list[dict[str, Any]], list[dict[s
     if not isinstance(value, list) or not value:
         raise invalid("input must be a non-empty string or array.", "input")
     canonical: list[dict[str, Any]] = []
+    image_counter = _ImageCounter()
     for index, item in enumerate(value):
         if not isinstance(item, dict):
             raise invalid("Every input item must be an object.", f"input.{index}")
@@ -496,58 +524,177 @@ def _parse_response_input(value: Any) -> tuple[list[dict[str, Any]], list[dict[s
         if unsupported_keys:
             key = sorted(unsupported_keys)[0]
             raise unsupported(f"Input item field {key!r} is not supported.", f"input.{index}.{key}")
-        text = _response_content_text(item.get("content"), role, f"input.{index}.content")
-        canonical.append(_canonical_message(role, text))
+        content = _response_content_parts(item.get("content"), role, f"input.{index}.content", image_counter)
+        canonical.append(_canonical_message(role, content))
     if canonical[-1]["role"] != "user":
         raise unsupported("The final input item must have role 'user'.", "input")
     current = _message_text(canonical[-1])
     return canonical, canonical[:-1], current
 
 
-def _canonical_message(role: str, text: str) -> dict[str, Any]:
-    part_type = "output_text" if role == "assistant" else "input_text"
+def _canonical_message(role: str, content: str | list[dict[str, Any]]) -> dict[str, Any]:
+    if isinstance(content, str):
+        part_type = "output_text" if role == "assistant" else "input_text"
+        content = [{"type": part_type, "text": content}]
     return {
         "type": "message",
         "role": role,
-        "content": [{"type": part_type, "text": text}],
+        "content": content,
     }
 
 
 def _message_text(message: dict[str, Any]) -> str:
-    return "".join(str(part.get("text") or "") for part in message["content"])
+    return _parts_text(message["content"])
 
 
-def _response_content_text(value: Any, role: str, param: str) -> str:
+def _parts_text(parts: list[dict[str, Any]]) -> str:
+    return "".join(str(part.get("text") or "") for part in parts)
+
+
+@dataclass
+class _ImageCounter:
+    count: int = 0
+    total_bytes: int = 0
+
+
+def _response_content_parts(
+    value: Any,
+    role: str,
+    param: str,
+    image_counter: _ImageCounter,
+) -> list[dict[str, Any]]:
     if isinstance(value, str) and value:
-        return value
+        return [{"type": "output_text" if role == "assistant" else "input_text", "text": value}]
     if not isinstance(value, list) or not value:
         raise invalid("Message content must be a non-empty string or array.", param)
     expected = "output_text" if role == "assistant" else "input_text"
-    parts: list[str] = []
+    parts: list[dict[str, Any]] = []
     for index, part in enumerate(value):
-        if not isinstance(part, dict) or part.get("type") != expected or not isinstance(part.get("text"), str):
-            raise unsupported(f"Only {expected} content is supported.", f"{param}.{index}")
-        parts.append(part["text"])
-    text = "".join(parts)
-    if not text:
-        raise invalid("Message text must not be empty.", param)
-    return text
+        part_param = f"{param}.{index}"
+        if not isinstance(part, dict):
+            raise invalid("Every message content part must be an object.", part_param)
+        part_type = part.get("type")
+        if part_type == expected and isinstance(part.get("text"), str):
+            parts.append({"type": expected, "text": part["text"]})
+        elif part_type == "input_image":
+            if role != "user":
+                raise unsupported("Images are supported only in user messages.", part_param)
+            _reject_unknown(part, {"type", "image_url", "detail"}, prefix=part_param)
+            parts.append(
+                _canonical_image(
+                    part.get("image_url"),
+                    part.get("detail"),
+                    f"{part_param}.image_url",
+                    f"{part_param}.detail",
+                    image_counter,
+                )
+            )
+        else:
+            raise unsupported(f"Only {expected} content is supported.", part_param)
+    if not _parts_text(parts) and not any(part["type"] == "input_image" for part in parts):
+        raise invalid("Message content must include text or an image.", param)
+    return parts
 
 
-def _chat_content_text(value: Any, param: str) -> str:
+def _chat_content_parts(
+    value: Any,
+    role: str,
+    param: str,
+    image_counter: _ImageCounter,
+) -> list[dict[str, Any]]:
     if isinstance(value, str) and value:
-        return value
+        return [{"type": "output_text" if role == "assistant" else "input_text", "text": value}]
     if not isinstance(value, list) or not value:
         raise invalid("Message content must be a non-empty string or text-part array.", param)
-    parts: list[str] = []
+    expected = "output_text" if role == "assistant" else "input_text"
+    parts: list[dict[str, Any]] = []
     for index, part in enumerate(value):
-        if not isinstance(part, dict) or part.get("type") != "text" or not isinstance(part.get("text"), str):
-            raise unsupported("Only Chat text content parts are supported.", f"{param}.{index}")
-        parts.append(part["text"])
-    text = "".join(parts)
-    if not text:
-        raise invalid("Message text must not be empty.", param)
-    return text
+        part_param = f"{param}.{index}"
+        if not isinstance(part, dict):
+            raise invalid("Every message content part must be an object.", part_param)
+        part_type = part.get("type")
+        if part_type == "text" and isinstance(part.get("text"), str):
+            parts.append({"type": expected, "text": part["text"]})
+        elif part_type == "image_url":
+            if role != "user":
+                raise unsupported("Images are supported only in user messages.", part_param)
+            _reject_unknown(part, {"type", "image_url"}, prefix=part_param)
+            image = part.get("image_url")
+            if not isinstance(image, dict):
+                raise invalid("image_url must be an object with a data URL.", f"{part_param}.image_url")
+            _reject_unknown(image, {"url", "detail"}, prefix=f"{part_param}.image_url")
+            parts.append(
+                _canonical_image(
+                    image.get("url"),
+                    image.get("detail"),
+                    f"{part_param}.image_url.url",
+                    f"{part_param}.image_url.detail",
+                    image_counter,
+                )
+            )
+        else:
+            raise unsupported("Only Chat text and user image_url content parts are supported.", part_param)
+    if not _parts_text(parts) and not any(part["type"] == "input_image" for part in parts):
+        raise invalid("Message content must include text or an image.", param)
+    return parts
+
+
+def _canonical_image(
+    url: Any,
+    detail: Any,
+    url_param: str,
+    detail_param: str,
+    image_counter: _ImageCounter,
+) -> dict[str, Any]:
+    if not isinstance(url, str):
+        raise invalid("Image URL must be an inline base64 image data URL.", url_param)
+    if not url.startswith("data:"):
+        raise unsupported(
+            "Only inline base64 image data URLs are supported; use data:image/png;base64,... instead of a remote URL, file path, or file ID.",
+            url_param,
+        )
+    if len(url) > _MAX_DATA_IMAGE_URL_CHARS:
+        raise invalid(f"Each image must be at most {OPENAI_MAX_IMAGE_BYTES} decoded bytes.", url_param)
+    match = _DATA_IMAGE_URL_RE.fullmatch(url)
+    if not match:
+        raise unsupported(
+            "Only inline base64 image data URLs are supported; use data:image/png;base64,... instead of a remote URL, file path, or file ID.",
+            url_param,
+        )
+    encoded = match.group(2)
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise invalid("Image data URL must contain valid base64 data.", url_param) from exc
+    if len(decoded) > OPENAI_MAX_IMAGE_BYTES:
+        raise invalid(f"Each image must be at most {OPENAI_MAX_IMAGE_BYTES} decoded bytes.", url_param)
+    _validate_image_signature(match.group(1), decoded, url_param)
+    image_counter.count += 1
+    image_counter.total_bytes += len(decoded)
+    if image_counter.count > OPENAI_MAX_IMAGES_PER_REQUEST:
+        raise invalid(f"A request may contain at most {OPENAI_MAX_IMAGES_PER_REQUEST} images.", url_param)
+    if image_counter.total_bytes > OPENAI_MAX_IMAGE_TOTAL_BYTES:
+        raise invalid(
+            f"Images in one request must total at most {OPENAI_MAX_IMAGE_TOTAL_BYTES} decoded bytes.",
+            url_param,
+        )
+    if detail is not None and (not isinstance(detail, str) or detail not in _IMAGE_DETAILS):
+        raise invalid("Image detail must be auto, low, high, or original.", detail_param)
+    image = {"type": "input_image", "image_url": url}
+    if detail is not None:
+        image["detail"] = detail
+    return image
+
+
+def _validate_image_signature(mime_type: str, decoded: bytes, param: str) -> None:
+    signatures = {
+        "image/png": lambda value: value.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg": lambda value: value.startswith(b"\xff\xd8\xff"),
+        "image/webp": lambda value: len(value) >= 12 and value.startswith(b"RIFF") and value[8:12] == b"WEBP",
+        "image/gif": lambda value: value.startswith((b"GIF87a", b"GIF89a")),
+    }
+    if not signatures[mime_type](decoded):
+        raise invalid("Image data does not match its declared MIME type.", param)
 
 
 def _parse_responses_text(value: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
