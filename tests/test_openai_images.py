@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from codex_broker.openai_protocol import OpenAIProtocolError, parse_chat_request, parse_responses_request
+from codex_broker.scheduler import TurnScheduler
+from codex_broker.scheduler_config import codex_image_items
 
 
 def data_url(mime_type: str = "image/png", data: bytes = b"\x89PNG\r\n\x1a\n") -> str:
@@ -12,6 +16,44 @@ def data_url(mime_type: str = "image/png", data: bytes = b"\x89PNG\r\n\x1a\n") -
 
 
 class OpenAIImageProtocolTests(unittest.TestCase):
+    def test_execution_mapping_preserves_requested_details_and_non_image_content(self) -> None:
+        requested = [
+            {"type": kind, "detail": detail, "url": data_url()}
+            for kind in ("image", "localImage", "input_image", "text")
+            for detail in (None, "low", "high", "auto", "original")
+        ]
+        requested.append({"type": "image", "url": data_url()})
+        before = deepcopy(requested)
+        prepared = codex_image_items(requested)
+        self.assertEqual(requested, before)
+        for original, actual in zip(requested, prepared):
+            expected = dict(original)
+            if original["type"] != "text" and original.get("detail") == "low":
+                expected["detail"] = "high"
+            self.assertEqual(actual, expected)
+
+    def test_both_steering_routes_map_low_detail_without_changing_recorded_input(self) -> None:
+        requested = [{"type": "image", "url": data_url(), "detail": "low"}]
+        for method in ("steer_turn", "_steer_active"):
+            with self.subTest(method=method):
+                scheduler = Mock()
+                active = SimpleNamespace(
+                    client=Mock(), codex_thread_id="codex_thread", codex_turn_id="codex_turn",
+                    turn_id="turn", product_correlation_id=None,
+                )
+                scheduler._active_context.return_value = active
+                if method == "steer_turn":
+                    TurnScheduler.steer_turn(scheduler, "owner", "thread", "turn", {"input": requested})
+                else:
+                    TurnScheduler._steer_active(scheduler, "owner_hash", "thread", requested)
+                active.client.request.assert_called_once_with("turn/steer", {
+                    "threadId": "codex_thread", "turnId": "codex_turn",
+                    "input": [{"type": "image", "url": data_url(), "detail": "high"}],
+                })
+                self.assertEqual(requested[0]["detail"], "low")
+                event_payload = scheduler.state.append_event.call_args.args[4]
+                self.assertEqual(event_payload["input"][0]["detail"], "low")
+
     def test_responses_preserves_mixed_user_content_order_for_turn_and_history(self) -> None:
         image = data_url()
         parsed = parse_responses_request(

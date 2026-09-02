@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 import re
 from typing import Any
@@ -248,7 +249,7 @@ def turn_params(
 ) -> dict[str, Any]:
     options = request_codex_options(body)
     profile = profile or {}
-    params: dict[str, Any] = {"threadId": codex_thread_id, "input": input_items}
+    params: dict[str, Any] = {"threadId": codex_thread_id, "input": codex_image_items(input_items)}
     for request_key, app_server_key, aliases in (
         ("serviceTier", "serviceTier", ()),
         ("model", "model", ()),
@@ -275,6 +276,23 @@ def turn_params(
         )
     )
     return params
+
+
+def codex_image_items(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map unsupported low image detail on execution copies, preserving stored input."""
+    result: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            result.append(item)
+            continue
+        prepared = dict(item)
+        # Codex 0.152.1 can replace low-detail images with an omission notice.
+        if prepared.get("type") in ("image", "localImage", "input_image") and prepared.get("detail") == "low":
+            prepared["detail"] = "high"
+        if prepared.get("type") == "message" and isinstance(prepared.get("content"), list):
+            prepared["content"] = codex_image_items(prepared["content"])
+        result.append(prepared)
+    return result
 
 
 def build_input(

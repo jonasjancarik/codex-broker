@@ -543,7 +543,10 @@ class TurnScheduler:
             raise ActiveTurnError("active_turn_not_found")
         if not active.client or not active.codex_thread_id:
             raise ConflictError("Active turn is not steerable yet.")
-        params: dict[str, Any] = {"threadId": active.codex_thread_id, "input": input_items}
+        params: dict[str, Any] = {
+            "threadId": active.codex_thread_id,
+            "input": scheduler_config.codex_image_items(input_items),
+        }
         if active.codex_turn_id:
             params["turnId"] = active.codex_turn_id
         active.client.request("turn/steer", params)
@@ -1051,7 +1054,7 @@ class TurnScheduler:
             if isinstance(compat, OpenAICompatTurn) and compat.history_items:
                 client.request(
                     "thread/inject_items",
-                    {"threadId": codex_thread_id, "items": list(compat.history_items)},
+                    {"threadId": codex_thread_id, "items": scheduler_config.codex_image_items(compat.history_items)},
                 )
             params = self._turn_params(
                 codex_thread_id,
@@ -1386,7 +1389,10 @@ class TurnScheduler:
         active = self._active_context(owner_hash, thread_id)
         if not active or not active.client or not active.codex_thread_id:
             return None
-        params: dict[str, Any] = {"threadId": active.codex_thread_id, "input": input_items}
+        params: dict[str, Any] = {
+            "threadId": active.codex_thread_id,
+            "input": scheduler_config.codex_image_items(input_items),
+        }
         if active.codex_turn_id:
             params["turnId"] = active.codex_turn_id
         active.client.request("turn/steer", params)

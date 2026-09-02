@@ -817,7 +817,14 @@ def openapi_paths(ref: Any, json_response: Any, request_body: Any) -> dict[str, 
 
 def openapi_schemas() -> dict[str, Any]:
     open_object = {"type": "object", "additionalProperties": True}
-    image_detail = {"type": "string", "enum": ["auto", "low", "high", "original"]}
+    image_detail = {
+        "type": "string",
+        "enum": ["auto", "low", "high", "original"],
+        "description": (
+            "Low is executed as high because the pinned Codex runtime can omit low-detail images. "
+            "Stored input retains the requested value; OpenAI low-detail token costs are not preserved."
+        ),
+    }
     ignored_cap = {
         "description": (
             "Accepted for client compatibility and discarded, regardless of its value. "

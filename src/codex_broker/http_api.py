@@ -756,7 +756,8 @@ def openapi_document() -> dict[str, Any]:
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
-                        "A Codex app-server input part, forwarded unchanged. Mix text parts "
+                        "A Codex app-server input part. Low image detail is executed as high "
+                        "to avoid image omission in the pinned runtime; stored input is unchanged. Mix text parts "
                         "(type: text, text) and image parts (type: image, url, optional detail) "
                         "in order, or send images alone. Inline images use base64 data URLs. "
                         "Native localImage parts refer to paths readable by the Codex runtime. "

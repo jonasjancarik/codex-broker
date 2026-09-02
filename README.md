@@ -203,7 +203,13 @@ Use `idempotencyKey` when a host may retry the same request. A repeated turn cre
 
 Native turns forward ordered text and image input items to Codex. Inline images
 use a base64 data URL; a native `localImage` item may instead name a path that
-the Codex runtime can read. For example:
+the Codex runtime can read.
+
+Image `detail: "low"` is executed as `high` to avoid image omission in the
+pinned Codex runtime. Stored input retains `low`; OpenAI's low-detail token
+budget is not preserved. This also applies to compatible requests and history.
+
+For example:
 
 ```json
 {

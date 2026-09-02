@@ -227,7 +227,7 @@ class OpenAICompatApiTests(unittest.TestCase):
             "role": "user",
             "content": [
                 {"type": "input_text", "text": "Describe this."},
-                {"type": "input_image", "image_url": image, "detail": "high"},
+                {"type": "input_image", "image_url": image, "detail": "low"},
             ],
         }
         os.environ["FAKE_CODEX_REQUIRE_INJECT_BEFORE_TURN"] = "1"
@@ -259,8 +259,15 @@ class OpenAICompatApiTests(unittest.TestCase):
             "role": "assistant",
             "content": [{"type": "output_text", "text": "hello"}],
         }
+        forwarded_user = {
+            **user,
+            "content": [
+                {"type": "input_text", "text": "Describe this."},
+                {"type": "input_image", "image_url": image, "detail": "high"},
+            ],
+        }
         os.environ["FAKE_CODEX_EXPECT_INJECT_ITEMS"] = json.dumps(
-            {"items": [earlier, user, raw_output]}
+            {"items": [earlier, forwarded_user, raw_output]}
         )
         os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
             {
@@ -281,7 +288,7 @@ class OpenAICompatApiTests(unittest.TestCase):
 
     def test_image_only_responses_and_chat_inputs_are_forwarded(self) -> None:
         image = png_data_url()
-        expected = [{"type": "image", "url": image}]
+        expected = [{"type": "image", "url": image, "detail": "high"}]
         os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
             {"model": "gpt-5.6-sol", "input": expected}
         )
@@ -293,7 +300,7 @@ class OpenAICompatApiTests(unittest.TestCase):
                 "input": [
                     {
                         "role": "user",
-                        "content": [{"type": "input_image", "image_url": image}],
+                        "content": [{"type": "input_image", "image_url": image, "detail": "low"}],
                     }
                 ],
             },
@@ -311,7 +318,7 @@ class OpenAICompatApiTests(unittest.TestCase):
                 "messages": [
                     {
                         "role": "user",
-                        "content": [{"type": "image_url", "image_url": {"url": image}}],
+                        "content": [{"type": "image_url", "image_url": {"url": image, "detail": "low"}}],
                     }
                 ],
             },
@@ -324,11 +331,19 @@ class OpenAICompatApiTests(unittest.TestCase):
         turn = self._request(
             "POST",
             f"/v1/owners/{OWNER}/threads/{thread['threadId']}/turns",
-            {"input": expected, "codexOptions": {"model": "gpt-5.6-sol"}},
+            {
+                "input": [{"type": "image", "url": image, "detail": "low"}],
+                "codexOptions": {"model": "gpt-5.6-sol"},
+            },
             api_key="test-key",
         )
         completed = wait_turn(self.services, OWNER, thread["threadId"], turn["turnId"])
         self.assertEqual(completed["status"], "completed")
+        stored = self.services.state.get_turn(
+            self.services.auth.hash_owner(OWNER), thread["threadId"], turn["turnId"]
+        )
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["input"][0]["detail"], "low")
 
     def test_response_resources_are_owner_scoped_by_the_binding(self) -> None:
         created = self._request(
@@ -623,7 +638,7 @@ class OpenAICompatApiTests(unittest.TestCase):
         ]
         turn_input = [
             {"type": "text", "text": "Describe this.", "text_elements": []},
-            {"type": "image", "url": image, "detail": "low"},
+            {"type": "image", "url": image, "detail": "high"},
         ]
         os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
             {"model": "gpt-5.6-sol", "input": turn_input}
@@ -650,7 +665,7 @@ class OpenAICompatApiTests(unittest.TestCase):
         ]
         chat_turn_input = [
             {"type": "text", "text": "Describe this.", "text_elements": []},
-            {"type": "image", "url": image, "detail": "low"},
+            {"type": "image", "url": image, "detail": "high"},
         ]
         os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps(
             {"model": "gpt-5.6-sol", "input": chat_turn_input}

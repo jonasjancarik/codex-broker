@@ -246,9 +246,12 @@ text or JSON Schema output. Chat Completions supports ordered text and base64
 image content over the same scheduler and persistence. Images are retained in
 history like text. Compatible image input accepts only PNG, JPEG, WEBP, and GIF
 data URLs; remote URLs, file IDs, and local paths are rejected, and the selected
-model must support image input. Each current request allows at most 10 images,
-20 MiB per image, and 20 MiB total decoded image data, with a 32 MiB JSON body
-limit on compatible requests.
+model must support image input.
+Image detail `low` is mapped to `high` only when sending current, steered, or
+historical input to Codex, which can otherwise omit low-detail images. Stored
+input retains the original detail; OpenAI's low-detail token budget is not honored.
+Each current request allows at most 10 images, 20 MiB per image, and 20 MiB total
+decoded image data, with a 32 MiB JSON body limit on compatible requests.
 Native turn-create and steer bodies also allow up to 32 MiB; other broker routes
 retain the default 1,000,000-byte JSON body limit.
 

@@ -165,6 +165,13 @@ Only PNG, JPEG, WEBP, and GIF data URLs are accepted; remote URLs, file IDs, and
 local file paths are not accepted on the compatible API. The optional `detail`
 value may be `auto`, `low`, `high`, or `original`.
 
+The pinned Codex runtime can omit images requested with `detail: "low"`.
+Broker therefore sends `high` to Codex for those images, including when replaying
+history, while keeping the requested `low` value in stored input and
+`input_items` responses. This preserves the image but does not preserve OpenAI's
+low-detail processing or token budget. The same mapping applies to Chat
+Completions and native turn-create and steer requests.
+
 ```python
 import base64
 from pathlib import Path
