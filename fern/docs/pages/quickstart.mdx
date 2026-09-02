@@ -127,7 +127,7 @@ store its SHA-256 digest in a JSON file, and start the broker with
     "configProfile": "default",
     "hostApp": "openai-sdk",
     "modelAliases": {
-      "gpt-compatible": "gpt-5.6-sol"
+      "gpt-5.6": "gpt-5.6-sol"
     }
   }
 }
@@ -144,7 +144,7 @@ client = OpenAI(
     api_key="the-raw-compatibility-key",
 )
 response = client.responses.create(
-    model="gpt-compatible",
+    model="gpt-5.6",
     input="Summarize this repository.",
 )
 print(response.output_text)

@@ -27,7 +27,7 @@ client = OpenAI(
 )
 
 response = client.responses.create(
-    model="gpt-compatible",
+    model="gpt-5.6",
     input="Explain this change in two sentences.",
 )
 print(response.output_text)
@@ -44,7 +44,7 @@ const client = new OpenAI({
 });
 
 const response = await client.responses.create({
-  model: "gpt-compatible",
+  model: "gpt-5.6",
   input: "Explain this change in two sentences.",
 });
 console.log(response.output_text);
@@ -70,7 +70,7 @@ lowercase SHA-256 digests prefixed with `sha256:`:
     "bundleId": "example-chat-v1",
     "cwd": "/workspaces/app",
     "modelAliases": {
-      "gpt-compatible": "gpt-5.6-sol"
+      "gpt-5.6": "gpt-5.6-sol"
     }
   }
 }
@@ -137,7 +137,7 @@ JSON Schema output is passed to Codex as an enforceable app-server
 
 ```python
 response = client.responses.create(
-    model="gpt-compatible",
+    model="gpt-5.6",
     input="Return the repository status.",
     text={
         "format": {
@@ -178,7 +178,7 @@ from pathlib import Path
 
 image_data = base64.b64encode(Path("receipt.png").read_bytes()).decode("ascii")
 response = client.responses.create(
-    model="gpt-compatible",
+    model="gpt-5.6",
     input=[
         {
             "role": "user",
@@ -216,7 +216,7 @@ Chat Completions accepts:
 
 ```python
 completion = client.chat.completions.create(
-    model="gpt-compatible",
+    model="gpt-5.6",
     messages=[
         {"role": "system", "content": "Answer concisely."},
         {
