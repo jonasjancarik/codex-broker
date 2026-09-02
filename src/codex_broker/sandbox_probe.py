@@ -293,7 +293,7 @@ class SandboxProbe:
                         "managed sandbox command could not write the probe workspace: "
                         f"exitCode={write.get('exitCode')!r}; stderr={redact(str(write.get('stderr') or ''))}"
                     )
-                # command/exec in Codex 0.152.0 has no runtimeWorkspaceRoots parameter.
+                # command/exec in Codex 0.152.1 has no runtimeWorkspaceRoots parameter.
                 # Its pinned processor reloads the named profile for this absolute cwd,
                 # making cwd the production-equivalent runtime workspace root.
                 denied_canaries = (

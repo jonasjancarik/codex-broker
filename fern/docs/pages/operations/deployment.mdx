@@ -15,7 +15,7 @@ Build-time args:
 
 | Arg | Default | Description |
 | --- | --- | --- |
-| `CODEX_VERSION` | `0.152.0` | Codex CLI release version without the `rust-v` prefix. |
+| `CODEX_VERSION` | `0.152.1` | Codex CLI release version without the `rust-v` prefix. |
 | `TARGETARCH` | supplied by BuildKit | `amd64` maps to `x86_64`; `arm64` maps to `aarch64`. |
 
 GitHub Actions publishes multi-architecture images to `ghcr.io/jonasjancarik/codex-broker`. Pushes to `main` publish `edge`, and `v*` tags publish both `latest` and the matching version tag. Pull requests build the image without pushing it.
@@ -148,7 +148,7 @@ and [Configuration reference](configuration-reference.mdx#openai-compatible-iden
 The preflight starts pinned Codex App Server without a model request, then runs
 `command/exec` with the broker-managed workspace permission profile. It proves
 that the command can write its temporary workspace and cannot read a protected
-canary. Pinned Codex `0.152.0` uses the command `cwd` as this canary's runtime
+canary. Pinned Codex `0.152.1` uses the command `cwd` as this canary's runtime
 workspace root; it does not expose `runtimeWorkspaceRoots` on `command/exec`.
 
 `CODEX_BROKER_SANDBOX_PREFLIGHT=required` is the Linux default. A failed or
