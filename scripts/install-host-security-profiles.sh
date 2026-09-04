@@ -194,9 +194,11 @@ check_installed() {
   if ! require_loaded_profile_access; then
     return 1
   fi
-  if grep -Fqx "codex-broker-bwrap (enforce)" /sys/kernel/security/apparmor/profiles \
-    || grep -Fqx "codex-broker-bwrap (complain)" /sys/kernel/security/apparmor/profiles; then
-    info "ok: AppArmor profile codex-broker-bwrap is loaded"
+  if grep -Fqx "codex-broker-bwrap (enforce)" /sys/kernel/security/apparmor/profiles; then
+    info "ok: AppArmor profile codex-broker-bwrap is loaded in enforce mode"
+  elif grep -Fqx "codex-broker-bwrap (complain)" /sys/kernel/security/apparmor/profiles; then
+    error "AppArmor profile codex-broker-bwrap is loaded in complain mode; enforcement is required"
+    status=1
   else
     error "AppArmor profile codex-broker-bwrap is not loaded"
     status=1

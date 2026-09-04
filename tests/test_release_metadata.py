@@ -97,6 +97,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         installer_source = installer.read_text(encoding="utf-8")
         self.assertIn("/sys/module/apparmor/parameters/enabled", installer_source)
         self.assertIn("rerun --check with sudo", installer_source)
+        self.assertIn("loaded in complain mode; enforcement is required", installer_source)
+        self.assertNotIn('|| grep -Fqx "codex-broker-bwrap (complain)"', installer_source)
 
 
 if __name__ == "__main__":
