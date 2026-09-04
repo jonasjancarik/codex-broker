@@ -70,6 +70,23 @@ class ReleaseMetadataTests(unittest.TestCase):
             [(rule["args"][0]["op"], rule["args"][0]["value"]) for rule in socket_rules],
             [("SCMP_CMP_LT", 38), ("SCMP_CMP_EQ", 39), ("SCMP_CMP_GT", 40)],
         )
+        socketcall_rules = [rule for rule in seccomp["syscalls"] if "socketcall" in rule["names"]]
+        self.assertEqual(
+            socketcall_rules,
+            [
+                {
+                    "names": ["socketcall"],
+                    "action": "SCMP_ACT_ERRNO",
+                    "errnoRet": 38,
+                    "comment": (
+                        "Deny the legacy socketcall multiplexer. Seccomp cannot inspect its pointed-to "
+                        "address-family argument, so allowing it would bypass the AF_ALG and AF_VSOCK "
+                        "socket rules on compatibility architectures. ENOSYS prevents libseccomp from "
+                        "generating a socketcall allow companion."
+                    ),
+                }
+            ],
+        )
 
     def test_host_profile_installer_is_syntax_checked_and_executable(self) -> None:
         repository = Path(__file__).resolve().parents[1]
@@ -77,6 +94,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertTrue(installer.is_file())
         self.assertTrue(installer.stat().st_mode & 0o111)
         subprocess.run(["sh", "-n", str(installer)], check=True)
+        installer_source = installer.read_text(encoding="utf-8")
+        self.assertIn("/sys/module/apparmor/parameters/enabled", installer_source)
+        self.assertIn("rerun --check with sudo", installer_source)
 
 
 if __name__ == "__main__":

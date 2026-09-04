@@ -445,9 +445,9 @@ checkout. The installer is idempotent: its check path makes no host changes;
 the `sudo` invocation installs root-owned, persistent policy files.
 
 ```bash
-./scripts/install-host-security-profiles.sh --check
+./scripts/install-host-security-profiles.sh --dry-run
 sudo ./scripts/install-host-security-profiles.sh
-./scripts/install-host-security-profiles.sh --check
+sudo ./scripts/install-host-security-profiles.sh --check
 ```
 
 Run the installer on the Linux Docker host. When Docker Desktop is controlled
@@ -472,12 +472,19 @@ the named profile at `/etc/apparmor.d/codex-broker-bwrap`. Re-run the check afte
 a reboot and before recreating the service. If a Compose file names an AppArmor
 profile that the kernel has not loaded, Docker rejects the container rather
 than silently weakening it.
+The loaded-profile portion of `--check` may require `sudo` even when the
+installed policy files themselves are world-readable.
 
 The checked-in policies record their exact current Moby baseline and checksum.
-They preserve the Moby defaults, explicitly block `AF_ALG` and `AF_VSOCK`, and
-add only Bubblewrap's required mount, pivot-root, user namespace clone,
-specific unshare, and detached unmount operations. CI validates this metadata
-and runs the no-model sandbox canary before image publication.
+The seccomp policy blocks direct `AF_ALG` and `AF_VSOCK` sockets and returns
+`ENOSYS` for the legacy `socketcall` multiplexer, whose pointed-to address
+family seccomp cannot inspect. The broker image supports only 64-bit amd64 and
+arm64 userlands, so that deliberate compatibility-syscall denial does not
+affect a supported image architecture. AppArmor independently denies `AF_ALG`.
+The only other deviations from Moby's default are Bubblewrap's required mount,
+pivot-root, user namespace clone, specific unshare, and detached unmount
+operations. CI validates this metadata and runs the no-model sandbox canary
+before image publication.
 
 Do not replace the policies with `seccomp=unconfined`, `apparmor=unconfined`,
 privileged mode, or `CAP_SYS_ADMIN`; those remove the outer-container

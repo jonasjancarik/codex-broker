@@ -22,8 +22,9 @@ host security profiles before starting Docker. This is a one-time, persistent
 host setup that you re-run when the broker release changes its profile version:
 
 ```bash
-./scripts/install-host-security-profiles.sh --check
+./scripts/install-host-security-profiles.sh --dry-run
 sudo ./scripts/install-host-security-profiles.sh
+sudo ./scripts/install-host-security-profiles.sh --check
 ```
 
 Run this on the Linux machine where the Docker daemon runs. A macOS or Windows

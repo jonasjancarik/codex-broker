@@ -180,9 +180,9 @@ new host or before every deployment, then run it with `sudo` once to install or
 update the root-owned profiles:
 
 ```bash
-./scripts/install-host-security-profiles.sh --check
+./scripts/install-host-security-profiles.sh --dry-run
 sudo ./scripts/install-host-security-profiles.sh
-./scripts/install-host-security-profiles.sh --check
+sudo ./scripts/install-host-security-profiles.sh --check
 ```
 
 Run the installer on the Linux system running the Docker daemon. It cannot
@@ -195,7 +195,9 @@ policy at `/etc/apparmor.d/codex-broker-bwrap`, and loads the AppArmor policy
 when AppArmor is enabled. The AppArmor file is persistent, so the profile is
 available after a host reboot. Re-run the check after reboot before recreating
 the broker container; a missing loaded profile makes Docker reject the
-container at creation time.
+container at creation time. A non-root `--check` that cannot read the kernel's
+loaded-profile list fails and tells the operator to re-run it with `sudo`; it
+never treats an unreadable AppArmor status as AppArmor being disabled.
 
 The base Compose service supplies `no-new-privileges:true` and references the
 stable seccomp path. On hosts with AppArmor enabled, add the AppArmor overlay:
@@ -218,9 +220,13 @@ AppArmor is disabled or unavailable. Do not substitute `apparmor=unconfined`,
 outer container protections rather than fixing the configuration.
 
 The checked-in policies identify their exact Moby source tags and source
-checksums. The seccomp policy keeps Moby's current defaults, explicitly blocks
-`AF_ALG` and `AF_VSOCK` sockets, and adds only the Bubblewrap operations the
-real canary exercises: mount and `pivot_root`, `umount2(MNT_DETACH)`, user
+checksums. Seccomp blocks direct `AF_ALG` and `AF_VSOCK` sockets and returns
+`ENOSYS` for the legacy `socketcall` multiplexer, because seccomp cannot inspect
+the address family behind that syscall's userspace pointer. The image supports
+only 64-bit amd64 and arm64 userlands, so this deliberate legacy-syscall denial
+does not affect a supported image architecture. AppArmor also denies `AF_ALG`
+as an LSM defense. The only other seccomp deviations are Bubblewrap operations
+the real canary exercises: mount and `pivot_root`, `umount2(MNT_DETACH)`, user
 namespace clones, and exact user or mount namespace `unshare` calls. The
 AppArmor policy preserves Moby's `/proc`, `/sys`, network, signal, and ptrace
 restrictions while allowing only Bubblewrap's user namespace, mount, unmount,

@@ -1,5 +1,5 @@
 {
-  "comment": "Moby seccomp/v0.2.3 baseline (tag f1a0fd6b5a369fca061b041539129661ed337ef5; upstream SHA-256 536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74), with Bubblewrap mount/user-namespace exceptions retained. AF_ALG (38) and AF_VSOCK (40) are denied.",
+  "comment": "Moby seccomp/v0.2.3 baseline (tag f1a0fd6b5a369fca061b041539129661ed337ef5; upstream SHA-256 536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74), with Bubblewrap mount/user-namespace exceptions retained. Direct AF_ALG (38) and AF_VSOCK (40) sockets are denied; the legacy socketcall multiplexer is deliberately denied with ENOSYS because it cannot be safely filtered by address family.",
   "defaultAction": "SCMP_ACT_ERRNO",
   "defaultErrnoRet": 1,
   "archMap": [
@@ -372,7 +372,6 @@
         "signalfd4",
         "sigprocmask",
         "sigreturn",
-        "socketcall",
         "socketpair",
         "splice",
         "stat",
@@ -436,6 +435,14 @@
       "includes": {
         "minKernel": "4.8"
       }
+    },
+    {
+      "names": [
+        "socketcall"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 38,
+      "comment": "Deny the legacy socketcall multiplexer. Seccomp cannot inspect its pointed-to address-family argument, so allowing it would bypass the AF_ALG and AF_VSOCK socket rules on compatibility architectures. ENOSYS prevents libseccomp from generating a socketcall allow companion."
     },
     {
       "names": [

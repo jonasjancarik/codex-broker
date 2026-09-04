@@ -117,7 +117,25 @@ apparmor_parser_path() {
 }
 
 apparmor_enabled() {
-  [ -r /sys/kernel/security/apparmor/profiles ]
+  enabled_parameter=/sys/module/apparmor/parameters/enabled
+  if [ -r "$enabled_parameter" ]; then
+    case $(cat "$enabled_parameter") in
+      Y|y|yes|Yes|YES|1) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+
+  # A loaded AppArmor module without a readable parameter is treated as
+  # enabled. Do not silently skip loaded-profile verification just because the
+  # caller lacks access to securityfs.
+  [ -d /sys/module/apparmor ]
+}
+
+require_loaded_profile_access() {
+  if [ ! -r /sys/kernel/security/apparmor/profiles ]; then
+    error "AppArmor is enabled, but loaded profiles cannot be inspected; rerun --check with sudo"
+    return 1
+  fi
 }
 
 validate_apparmor() {
@@ -172,6 +190,9 @@ check_installed() {
   else
     error "AppArmor profile is missing or differs from $APPARMOR_SOURCE: $APPARMOR_DEST"
     status=1
+  fi
+  if ! require_loaded_profile_access; then
+    return 1
   fi
   if grep -Fqx "codex-broker-bwrap (enforce)" /sys/kernel/security/apparmor/profiles \
     || grep -Fqx "codex-broker-bwrap (complain)" /sys/kernel/security/apparmor/profiles; then
@@ -243,5 +264,6 @@ case "$MODE" in
     fi
     "$parser" -r -W "$APPARMOR_DEST"
     info "loaded: codex-broker-bwrap"
+    check_installed
     ;;
 esac
