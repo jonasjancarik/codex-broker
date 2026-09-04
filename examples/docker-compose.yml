@@ -9,6 +9,11 @@ services:
       CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS: "/workspaces:/host-data"
       CODEX_BROKER_ALLOWED_TOOL_COMMANDS: "python,node"
       CODEX_BROKER_ALLOWED_HOSTED_TOOL_URL_PREFIXES: "http://app:3000,http://host.docker.internal,http://127.0.0.1"
+      # Conservative defaults for a small host. Raise only after measuring
+      # cgroup memory and process counts under representative concurrency.
+      CODEX_BROKER_MAX_ACTIVE_TURNS: "2"
+      CODEX_BROKER_MAX_POOLED_APP_SERVERS: "2"
+      CODEX_BROKER_POOL_IDLE_TTL_SECONDS: "120"
       CODEX_HOST_TOOL_KEY: "${CODEX_HOST_TOOL_KEY:-}"
     read_only: true
     security_opt:

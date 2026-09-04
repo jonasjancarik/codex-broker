@@ -208,11 +208,19 @@ contexts. Mounted MCP declarations add owner scope because an MCP process may
 retain tenant state. Explicit unknown upstream thread or turn ids are never
 routed by single-context guessing.
 
+Secret-backed MCP variables use Codex's per-server `env_vars` forwarding. The
+broker gives the App Server only the MCP target variable name, excludes both
+the source and target names from model command environments, and disables
+login-shell environment loading. Literal MCP values remain ordinary generated
+MCP configuration. The App Server and reviewed MCP executables are trusted
+control-plane processes; Bubblewrap isolates model-run commands, not a
+malicious MCP executable.
+
 `GET /v1/owners/{ownerId}/auth/models` uses the selected principal/profile child to call App Server `model/list`. The broker does not persist the catalog; it preserves advertised reasoning, modality, personality, visibility, upgrade, and service-tier fields in the HTTP response.
 
 Threads persist an immutable principal/profile/profile-instance binding. Deleting a profile changes the instance and fences old or queued work. Databases with a different schema version are rejected rather than migrated.
 
-Idle children are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`. Closed or crashed children are removed and restarted lazily on later work. Children with active turn contexts are not swept.
+Idle children are closed after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`. Closed or crashed children are removed and restarted lazily on later work. Children with active turn contexts are not swept. When `CODEX_BROKER_MAX_POOLED_APP_SERVERS` is nonzero, new children evict the least-recently-used idle child at capacity; creation fails with explicit backpressure when every slot is active. Idle children whose MCP secret fingerprint has been replaced are retired immediately.
 
 Turns that use broker-hosted HTTP adapters close their app-server child after finalization because adapter config includes per-turn overlay context.
 

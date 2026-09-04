@@ -145,8 +145,13 @@ Rules:
 - `args` are passed as strings.
 - `cwd`, when set, must be inside an allowed bundle root or workspace root.
 - Secret-looking env keys must use `env:VAR` indirection.
-- `env:VAR` values are resolved from the broker process environment and passed to the app-server child environment.
+- `env:VAR` values are resolved from the broker process environment. The App Server receives each value only under its MCP target name, forwards that named variable to the intended MCP child, and excludes both the source and target names from model-run command environments. Secret values are never written into App Server command-line arguments.
 - Literal env values are written into generated Codex MCP config.
+
+The App Server process must hold a resolved MCP value long enough to launch its
+MCP child, so reviewed MCP executables and the App Server remain inside the
+trusted control plane. Bubblewrap protects model-run commands; it is not a
+separate sandbox for a malicious MCP executable.
 
 ## Broker-hosted tools
 

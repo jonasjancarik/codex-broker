@@ -130,11 +130,12 @@ the profile home. The child process environment is otherwise scrubbed.
 | --- | --- | --- |
 | `CODEX_BROKER_MAX_ACTIVE_TURNS` | `0` | Global active-turn cap. `0` uses the broker's bounded 32-worker default; same-thread serialization still applies. |
 | `CODEX_BROKER_MAX_QUEUED_TURNS` | `1000` | Maximum turns waiting behind active turns. Further queue requests fail closed. |
+| `CODEX_BROKER_MAX_POOLED_APP_SERVERS` | `0` | Maximum live or starting App Server children. `0` preserves the unlimited compatibility behavior. At capacity, the least-recently-used idle child is closed; if every child is active, creation fails with explicit backpressure. Small hosts should set this explicitly. |
 | `CODEX_BROKER_POOL_IDLE_TTL_SECONDS` | `900` | Idle app-server children older than this are closed. Set `0` to disable idle sweeping. |
 | `CODEX_BROKER_REQUEST_TIMEOUT_SECONDS` | `60` | Timeout for JSON-RPC request/response calls to an app-server child. |
 | `CODEX_BROKER_TURN_TIMEOUT_SECONDS` | `0` | Maximum wall time for a Codex turn. `0` disables broker-level turn timeout. |
 | `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS` | `30` | Time an app-server approval, permission request, user-input prompt, or MCP elicitation waits for host resolution before fallback. |
-| `CODEX_BROKER_SANDBOX_PREFLIGHT` | `required` on Linux, otherwise `warn` | Runs a bounded no-model managed-sandbox canary once at startup. `required` makes readiness and managed turns fail closed unless it is healthy; `warn` reports the result but permits work; `disabled` skips it. |
+| `CODEX_BROKER_SANDBOX_PREFLIGHT` | `required` on Linux, otherwise `warn` | Runs a bounded no-model managed-sandbox canary once at startup. `required` aborts startup unless it is healthy, allowing a service manager to restart or alert on the failure; `warn` reports the result but permits work; `disabled` skips it. |
 | `CODEX_BROKER_SANDBOX_DENY_PATHS` | empty | Path-separator-delimited absolute control-plane paths to deny in every managed Codex permission profile, in addition to broker auth/state paths and `/run/secrets`. |
 | `CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE` | unset | File containing the separate key required to authorize `danger-full-access` on a request. The key is never accepted from a regular config profile or option. |
 

@@ -271,12 +271,20 @@ complete.
 
 - App Server children start lazily. The pool key uses auth-principal hash, profile, fingerprint, config profile, Codex command/version, credential-store mode, and process config. Compatible no-MCP children may be shared; mounted MCP processes remain owner-isolated.
 - Idle children close after `CODEX_BROKER_POOL_IDLE_TTL_SECONDS`.
+- Set `CODEX_BROKER_MAX_POOLED_APP_SERVERS` to cap live and starting App Server children. At capacity, the broker evicts the least-recently-used idle child or returns explicit backpressure if every child is active.
 - Turns using broker-hosted adapters close their app-server child after finalization because adapter config is tied to the turn overlay.
 - If a child crashes, its active turns fail and the pool starts a new child for later work.
 
+One App Server child can consume roughly 100–200 MiB depending on Codex version
+and configuration. Measure the container cgroup under representative traffic.
+For a small host, start with two active turns, two pooled children, and a
+60–120 second idle TTL; add container memory and PID limits with enough room
+for both children to start and finish cleanly.
+
 ## Restart and shutdown
 
-- On startup, the broker marks abandoned `starting`, `queued`, and `running` turns failed.
+- In required-preflight mode, the broker aborts startup before opening its state database when the managed sandbox canary is unhealthy. A service manager can then restart or alert instead of leaving an unavailable process running indefinitely.
+- After a successful preflight, the broker marks abandoned `starting`, `queued`, and `running` turns failed.
 - Pending interactions are marked failed with fallback responses during restart recovery.
 - During shutdown, `interrupt` interrupts active turns.
 - With `drain`, the broker rejects new turns, waits for accepted work, then interrupts leftovers.
