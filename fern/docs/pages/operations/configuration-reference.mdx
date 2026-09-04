@@ -256,7 +256,7 @@ The legacy `sandboxPolicy`, `permissions`,
 are rejected from callers.
 
 The cached no-model canary uses `command/exec` with its temporary workspace as
-`cwd`. Pinned Codex `0.153.0` does not support `runtimeWorkspaceRoots` on that
+`cwd`. Pinned Codex `0.153.2` does not support `runtimeWorkspaceRoots` on that
 command, so `cwd` is its runtime workspace root; normal thread and turn calls
 receive the broker-canonicalized `runtimeWorkspaceRoots` field. The canary
 therefore proves the materialized snapshot path under the production profile,
@@ -328,7 +328,7 @@ Turn start accepts:
 
 | Build arg | Default | Description |
 | --- | --- | --- |
-| `CODEX_VERSION` | `0.153.0` | Codex CLI release version without the `rust-v` prefix. |
+| `CODEX_VERSION` | `0.153.2` | Codex CLI release version without the `rust-v` prefix. |
 | `TARGETARCH` | supplied by BuildKit | `amd64` maps to `x86_64`, `arm64` maps to `aarch64`. Other values fail the build. |
 
 ## Minimal local example
