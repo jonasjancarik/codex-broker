@@ -155,8 +155,10 @@ canary. Pinned Codex `0.153.3` uses the command `cwd` as this canary's runtime
 workspace root; it does not expose `runtimeWorkspaceRoots` on `command/exec`.
 
 `CODEX_BROKER_SANDBOX_PREFLIGHT=required` is the Linux default. A failed or
-unsupported result makes readiness return `503` and rejects managed
-`read-only` and `workspace-write` turns before model contact. `warn` reports
+unsupported startup result aborts the broker before it starts serving requests.
+If sandbox health becomes invalid while the broker is running, readiness
+returns `503` and managed `read-only` and `workspace-write` turns are rejected
+before model contact. `warn` reports
 the result but keeps readiness available; `disabled` reports that the check was
 skipped. The probe runs once per broker process rather than on every readiness
 request.
@@ -174,6 +176,9 @@ namespace setup, and Docker's default AppArmor policy can deny Bubblewrap's
 nested mount operations. Those profiles are selected by Docker before the
 container starts, so they must be installed on the host rather than placed only
 in the image or Compose project.
+
+Run the commands below from the repository root. The example build pins the
+same Codex version as the Dockerfile; release tests check that they agree.
 
 The repository ships an idempotent installer. Run its non-mutating check on a
 new host or before every deployment, then run it with `sudo` once to install or
@@ -231,6 +236,51 @@ namespace clones, and exact user or mount namespace `unshare` calls. The
 AppArmor policy preserves Moby's `/proc`, `/sys`, network, signal, and ptrace
 restrictions while allowing only Bubblewrap's user namespace, mount, unmount,
 and pivot-root operations.
+
+On systemd hosts, check `systemctl status apparmor.service` and
+`systemctl is-enabled apparmor.service`; ensure the distribution's profile
+loader runs before Docker restores containers at boot. After a host reboot,
+confirm `sudo aa-status` lists `codex-broker-bwrap` in enforce mode and check
+broker readiness again. Loading a file directly from the checkout with
+`apparmor_parser` alone does not install it for future boots. See
+[Ubuntu's AppArmor administration guide](https://ubuntu.com/server/docs/how-to/security/apparmor/)
+for host profile management.
+
+When integrating into an app's Compose stack, add
+`apparmor=codex-broker-bwrap` alongside its existing `no-new-privileges:true`
+and seccomp settings. Keep all three settings in the resolved configuration.
+
+### Verify the running container and diagnose sandbox failures
+
+For the example AppArmor stack, inspect the active profile and broker response:
+
+```bash
+docker compose -f examples/docker-compose.yml -f examples/docker-compose.apparmor.yml \
+  exec codex-broker cat /proc/self/attr/current
+docker compose -f examples/docker-compose.yml -f examples/docker-compose.apparmor.yml \
+  exec codex-broker curl -sS http://127.0.0.1:3400/readyz
+docker compose -f examples/docker-compose.yml -f examples/docker-compose.apparmor.yml \
+  logs --tail=100 codex-broker
+```
+
+Expect `codex-broker-bwrap (enforce)` and a successful readiness result. Use
+your app's Compose files and service name when integrating these checks.
+
+If Docker reports the profile is missing, rerun the installer on the daemon
+host and confirm `sudo ./scripts/install-host-security-profiles.sh --check`
+succeeds before retrying.
+For namespace or mount permission errors, verify the resolved seccomp path and
+active AppArmor profile, then inspect `sudo journalctl -k --since "10 minutes ago"`
+on the host for AppArmor `DENIED` records. Host policy must permit unprivileged
+user namespaces; the container profiles cannot override a host-wide ban.
+[Docker's AppArmor guide](https://docs.docker.com/engine/security/apparmor/)
+explains profile inspection and denial logs.
+
+After correcting host policy, recreate the broker with the same Compose files
+and `up -d --force-recreate codex-broker`. This applies container security
+changes and reruns the startup preflight, whose result is cached. Check
+`/readyz` before sending work; do not set the preflight to `warn` or `disabled`
+to hide a failed production sandbox check.
 
 Codex 0.151's bundled Bubblewrap reports restrictive-container procfs failures
 using wording its built-in fallback does not yet recognize. The broker therefore

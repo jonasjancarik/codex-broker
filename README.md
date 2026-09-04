@@ -426,8 +426,21 @@ The Docker image installs the official Codex CLI Linux release archive from `ope
 
 ```bash
 docker build -t codex-broker .
+```
+
+First install the host security profiles using the
+[deployment guide](fern/docs/pages/operations/deployment.mdx#managed-sandbox-requirements).
+Run the installer on the Linux Docker daemon host. Hosts without AppArmor
+still need seccomp and should omit only the AppArmor option below.
+
+```bash
 docker run --rm \
   -p 127.0.0.1:3400:3400 \
+  --read-only \
+  --tmpfs /tmp \
+  --security-opt no-new-privileges:true \
+  --security-opt seccomp=/etc/codex-broker/security/v1/seccomp.json \
+  --security-opt apparmor=codex-broker-bwrap \
   -v codex-broker-data:/data \
   -v /path/to/workspaces:/workspaces:rw \
   -v /path/to/bundles:/bundles:ro \

@@ -18,8 +18,9 @@ This quickstart uses the repo's example Compose files as a standalone local stac
 Python and `uv` are only needed for native development.
 
 For managed `read-only` or `workspace-write` turns, install the repository's
-host security profiles before starting Docker. This is a one-time, persistent
-host setup that you re-run when the broker release changes its profile version:
+host security profiles before starting Docker. See the [managed sandbox host
+setup](operations/deployment.mdx#managed-sandbox-requirements) for the one-time,
+persistent setup and release update procedure:
 
 ```bash
 ./scripts/install-host-security-profiles.sh --dry-run
@@ -30,7 +31,20 @@ sudo ./scripts/install-host-security-profiles.sh --check
 Run this on the Linux machine where the Docker daemon runs. A macOS or Windows
 Docker Desktop client is not that host; its Linux VM needs the profiles instead.
 
-If `aa-status` says AppArmor is enabled, include the AppArmor overlay below.
+If `docker info` reports AppArmor, install and load the AppArmor profile on the
+Docker host as described in that guide, then start the local example with its
+overlay:
+
+```bash
+docker info --format '{{json .SecurityOptions}}'
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.apparmor.yml \
+  -f examples/docker-compose.local.yml \
+  up --build
+```
+
+On hosts without AppArmor, use the base and local Compose files shown below.
 
 ## Start the local example
 
@@ -46,10 +60,6 @@ docker compose \
 `examples/docker-compose.yml` is the broker service slice you would fold into a real app stack. It uses persistent `/data`, reviewed bundles mounted at `/bundles`, a deliberately empty narrow sample workspace mounted under `/workspaces/app`, and the broker key loaded from a Docker secret. Replace that sample with only the individual job or project directory Codex may access; never mount a repository parent or your home directory.
 
 `examples/docker-compose.local.yml` publishes `127.0.0.1:3400` so you can call the broker from your shell while testing.
-
-When AppArmor is enabled, insert `-f examples/docker-compose.apparmor.yml`
-before the local override in both commands. Hosts without AppArmor use the base
-and local files alone.
 
 The example secret file contains the development key used below:
 
@@ -73,6 +83,8 @@ services:
     security_opt:
       - no-new-privileges:true
       - seccomp=/etc/codex-broker/security/v1/seccomp.json
+      # On AppArmor hosts, add this after installing the profile:
+      # - apparmor=codex-broker-bwrap
     tmpfs:
       - /tmp
     volumes:
@@ -91,11 +103,7 @@ secrets:
     file: ./secrets/codex_broker_key
 ```
 
-Pin the image to a specific release tag for reproducible production deployments. Services on the same Compose network can reach the broker at `http://codex-broker:3400` without an `expose` or `ports` entry.
-
-On hosts with AppArmor enabled, add `apparmor=codex-broker-bwrap` to
-`security_opt` after installing the profiles. On a host without AppArmor, omit
-only that line; keep the seccomp profile and `no-new-privileges` setting.
+Pin the image to a specific release tag for reproducible production deployments. The seccomp path above is installed on the Docker host by the deployment setup. On AppArmor hosts, add `apparmor=codex-broker-bwrap` after the profile is installed. Services on the same Compose network can reach the broker at `http://codex-broker:3400` without an `expose` or `ports` entry.
 
 Only publish `3400` to the host machine for local debugging. In production-style Compose stacks, leave the broker on the internal Compose network and have the host app call it server-side.
 
@@ -108,7 +116,7 @@ curl -sS http://127.0.0.1:3400/healthz
 curl -sS http://127.0.0.1:3400/readyz
 ```
 
-`/readyz` checks the internal key, SQLite state store, Codex binary, configured workspace roots, bundle roots, and auth-root writability.
+`/readyz` checks the internal key, SQLite state store, Codex binary, configured workspace roots, bundle roots, auth-root writability, and the cached real managed-sandbox preflight result. With the default required preflight, the broker fails to start when the result is unhealthy; if a running broker reports an unhealthy cached result, `/readyz` returns `503` and managed turns are rejected. After fixing a host profile or Compose security option, recreate the broker so startup reruns the preflight, then check `/readyz` again.
 
 ## Check user auth
 
