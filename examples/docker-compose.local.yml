@@ -1,4 +1,4 @@
 services:
   codex-broker:
     ports:
-      - "3400:3400"
+      - "127.0.0.1:3400:3400"

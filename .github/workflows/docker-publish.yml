@@ -38,6 +38,14 @@ jobs:
         run: |
           uv run python scripts/export_openapi.py
           git diff --exit-code -- fern/openapi/openapi.json
+      - name: Validate host security profile metadata and Compose examples
+        run: |
+          docker compose -f examples/docker-compose.yml config >/dev/null
+          docker compose \
+            -f examples/docker-compose.yml \
+            -f examples/docker-compose.apparmor.yml \
+            -f examples/docker-compose.local.yml \
+            config >/dev/null
 
   build:
     needs: test
@@ -78,8 +86,10 @@ jobs:
           tags: codex-broker:sandbox-canary
           platforms: linux/amd64
 
-      - name: Load AppArmor profile for Bubblewrap
-        run: sudo apparmor_parser -r -W examples/apparmor/codex-broker-bwrap
+      - name: Install and preflight host security profiles
+        run: |
+          sudo ./scripts/install-host-security-profiles.sh
+          ./scripts/install-host-security-profiles.sh --check
 
       - name: Run no-model sandbox canary
         run: |
@@ -88,7 +98,7 @@ jobs:
             --read-only \
             --security-opt no-new-privileges:true \
             --security-opt apparmor=codex-broker-bwrap \
-            --security-opt seccomp=examples/seccomp/codex-broker.json \
+            --security-opt seccomp=/etc/codex-broker/security/v1/seccomp.json \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1777 \
             --tmpfs /data:rw,nosuid,nodev,uid=1000,gid=1000,mode=0700 \
             --tmpfs /workspaces:rw,nosuid,nodev,uid=1000,gid=1000,mode=0755 \

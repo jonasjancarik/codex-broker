@@ -17,6 +17,20 @@ This quickstart uses the repo's example Compose files as a standalone local stac
 
 Python and `uv` are only needed for native development.
 
+For managed `read-only` or `workspace-write` turns, install the repository's
+host security profiles before starting Docker. This is a one-time, persistent
+host setup that you re-run when the broker release changes its profile version:
+
+```bash
+./scripts/install-host-security-profiles.sh --check
+sudo ./scripts/install-host-security-profiles.sh
+```
+
+Run this on the Linux machine where the Docker daemon runs. A macOS or Windows
+Docker Desktop client is not that host; its Linux VM needs the profiles instead.
+
+If `aa-status` says AppArmor is enabled, include the AppArmor overlay below.
+
 ## Start the local example
 
 Run from the repository root:
@@ -28,9 +42,13 @@ docker compose \
   up --build
 ```
 
-`examples/docker-compose.yml` is the broker service slice you would fold into a real app stack. It uses persistent `/data`, reviewed bundles mounted at `/bundles`, host workspaces mounted under `/workspaces`, and the broker key loaded from a Docker secret.
+`examples/docker-compose.yml` is the broker service slice you would fold into a real app stack. It uses persistent `/data`, reviewed bundles mounted at `/bundles`, a deliberately empty narrow sample workspace mounted under `/workspaces/app`, and the broker key loaded from a Docker secret. Replace that sample with only the individual job or project directory Codex may access; never mount a repository parent or your home directory.
 
 `examples/docker-compose.local.yml` publishes `127.0.0.1:3400` so you can call the broker from your shell while testing.
+
+When AppArmor is enabled, insert `-f examples/docker-compose.apparmor.yml`
+before the local override in both commands. Hosts without AppArmor use the base
+and local files alone.
 
 The example secret file contains the development key used below:
 
@@ -49,13 +67,16 @@ Start with this service definition and adjust the workspace and bundle source pa
 ```yaml
 services:
   codex-broker:
-    image: ghcr.io/jonasjancarik/codex-broker:latest
+    image: ghcr.io/jonasjancarik/codex-broker:v0.9.15
     read_only: true
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=/etc/codex-broker/security/v1/seccomp.json
     tmpfs:
       - /tmp
     volumes:
       - codex-broker-data:/data
-      - .:/workspaces/app:rw
+      - ./authorized-job:/workspaces/app:rw
       - ./codex-bundles:/bundles:ro
     secrets:
       - codex_broker_key
@@ -70,6 +91,10 @@ secrets:
 ```
 
 Pin the image to a specific release tag for reproducible production deployments. Services on the same Compose network can reach the broker at `http://codex-broker:3400` without an `expose` or `ports` entry.
+
+On hosts with AppArmor enabled, add `apparmor=codex-broker-bwrap` to
+`security_opt` after installing the profiles. On a host without AppArmor, omit
+only that line; keep the seccomp profile and `no-new-privileges` setting.
 
 Only publish `3400` to the host machine for local debugging. In production-style Compose stacks, leave the broker on the internal Compose network and have the host app call it server-side.
 

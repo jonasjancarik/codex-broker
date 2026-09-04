@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       args:
-        CODEX_VERSION: "0.146.0"
+        CODEX_VERSION: "0.153.0"
     image: codex-broker:local
     environment:
       CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS: "/workspaces:/host-data"
@@ -13,12 +13,16 @@ services:
     read_only: true
     security_opt:
       - no-new-privileges:true
-      - seccomp=./seccomp/codex-broker.json
+      # Installed by scripts/install-host-security-profiles.sh. Docker reads
+      # this host path before the container image starts.
+      - seccomp=/etc/codex-broker/security/v1/seccomp.json
     tmpfs:
       - /tmp
     volumes:
       - codex-broker-data:/data
-      - ../..:/workspaces/app:rw
+      # A deliberately narrow, empty sample workspace. Replace only with the
+      # specific job or project directory this broker is authorized to change.
+      - ./workspace:/workspaces/app:rw
       - job-data:/host-data/jobs:rw
       - ./bundles:/bundles:ro
     secrets:

@@ -65,7 +65,10 @@ Mount:
 
 The example Compose file is a broker service slice. Copy its service, volumes, secrets, and mounts into the host app's Compose stack, then point the host backend at `http://codex-broker:3400` on the Compose network.
 
-The broker should usually expose `3400` only to the Compose network. Add a local override with `ports: ["3400:3400"]` only when host-machine access is intentional.
+The broker should usually expose `3400` only to the Compose network. The local
+example binds it to `127.0.0.1:3400`; do not publish it on every host interface
+unless a reverse proxy and the host application's authentication model require
+that exposure.
 
 When enabling the example chat bundle, the broker container must share a Docker network or route with the host app service named by the bundle endpoint, currently:
 
@@ -167,30 +170,37 @@ compatible API.
 
 The managed Codex profiles depend on Bubblewrap being able to create Linux user
 and PID namespaces. Docker's default seccomp profile can deny the required
-namespace setup even when the image and generated Codex configuration are
-otherwise valid. Use the shipped
-[`examples/seccomp/codex-broker.json`](../../../../examples/seccomp/codex-broker.json)
-profile for managed deployments. It is derived from Docker Engine 29.4.0's
-pinned Moby seccomp v0.1.0 default profile and narrows its additions to the
-Bubblewrap operations exercised by the real canary: mount and `pivot_root`,
-`umount2` with `MNT_DETACH`, `clone` calls containing `CLONE_NEWUSER`, and
-exact `unshare(CLONE_NEWUSER)` or `unshare(CLONE_NEWNS)` calls.
+namespace setup, and Docker's default AppArmor policy can deny Bubblewrap's
+nested mount operations. Those profiles are selected by Docker before the
+container starts, so they must be installed on the host rather than placed only
+in the image or Compose project.
 
-The example Compose service supplies both
-`no-new-privileges:true` and `seccomp=./seccomp/codex-broker.json`. Validate
-the resolved configuration before starting it:
+The repository ships an idempotent installer. Run its non-mutating check on a
+new host or before every deployment, then run it with `sudo` once to install or
+update the root-owned profiles:
 
 ```bash
-docker compose -f examples/docker-compose.yml config
-docker compose -f examples/docker-compose.yml up -d
+./scripts/install-host-security-profiles.sh --check
+sudo ./scripts/install-host-security-profiles.sh
+./scripts/install-host-security-profiles.sh --check
 ```
 
-On Docker hosts with AppArmor, Docker's default profile denies the nested mount
-operations Bubblewrap needs even when seccomp allows the corresponding
-syscalls. Load the shipped profile and add the AppArmor Compose overlay:
+Run the installer on the Linux system running the Docker daemon. It cannot
+install a policy into a remote daemon or a Docker Desktop Linux VM when run
+from a macOS or Windows client.
+
+It verifies the repository profile checksums and syntax, installs the seccomp
+policy at `/etc/codex-broker/security/v1/seccomp.json`, installs the AppArmor
+policy at `/etc/apparmor.d/codex-broker-bwrap`, and loads the AppArmor policy
+when AppArmor is enabled. The AppArmor file is persistent, so the profile is
+available after a host reboot. Re-run the check after reboot before recreating
+the broker container; a missing loaded profile makes Docker reject the
+container at creation time.
+
+The base Compose service supplies `no-new-privileges:true` and references the
+stable seccomp path. On hosts with AppArmor enabled, add the AppArmor overlay:
 
 ```bash
-sudo apparmor_parser -r -W examples/apparmor/codex-broker-bwrap
 docker compose \
   -f examples/docker-compose.yml \
   -f examples/docker-compose.apparmor.yml \
@@ -201,18 +211,28 @@ docker compose \
   up -d
 ```
 
-The profile is derived from Moby v28.0.4's `docker-default` template. It keeps
-the template's `/proc`, `/sys`, signal, and ptrace restrictions while allowing
-the user namespace, mount, unmount, and pivot-root operations covered by the
-real canary. Hosts without AppArmor should use only the base Compose file.
+Hosts without AppArmor use the base file alone, but must still install the
+seccomp policy. Do not add the AppArmor overlay when `aa-status` reports that
+AppArmor is disabled or unavailable. Do not substitute `apparmor=unconfined`,
+`seccomp=unconfined`, privileged mode, or `CAP_SYS_ADMIN`; those remove the
+outer container protections rather than fixing the configuration.
+
+The checked-in policies identify their exact Moby source tags and source
+checksums. The seccomp policy keeps Moby's current defaults, explicitly blocks
+`AF_ALG` and `AF_VSOCK` sockets, and adds only the Bubblewrap operations the
+real canary exercises: mount and `pivot_root`, `umount2(MNT_DETACH)`, user
+namespace clones, and exact user or mount namespace `unshare` calls. The
+AppArmor policy preserves Moby's `/proc`, `/sys`, network, signal, and ptrace
+restrictions while allowing only Bubblewrap's user namespace, mount, unmount,
+and pivot-root operations.
 
 Codex 0.151's bundled Bubblewrap reports restrictive-container procfs failures
 using wording its built-in fallback does not yet recognize. The broker therefore
 uses the supported `--no-proc` fallback: PID isolation and the filesystem
 sandbox remain active, while the fresh procfs mount is omitted.
 
-CI is configured to run the no-model sandbox canary with the same profile
-before image publication:
+CI is configured to validate the profile metadata and run the no-model sandbox
+canary with the same profiles before image publication:
 
 ```bash
 docker run --rm \
@@ -220,7 +240,7 @@ docker run --rm \
   --read-only \
   --security-opt no-new-privileges:true \
   --security-opt apparmor=codex-broker-bwrap \
-  --security-opt seccomp=examples/seccomp/codex-broker.json \
+  --security-opt seccomp=/etc/codex-broker/security/v1/seccomp.json \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1777 \
   --tmpfs /data:rw,nosuid,nodev,uid=1000,gid=1000,mode=0700 \
   --tmpfs /workspaces:rw,nosuid,nodev,uid=1000,gid=1000,mode=0755 \
@@ -230,11 +250,10 @@ docker run --rm \
   python -m codex_broker.sandbox_probe
 ```
 
-Do not work around this with `seccomp=unconfined`, `apparmor=unconfined`,
-privileged containers, or `CAP_SYS_ADMIN`: each discards the least-privilege
-outer-container boundary the broker relies on. Keep both host profiles pinned
-and re-run the real preflight whenever the Docker Engine baseline, profiles,
-Bubblewrap, or Codex version changes.
+Keep both host profiles pinned and re-run the real preflight whenever the Moby
+baseline, profiles, Bubblewrap, or Codex version changes. The profile version
+is part of the broker release's deployment contract: upgrade the image and the
+installed profile together, run `--check`, then recreate the service.
 
 `approvalsReviewer: auto_review` is not a sandbox backend. It reviews eligible
 explicit permission requests under the broker's granular approval policy,

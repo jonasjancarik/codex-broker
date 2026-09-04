@@ -427,7 +427,7 @@ The Docker image installs the official Codex CLI Linux release archive from `ope
 ```bash
 docker build -t codex-broker .
 docker run --rm \
-  -p 3400:3400 \
+  -p 127.0.0.1:3400:3400 \
   -v codex-broker-data:/data \
   -v /path/to/workspaces:/workspaces:rw \
   -v /path/to/bundles:/bundles:ro \
@@ -439,43 +439,49 @@ Override the pinned Codex version with `--build-arg CODEX_VERSION=<version>`.
 
 Managed sandbox deployments need the shipped
 [`examples/seccomp/codex-broker.json`](examples/seccomp/codex-broker.json)
-profile. It starts from Docker Engine 29.4.0's pinned Moby seccomp v0.1.0
-default and adds only Bubblewrap's required mount/pivot-root calls,
-`umount2(MNT_DETACH)`, `clone` calls containing `CLONE_NEWUSER`, and exact
-`unshare(CLONE_NEWUSER)` or `unshare(CLONE_NEWNS)` calls. The example Compose
-service loads it with `no-new-privileges:true`:
+profile. Docker selects seccomp and AppArmor policies before the image starts,
+so install them on the host—not inside the image or only in a deployment
+checkout. The installer is idempotent: its check path makes no host changes;
+the `sudo` invocation installs root-owned, persistent policy files.
 
 ```bash
-docker compose -f examples/docker-compose.yml config
-docker compose -f examples/docker-compose.yml up -d
+./scripts/install-host-security-profiles.sh --check
+sudo ./scripts/install-host-security-profiles.sh
+./scripts/install-host-security-profiles.sh --check
 ```
 
-CI runs the no-model sandbox canary using the same profile before publishing an
-image. It checks an attached overlay snapshot, its read-only mounted source, an
-ordinary job workspace read/write, and sibling-job sentinel, output, and skill
-paths. `command/exec` has no multi-root parameter, so the canary runs from the
-snapshot root and proves that neither the snapshot nor its mounted source can
-be modified. Parameter tests assert the exact ordered `[cwd, overlay]` roots on
-normal thread and turn calls. Do not publish an image until a release-time Linux
-container canary has also exercised the actual job-plus-overlay roots. Do not replace it with
-`seccomp=unconfined`, privileged mode, or
-`CAP_SYS_ADMIN`; those remove the outer-container protection that makes the
-managed profile meaningful.
+Run the installer on the Linux Docker host. When Docker Desktop is controlled
+from macOS or Windows, its Linux VM—not the client machine—must contain the
+profiles.
 
-Docker hosts with AppArmor also need the shipped profile that preserves
-Docker's default container restrictions while allowing Bubblewrap's nested
-user-namespace mounts:
+The example Compose service always uses the stable seccomp path and
+`no-new-privileges:true`. On an AppArmor-enabled host, include its overlay;
+otherwise use the base file only:
 
 ```bash
-sudo apparmor_parser -r -W examples/apparmor/codex-broker-bwrap
 docker compose \
   -f examples/docker-compose.yml \
   -f examples/docker-compose.apparmor.yml \
+  -f examples/docker-compose.local.yml \
   up -d
 ```
 
-Do not substitute `apparmor=unconfined`; hosts without AppArmor should use the
-base Compose file alone.
+The installer puts the seccomp file at
+`/etc/codex-broker/security/v1/seccomp.json` and, when AppArmor is enabled,
+the named profile at `/etc/apparmor.d/codex-broker-bwrap`. Re-run the check after
+a reboot and before recreating the service. If a Compose file names an AppArmor
+profile that the kernel has not loaded, Docker rejects the container rather
+than silently weakening it.
+
+The checked-in policies record their exact current Moby baseline and checksum.
+They preserve the Moby defaults, explicitly block `AF_ALG` and `AF_VSOCK`, and
+add only Bubblewrap's required mount, pivot-root, user namespace clone,
+specific unshare, and detached unmount operations. CI validates this metadata
+and runs the no-model sandbox canary before image publication.
+
+Do not replace the policies with `seccomp=unconfined`, `apparmor=unconfined`,
+privileged mode, or `CAP_SYS_ADMIN`; those remove the outer-container
+protection that makes the managed sandbox meaningful.
 
 See the Fern [deployment guide](fern/docs/pages/operations/deployment.mdx) and
 [examples/docker-compose.yml](examples/docker-compose.yml) for a Docker Compose

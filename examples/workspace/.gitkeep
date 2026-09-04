@@ -1,0 +1,3 @@
+This intentionally empty directory is the narrow sample workspace mounted by
+examples/docker-compose.yml. Do not replace it with a repository parent or a
+home directory; mount only the individual job or project directory a turn may use.
