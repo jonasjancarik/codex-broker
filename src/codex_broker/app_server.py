@@ -159,7 +159,7 @@ class AppServerClient:
                 "HOME": str(runtime_home),
             },
         )
-        # Codex 0.153.0 reads only env_vars named by each MCP server when it
+        # Codex 0.153.2 reads only env_vars named by each MCP server when it
         # starts that server. Shell commands use the policy appended in
         # _build_command(), which excludes these values and disables login
         # shells that could reintroduce them from profile files.

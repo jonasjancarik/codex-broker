@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       args:
-        CODEX_VERSION: "0.153.0"
+        CODEX_VERSION: "0.153.2"
     image: codex-broker:local
     environment:
       CODEX_BROKER_ALLOWED_WORKSPACE_ROOTS: "/workspaces:/host-data"
