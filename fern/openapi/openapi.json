@@ -2143,7 +2143,7 @@
   },
   "info": {
     "title": "Codex Broker",
-    "version": "0.9.16"
+    "version": "0.9.17"
   },
   "openapi": "3.1.0",
   "paths": {
