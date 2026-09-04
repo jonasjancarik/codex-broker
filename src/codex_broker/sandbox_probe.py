@@ -188,9 +188,9 @@ class SandboxProbe:
                 sibling_skill = materialized_skill_path(sibling_overlay, bundle.skills[0])
                 if attached_skill.is_symlink() or attached_skill.parent.is_symlink():
                     raise RuntimeError("managed sandbox materialized the attached skill as a symlink")
-                if attached_skill.stat().st_ino == source_skill.stat().st_ino:
+                if attached_skill.samefile(source_skill):
                     raise RuntimeError("managed sandbox materialized the attached skill as a linked source")
-                if sibling_skill.stat().st_ino == attached_skill.stat().st_ino:
+                if sibling_skill.samefile(attached_skill):
                     raise RuntimeError("managed sandbox reused a skill snapshot across jobs")
                 config_path = home / "config.toml"
                 config_path.write_text(render_managed_codex_config(probe_config), encoding="utf-8")
