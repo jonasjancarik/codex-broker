@@ -29,6 +29,7 @@ class ShutdownSignalTests(unittest.TestCase):
                     "CODEX_BROKER_ALLOWED_BUNDLE_ROOTS": str(tmp),
                     "CODEX_BIN": f"{sys.executable} tests/fake_codex.py",
                     "CODEX_BROKER_JSON_LOGS": "false",
+                    "CODEX_BROKER_SANDBOX_PREFLIGHT": "disabled",
                 }
             )
             process = subprocess.Popen(

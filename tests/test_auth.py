@@ -294,7 +294,11 @@ class AuthProfileTests(unittest.TestCase):
 
     def test_api_key_auth_spawn_failure_is_audited_without_key_material(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
-            config = replace(config_for(Path(tmp_raw)), codex_command=("missing-codex-binary",))
+            config = replace(
+                config_for(Path(tmp_raw)),
+                codex_command=("missing-codex-binary",),
+                sandbox_preflight_mode="disabled",
+            )
             services = BrokerServices.build(config)
             try:
                 result = services.auth.login_api_key("owner-a", "sk-live-secret-value", "default")
@@ -314,7 +318,11 @@ class AuthProfileTests(unittest.TestCase):
 
     def test_device_auth_spawn_failure_is_audited_as_failed_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
-            config = replace(config_for(Path(tmp_raw)), codex_command=("missing-codex-binary",))
+            config = replace(
+                config_for(Path(tmp_raw)),
+                codex_command=("missing-codex-binary",),
+                sandbox_preflight_mode="disabled",
+            )
             services = BrokerServices.build(config)
             try:
                 started = services.auth.start_device_auth("owner-a", "default")
@@ -334,7 +342,11 @@ class AuthProfileTests(unittest.TestCase):
 
     def test_logout_removes_auth_file_even_when_codex_logout_fails_to_spawn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
-            config = replace(config_for(Path(tmp_raw)), codex_command=("missing-codex-binary",))
+            config = replace(
+                config_for(Path(tmp_raw)),
+                codex_command=("missing-codex-binary",),
+                sandbox_preflight_mode="disabled",
+            )
             services = BrokerServices.build(config)
             try:
                 owner_hash = services.auth.hash_owner("owner-a")
@@ -357,7 +369,11 @@ class AuthProfileTests(unittest.TestCase):
 
     def test_logout_delete_profile_continues_when_codex_logout_fails_to_spawn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
-            config = replace(config_for(Path(tmp_raw)), codex_command=("missing-codex-binary",))
+            config = replace(
+                config_for(Path(tmp_raw)),
+                codex_command=("missing-codex-binary",),
+                sandbox_preflight_mode="disabled",
+            )
             services = BrokerServices.build(config)
             try:
                 owner_hash = services.auth.hash_owner("owner-a")
