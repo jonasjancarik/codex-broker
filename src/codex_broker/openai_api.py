@@ -627,7 +627,7 @@ def _app_server_models(services: Any, binding: OpenAICompatBinding) -> list[dict
     scope = services.auth.resolve_scope(binding.owner_id, binding.auth_principal_id)
     profile = services.auth.profile_key(binding.profile)
     with services.auth.profile_guard(scope.auth_principal_hash, profile):
-        client = services.pool.get(
+        client = services.pool.checkout(
             auth_principal_hash=scope.auth_principal_hash,
             profile=profile,
             codex_home=services.auth.profile_home(scope.auth_principal_hash, profile),
@@ -637,7 +637,10 @@ def _app_server_models(services: Any, binding: OpenAICompatBinding) -> list[dict
             tenant_scope_hash=scope.owner_hash,
             auth_fingerprint=services.auth.auth_fingerprint(scope.auth_principal_hash, profile),
         )
-        result = client.request("model/list", {"limit": 500, "includeHidden": False})
+        try:
+            result = client.request("model/list", {"limit": 500, "includeHidden": False})
+        finally:
+            services.pool.release(client)
     models = result.get("data")
     if not isinstance(models, list):
         raise AppServerError("App Server model/list response is missing its model list.")

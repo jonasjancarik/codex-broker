@@ -597,6 +597,46 @@ class AppServerRoutingTests(unittest.TestCase):
             finally:
                 pool.close_all()
 
+    def test_checkout_protects_client_before_turn_context_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = replace(config_for(tmp), max_pooled_app_servers=1)
+            pool = AppServerPool(config)
+            codex_home = config.auth_root / "owner_hash" / "profiles" / "default" / "codex-home"
+            codex_home.mkdir(parents=True)
+            try:
+                client = pool.checkout(
+                    auth_principal_hash="owner_hash",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=(),
+                )
+
+                # This is the formerly-racy window before scheduler.register_context().
+                with self.assertRaisesRegex(AppServerError, "capacity is exhausted"):
+                    pool.checkout(
+                        auth_principal_hash="owner_hash",
+                        profile="default",
+                        codex_home=codex_home,
+                        config_profile="work",
+                        mcp_servers=(),
+                    )
+                self.assertFalse(client.closed)
+
+                pool.release(client)
+                replacement = pool.checkout(
+                    auth_principal_hash="owner_hash",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="work",
+                    mcp_servers=(),
+                )
+                self.assertTrue(client.closed)
+                pool.release(replacement)
+            finally:
+                pool.close_all()
+
     def test_shared_principal_mcp_children_remain_owner_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             tmp = Path(tmp_raw)

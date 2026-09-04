@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any
 
 from .app_server import AppServerError
@@ -25,8 +26,8 @@ def handle_account_route(
         principal_id = selector(query, None, "authPrincipalId")
         scope, profile_key = _account_scope(handler, owner_id, profile, principal_id)
         with handler.broker.auth.profile_guard(scope.auth_principal_hash, profile_key):
-            client = _account_client(handler, scope, profile_key)
-            result = client.request("model/list", _model_list_params(query))
+            with _account_client(handler, scope, profile_key) as client:
+                result = client.request("model/list", _model_list_params(query))
         models = result.get("data")
         next_cursor = result.get("nextCursor")
         if not isinstance(models, list):
@@ -47,8 +48,8 @@ def handle_account_route(
         principal_id = selector(query, None, "authPrincipalId")
         scope, profile_key = _account_scope(handler, owner_id, profile, principal_id)
         with handler.broker.auth.profile_guard(scope.auth_principal_hash, profile_key):
-            client = _account_client(handler, scope, profile_key)
-            usage = client.request("account/usage/read")
+            with _account_client(handler, scope, profile_key) as client:
+                usage = client.request("account/usage/read")
         handler._json({**scope.public(), "profile": profile_key, "usage": usage})
         return True
     if method == "GET" and tail == ["rate-limits"]:
@@ -56,8 +57,8 @@ def handle_account_route(
         principal_id = selector(query, None, "authPrincipalId")
         scope, profile_key = _account_scope(handler, owner_id, profile, principal_id)
         with handler.broker.auth.profile_guard(scope.auth_principal_hash, profile_key):
-            client = _account_client(handler, scope, profile_key)
-            limits = client.request("account/rateLimits/read")
+            with _account_client(handler, scope, profile_key) as client:
+                limits = client.request("account/rateLimits/read")
         handler._json({**scope.public(), "profile": profile_key, "rateLimits": limits})
         return True
     if method == "POST" and tail == ["rate-limit-reset-credit", "consume"]:
@@ -72,11 +73,11 @@ def handle_account_route(
         principal_id = selector(query, body, "authPrincipalId")
         scope, profile_key = _account_scope(handler, owner_id, requested_profile, principal_id)
         with handler.broker.auth.profile_guard(scope.auth_principal_hash, profile_key):
-            client = _account_client(handler, scope, profile_key)
-            result = client.request(
-                "account/rateLimitResetCredit/consume",
-                {"idempotencyKey": idempotency_key},
-            )
+            with _account_client(handler, scope, profile_key) as client:
+                result = client.request(
+                    "account/rateLimitResetCredit/consume",
+                    {"idempotencyKey": idempotency_key},
+                )
         handler.broker.state.append_audit(
             scope.owner_hash,
             "auth.rate_limit_reset_credit.consume",
@@ -125,8 +126,9 @@ def _account_scope(
     return scope, profile_key
 
 
+@contextmanager
 def _account_client(handler: Any, scope: Any, profile_key: str) -> Any:
-    return handler.broker.pool.get(
+    client = handler.broker.pool.checkout(
         auth_principal_hash=scope.auth_principal_hash,
         profile=profile_key,
         codex_home=handler.broker.auth.profile_home(scope.auth_principal_hash, profile_key),
@@ -135,6 +137,10 @@ def _account_client(handler: Any, scope: Any, profile_key: str) -> Any:
         mcp_servers=(),
         auth_fingerprint=handler.broker.auth.auth_fingerprint(scope.auth_principal_hash, profile_key),
     )
+    try:
+        yield client
+    finally:
+        handler.broker.pool.release(client)
 
 
 def openapi_paths(

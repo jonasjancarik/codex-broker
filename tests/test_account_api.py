@@ -6,9 +6,12 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from codex_broker.account_api import _account_client, _account_scope
+from codex_broker.app_server import AppServerError
 from codex_broker.http_api import BrokerHandler
 from codex_broker.services import BrokerHTTPServer, BrokerServices
 from test_broker import config_for
@@ -17,7 +20,7 @@ from test_broker import config_for
 class AccountApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        config = config_for(Path(self._tmp.name))
+        config = replace(config_for(Path(self._tmp.name)), max_pooled_app_servers=1)
         self.services = BrokerServices.build(config)
         self.services.auth.login_api_key("owner/a", "sk-test", "work")
         services = self.services
@@ -78,6 +81,30 @@ class AccountApiTests(unittest.TestCase):
         )
         self.assertEqual([model["id"] for model in second_page["models"]], ["terra-preset"])
         self.assertIsNone(second_page["nextCursor"])
+
+    def test_account_model_checkout_is_not_evictable_during_request_setup(self) -> None:
+        handler = type("Handler", (), {"broker": self.services})()
+        scope, profile = _account_scope(
+            handler,
+            "owner/a",
+            "work",
+            None,
+        )
+        with self.services.auth.profile_guard(scope.auth_principal_hash, profile):
+            with _account_client(handler, scope, profile) as client:
+                result = client.request("model/list", {"limit": 1, "includeHidden": False})
+                self.assertEqual(result["data"][0]["model"], "gpt-5.6-sol")
+                with self.assertRaisesRegex(AppServerError, "capacity is exhausted"):
+                    self.services.pool.checkout(
+                        auth_principal_hash=scope.auth_principal_hash,
+                        profile=profile,
+                        codex_home=self.services.auth.profile_home(scope.auth_principal_hash, profile),
+                        runtime_home=self.services.auth.runtime_home(scope.auth_principal_hash, profile),
+                        config_profile="other",
+                        mcp_servers=(),
+                        auth_fingerprint=self.services.auth.auth_fingerprint(scope.auth_principal_hash, profile),
+                    )
+                self.assertFalse(client.closed)
 
     def test_model_list_rejects_invalid_query_values(self) -> None:
         for query, message in (

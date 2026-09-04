@@ -1012,7 +1012,7 @@ class TurnScheduler:
                 )
                 codex_config_args = self._codex_process_config_args(body, config_profile_config)
                 auth_fingerprint = self.auth.auth_fingerprint(auth_principal_hash, profile)
-                client = self.pool.get(
+                client = self.pool.checkout(
                     auth_principal_hash=auth_principal_hash,
                     profile=profile,
                     codex_home=codex_home,
@@ -1135,6 +1135,8 @@ class TurnScheduler:
             self.sanitizer.remove_scope(f"turn:{turn_id}")
             if context and client:
                 client.unregister_context(context)
+            if client:
+                self.pool.release(client)
             if client and bundle and bundle.hosted_tools:
                 self.pool.close_client(client)
             with self._gates_lock:

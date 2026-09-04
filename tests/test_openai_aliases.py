@@ -1,14 +1,74 @@
 from __future__ import annotations
 
+import tempfile
+import threading
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
-from codex_broker.openai_api import _resolve_model, _visible_models
+from codex_broker.app_server import AppServerClient, AppServerError
+from codex_broker.openai_api import _app_server_models, _resolve_model, _visible_models
 from codex_broker.openai_auth import OpenAICompatBinding
 from codex_broker.openai_protocol import OpenAIProtocolError
+from codex_broker.services import BrokerServices
+from test_broker import config_for
 
 
 class OpenAIModelAliasTests(unittest.TestCase):
+    def test_model_catalog_checkout_cannot_be_evicted_while_request_is_in_flight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(config_for(Path(tmp_raw)), max_pooled_app_servers=1)
+            services = BrokerServices.build(config)
+            services.auth.login_api_key("owner", "sk-test", "default")
+            binding = OpenAICompatBinding(owner_id="owner")
+            entered = threading.Event()
+            continue_request = threading.Event()
+            result: list[list[dict[str, object]]] = []
+            errors: list[BaseException] = []
+            original_request = AppServerClient.request
+            testcase = self
+
+            def blocking_request(self: AppServerClient, method: str, *args: object, **kwargs: object) -> dict[str, object]:
+                if method == "model/list":
+                    entered.set()
+                    testcase.assertTrue(continue_request.wait(2))
+                return original_request(self, method, *args, **kwargs)
+
+            def load_models() -> None:
+                try:
+                    result.append(_app_server_models(services, binding))
+                except BaseException as exc:  # surfaced after the synchronization assertions below
+                    errors.append(exc)
+
+            worker = threading.Thread(target=load_models)
+            try:
+                with patch.object(AppServerClient, "request", new=blocking_request):
+                    worker.start()
+                    self.assertTrue(entered.wait(2))
+                    scope = services.auth.resolve_scope("owner")
+                    profile = services.auth.profile_key("default")
+                    with self.assertRaisesRegex(AppServerError, "capacity is exhausted"):
+                        services.pool.checkout(
+                            auth_principal_hash=scope.auth_principal_hash,
+                            profile=profile,
+                            codex_home=services.auth.profile_home(scope.auth_principal_hash, profile),
+                            runtime_home=services.auth.runtime_home(scope.auth_principal_hash, profile),
+                            config_profile="other",
+                            mcp_servers=(),
+                            auth_fingerprint=services.auth.auth_fingerprint(scope.auth_principal_hash, profile),
+                        )
+                    continue_request.set()
+                    worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(result[0][0]["model"], "gpt-5.6-sol")
+            finally:
+                continue_request.set()
+                worker.join(2)
+                services.pool.close_all()
+                services.state.close()
+
     def test_default_applies_to_omitted_and_empty_custom_aliases(self) -> None:
         for binding in (
             OpenAICompatBinding(owner_id="owner"),

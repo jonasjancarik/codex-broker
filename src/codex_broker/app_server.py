@@ -725,6 +725,7 @@ class AppServerPool:
         self.sanitizer = sanitizer or (state.sanitizer if state else SecretSanitizer(config.event_sanitization_mode))
         self._lock = threading.RLock()
         self._clients: dict[tuple[Any, ...], AppServerClient] = {}
+        self._leases: dict[AppServerClient, int] = {}
         self._creation_locks: dict[tuple[Any, ...], PoolCreationGate] = {}
         self._pending_creations = 0
         self._restart_count = 0
@@ -747,6 +748,7 @@ class AppServerPool:
         tenant_scope_hash: str | None = None,
         codex_config_args: tuple[tuple[str, str], ...] = (),
         auth_fingerprint: str | None = None,
+        _lease: bool = False,
     ) -> AppServerClient:
         effective_runtime_home = (runtime_home or codex_home.parent).resolve()
         key = (
@@ -776,14 +778,19 @@ class AppServerPool:
         with self._lock:
             client = self._clients.get(key)
             if client and not client.closed:
+                if _lease:
+                    self._leases[client] = self._leases.get(client, 0) + 1
                 return client
         with self._creation_gate(key):
             with self._lock:
                 client = self._clients.get(key)
                 if client and not client.closed:
+                    if _lease:
+                        self._leases[client] = self._leases.get(client, 0) + 1
                     return client
                 if client:
                     self._clients.pop(key, None)
+                    self._leases.pop(client, None)
                     self._restart_count += 1
             if client:
                 client.close()
@@ -822,10 +829,25 @@ class AppServerPool:
                     self._pending_creations -= 1
                 if not closed_during_start:
                     self._clients[key] = client
+                    if _lease:
+                        self._leases[client] = self._leases.get(client, 0) + 1
             if closed_during_start:
                 client.close()
                 raise AppServerError("App Server pool closed during child startup")
             return client
+
+    def checkout(self, **kwargs: Any) -> AppServerClient:
+        """Atomically obtain a child and hold it against idle-pool eviction."""
+        return self.get(**kwargs, _lease=True)
+
+    def release(self, client: AppServerClient) -> None:
+        """Release a client obtained with checkout after setup or request work ends."""
+        with self._lock:
+            count = self._leases.get(client, 0)
+            if count <= 1:
+                self._leases.pop(client, None)
+            else:
+                self._leases[client] = count - 1
 
     @contextmanager
     def _creation_gate(self, key: tuple[Any, ...]) -> Any:
@@ -850,6 +872,7 @@ class AppServerPool:
             for key, client in list(self._clients.items()):
                 if key[0] == auth_principal_hash and (profile is None or key[1] == profile):
                     self._clients.pop(key, None)
+                    self._leases.pop(client, None)
                     clients.append(client)
         for client in clients:
             client.close()
@@ -859,6 +882,7 @@ class AppServerPool:
             for key, current in list(self._clients.items()):
                 if current is client:
                     self._clients.pop(key, None)
+                    self._leases.pop(client, None)
                     break
         client.close()
 
@@ -881,6 +905,7 @@ class AppServerPool:
             self._closed = True
             clients = list(self._clients.values())
             self._clients.clear()
+            self._leases.clear()
         for client in clients:
             client.close()
 
@@ -896,14 +921,17 @@ class AppServerPool:
             for key, client in list(self._clients.items()):
                 if client.closed:
                     self._clients.pop(key, None)
+                    self._leases.pop(client, None)
                     self._restart_count += 1
                     stale.append(client)
                 elif (
                     self.config.pool_idle_ttl_seconds > 0
+                    and self._leases.get(client, 0) == 0
                     and not client.has_active_contexts
                     and now - client.last_used_at > self.config.pool_idle_ttl_seconds
                 ):
                     self._clients.pop(key, None)
+                    self._leases.pop(client, None)
                     stale.append(client)
         for client in stale:
             client.close()
@@ -919,7 +947,7 @@ class AppServerPool:
                 candidates = [
                     (key, client)
                     for key, client in self._clients.items()
-                    if client.closed or not client.has_active_contexts
+                    if self._leases.get(client, 0) == 0 and (client.closed or not client.has_active_contexts)
                 ]
                 if not candidates:
                     raise AppServerError(
@@ -927,6 +955,7 @@ class AppServerPool:
                     )
                 key, client = min(candidates, key=lambda item: item[1].last_used_at)
                 self._clients.pop(key, None)
+                self._leases.pop(client, None)
                 if client.closed:
                     self._restart_count += 1
                 evicted.append(client)
@@ -949,9 +978,11 @@ class AppServerPool:
                 if (
                     existing_key[:-1] == key[:-1]
                     and existing_key[-1] != key[-1]
+                    and self._leases.get(client, 0) == 0
                     and not client.has_active_contexts
                 ):
                     self._clients.pop(existing_key, None)
+                    self._leases.pop(client, None)
                     stale.append(client)
         for client in stale:
             client.close()
@@ -969,9 +1000,11 @@ class AppServerPool:
                     key[0] == auth_principal_hash
                     and key[1] == profile
                     and key[2] != auth_fingerprint
+                    and self._leases.get(client, 0) == 0
                     and not client.has_active_contexts
                 ):
                     self._clients.pop(key, None)
+                    self._leases.pop(client, None)
                     stale.append(client)
         for client in stale:
             client.close()
