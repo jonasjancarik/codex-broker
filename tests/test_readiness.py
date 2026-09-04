@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from dataclasses import replace
 from http import HTTPStatus
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_broker.http_api import BrokerHandler, BrokerServices
+from codex_broker.sandbox_probe import PROBE_PROFILE, SandboxProbe, SandboxProbeResult
 from test_broker import config_for
 
 
@@ -21,7 +25,28 @@ class ReadinessTests(unittest.TestCase):
         for mode, expected_status in expectations.items():
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp_raw:
                 config = replace(config_for(Path(tmp_raw)), sandbox_preflight_mode=mode)
-                services = BrokerServices.build(config)
+                # Required mode now aborts startup on an initial failure. Seed a
+                # healthy cached result so this test can exercise a later
+                # runtime invalidation and the resulting readiness response.
+                build_context = (
+                    patch.object(
+                        SandboxProbe,
+                        "run_once",
+                        return_value=SandboxProbeResult(
+                            status="healthy",
+                            platform=sys.platform,
+                            backend="bubblewrap",
+                            codex_version="codex-cli 0.153.0",
+                            permission_profile=PROBE_PROFILE,
+                            checked_at="2026-09-04T00:00:00Z",
+                            duration_seconds=0.1,
+                        ),
+                    )
+                    if mode == "required"
+                    else nullcontext()
+                )
+                with build_context:
+                    services = BrokerServices.build(config)
                 captured: dict[str, object] = {}
 
                 def capture_json(payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:

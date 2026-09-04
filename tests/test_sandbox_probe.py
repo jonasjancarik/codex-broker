@@ -13,8 +13,8 @@ from unittest.mock import patch
 from codex_broker.auth import render_managed_codex_config
 from codex_broker.config import BrokerConfig
 from codex_broker.runtime_errors import SANDBOX_UNAVAILABLE, classify_runtime_error
-from codex_broker.sandbox_probe import PROBE_PROFILE, SandboxProbe
-from codex_broker.services import BrokerServices
+from codex_broker.sandbox_probe import PROBE_PROFILE, SandboxProbe, SandboxProbeResult
+from codex_broker.services import BrokerServices, SandboxPreflightError
 
 
 ROOT = Path(__file__).resolve().parent
@@ -40,13 +40,77 @@ def config_for(tmp: Path, *, mode: str = "required") -> BrokerConfig:
 
 
 class SandboxProbeTests(unittest.TestCase):
+    def test_required_failed_preflight_aborts_service_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch("codex_broker.services.SandboxProbe") as probe_type:
+            config = config_for(Path(raw))
+            probe_type.return_value.run_once.return_value = SandboxProbeResult(
+                status="failed",
+                platform="linux",
+                backend="bubblewrap",
+                codex_version="codex-cli 0.153.0",
+                permission_profile=PROBE_PROFILE,
+                checked_at="2026-09-04T00:00:00Z",
+                duration_seconds=0.1,
+                admin_diagnostic="Bubblewrap: user namespaces are disabled",
+            )
+
+            with self.assertRaisesRegex(SandboxPreflightError, "status=failed") as raised:
+                BrokerServices.build(config)
+
+            self.assertIn("user namespaces are disabled", str(raised.exception))
+            probe_type.return_value.run_once.assert_called_once_with()
+            self.assertFalse(config.state_db_path.exists())
+
+    def test_required_healthy_preflight_allows_service_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch("codex_broker.services.SandboxProbe") as probe_type:
+            config = config_for(Path(raw))
+            probe_type.return_value.run_once.return_value = SandboxProbeResult(
+                status="healthy",
+                platform="linux",
+                backend="bubblewrap",
+                codex_version="codex-cli 0.153.0",
+                permission_profile=PROBE_PROFILE,
+                checked_at="2026-09-04T00:00:00Z",
+                duration_seconds=0.1,
+            )
+            services = BrokerServices.build(config)
+            try:
+                self.assertIs(services.sandbox_probe, probe_type.return_value)
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_warn_and_disabled_modes_allow_failed_preflight(self) -> None:
+        for mode in ("warn", "disabled"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as raw, patch(
+                "codex_broker.services.SandboxProbe"
+            ) as probe_type:
+                config = config_for(Path(raw), mode=mode)
+                probe_type.return_value.run_once.return_value = SandboxProbeResult(
+                    status="failed",
+                    platform="linux",
+                    backend="bubblewrap",
+                    codex_version=None,
+                    permission_profile=PROBE_PROFILE,
+                    checked_at="2026-09-04T00:00:00Z",
+                    duration_seconds=0.1,
+                    admin_diagnostic="probe failed",
+                )
+                services = BrokerServices.build(config)
+                try:
+                    self.assertIs(services.sandbox_probe, probe_type.return_value)
+                finally:
+                    services.pool.close_all()
+                    services.state.close()
+
     def test_required_unhealthy_preflight_finalizes_managed_turn_before_model_contact(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             config = replace(
                 config_for(Path(raw)),
                 config_profiles={"managed": {}},
             )
-            services = BrokerServices.build(config)
+            with patch.object(SandboxProbe, "run_once", return_value=self._healthy_result()):
+                services = BrokerServices.build(config)
             try:
                 services.sandbox_probe.mark_unhealthy("Bubblewrap: user namespaces are disabled")
                 thread = services.scheduler.create_thread(
@@ -74,7 +138,8 @@ class SandboxProbeTests(unittest.TestCase):
                 config_for(Path(raw)),
                 config_profiles={"danger": {"sandbox": "danger-full-access"}},
             )
-            services = BrokerServices.build(config)
+            with patch.object(SandboxProbe, "run_once", return_value=self._healthy_result()):
+                services = BrokerServices.build(config)
             try:
                 services.sandbox_probe.mark_unhealthy("Bubblewrap: user namespaces are disabled")
                 thread = services.scheduler.create_thread(
@@ -110,6 +175,18 @@ class SandboxProbeTests(unittest.TestCase):
                 return turn
             time.sleep(0.01)
         self.fail(f"turn {turn_id} did not finish")
+
+    @staticmethod
+    def _healthy_result() -> SandboxProbeResult:
+        return SandboxProbeResult(
+            status="healthy",
+            platform=sys.platform,
+            backend="bubblewrap",
+            codex_version="codex-cli 0.153.0",
+            permission_profile=PROBE_PROFILE,
+            checked_at="2026-09-04T00:00:00Z",
+            duration_seconds=0.1,
+        )
 
     def test_linux_probe_succeeds_and_is_cached(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

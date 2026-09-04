@@ -14,11 +14,23 @@ from .auth import AuthManager
 from .bundles import BundleRegistry
 from .config import BrokerConfig
 from .openai_auth import OpenAICompatAuth
-from .sandbox_probe import SandboxProbe
+from .sandbox_probe import SandboxProbe, SandboxProbeResult
 from .scheduler import TurnScheduler
 from .security import SecretSanitizer
 from .state import StateStore
 from .util import ensure_dir, json_log
+
+
+class SandboxPreflightError(RuntimeError):
+    """Raised when a required managed sandbox cannot be initialized."""
+
+    def __init__(self, result: SandboxProbeResult) -> None:
+        self.result = result
+        diagnostic = f": {result.admin_diagnostic}" if result.admin_diagnostic else ""
+        super().__init__(
+            f"Required managed sandbox preflight failed "
+            f"(status={result.status}){diagnostic}"
+        )
 
 
 @dataclass
@@ -43,6 +55,10 @@ class BrokerServices:
             config.runtime_home_root,
         ):
             ensure_dir(path)
+        sandbox_probe = SandboxProbe(config)
+        sandbox_result = sandbox_probe.run_once()
+        if config.sandbox_preflight_mode == "required" and sandbox_result.status != "healthy":
+            raise SandboxPreflightError(sandbox_result)
         sanitizer = SecretSanitizer(config.event_sanitization_mode)
         if config.event_sanitization_mode == "raw":
             json_log(
@@ -79,8 +95,6 @@ class BrokerServices:
         auth = AuthManager(config, state, sanitizer=sanitizer)
         bundles = BundleRegistry(config, state)
         pool = AppServerPool(config, state, sanitizer=sanitizer)
-        sandbox_probe = SandboxProbe(config)
-        sandbox_probe.run_once()
         scheduler = TurnScheduler(
             config=config,
             state=state,
