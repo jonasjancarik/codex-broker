@@ -31,6 +31,18 @@ class ConfigProfileTests(unittest.TestCase):
         self.assertEqual(config.runtime_home_root, Path(tmp_raw).resolve() / "workspaces" / "runtime-homes")
         self.assertEqual(config.sandbox_deny_paths, ())
         self.assertIsNone(config.danger_full_access_key)
+        self.assertEqual(config.max_pooled_app_servers, 0)
+
+    def test_pool_child_limit_loads_from_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {
+                "CODEX_BROKER_DATA_DIR": tmp_raw,
+                "CODEX_BROKER_MAX_POOLED_APP_SERVERS": "2",
+            },
+            clear=True,
+        ):
+            self.assertEqual(BrokerConfig.from_env().max_pooled_app_servers, 2)
 
     def test_danger_full_access_key_loads_only_from_file_and_is_not_repr_visible(self) -> None:
         secret = "danger-full-access-secret"

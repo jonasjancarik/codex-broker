@@ -158,7 +158,6 @@ class AppServerClient:
                 "HOME": str(runtime_home),
             },
         )
-        env.update(self._mcp_process_env())
         self._process = subprocess.Popen(
             command,
             cwd=str(codex_home),
@@ -345,22 +344,30 @@ class AppServerClient:
             if server.cwd:
                 args.extend(["-c", f"{config_prefix}.cwd={json.dumps(str(server.cwd))}"])
             if server.env:
-                config_env = {key: value for key, value in server.env.items() if not value.startswith("env:")}
+                # Codex applies this mapping when it starts this specific MCP
+                # child.  Do not put env:VAR values in the app-server process
+                # environment: command execution inherits that environment.
+                config_env = self._mcp_config_env(server)
                 if config_env:
-                    env_items = ", ".join(f"{json.dumps(key)} = {json.dumps(value)}" for key, value in config_env.items())
+                    env_items = ", ".join(
+                        f"{json.dumps(key)} = {json.dumps(value)}"
+                        for key, value in sorted(config_env.items())
+                    )
                     args.extend(["-c", f"{config_prefix}.env={{ {env_items} }}"])
         return args
 
-    def _mcp_process_env(self) -> dict[str, str]:
+    @staticmethod
+    def _mcp_config_env(server: McpServerRef) -> dict[str, str]:
+        """Resolve one MCP server's environment for Codex's child-only config."""
         resolved: dict[str, str] = {}
-        for server in self.mcp_servers:
-            for target, value in server.env.items():
-                if not value.startswith("env:"):
-                    continue
-                source = value.removeprefix("env:")
-                if source not in os.environ:
-                    raise AppServerError(f"Missing MCP env source: {source}")
-                resolved[target] = os.environ[source]
+        for target, value in server.env.items():
+            if not value.startswith("env:"):
+                resolved[target] = value
+                continue
+            source = value.removeprefix("env:")
+            if source not in os.environ:
+                raise AppServerError(f"Missing MCP env source: {source}")
+            resolved[target] = os.environ[source]
         return resolved
 
     def _read_stdout(self) -> None:
@@ -679,6 +686,7 @@ class AppServerPool:
         self._lock = threading.RLock()
         self._clients: dict[tuple[Any, ...], AppServerClient] = {}
         self._creation_locks: dict[tuple[Any, ...], PoolCreationGate] = {}
+        self._pending_creations = 0
         self._restart_count = 0
         self._closed = False
         self._sweeper_stop = threading.Event()
@@ -724,6 +732,7 @@ class AppServerPool:
         self._sweep()
         if auth_fingerprint is not None:
             self._close_idle_stale_auth(auth_principal_hash, profile, key[2])
+        self._close_idle_stale_mcp_secret_variant(key)
         with self._lock:
             client = self._clients.get(key)
             if client and not client.closed:
@@ -747,21 +756,30 @@ class AppServerPool:
                     configProfile=config_profile,
                     poolKeyHash=key_hash,
                 )
-            client = AppServerClient(
-                self.config,
-                auth_principal_hash=auth_principal_hash,
-                profile=profile,
-                codex_home=codex_home,
-                runtime_home=effective_runtime_home,
-                config_profile=config_profile,
-                pool_key_hash=key_hash,
-                state=self.state,
-                mcp_servers=mcp_servers,
-                codex_config_args=codex_config_args,
-                sanitizer=self.sanitizer,
-            )
+            evicted = self._reserve_child_slot()
+            try:
+                for stale_client in evicted:
+                    stale_client.close()
+                client = AppServerClient(
+                    self.config,
+                    auth_principal_hash=auth_principal_hash,
+                    profile=profile,
+                    codex_home=codex_home,
+                    runtime_home=effective_runtime_home,
+                    config_profile=config_profile,
+                    pool_key_hash=key_hash,
+                    state=self.state,
+                    mcp_servers=mcp_servers,
+                    codex_config_args=codex_config_args,
+                    sanitizer=self.sanitizer,
+                )
+            except Exception:
+                self._release_child_slot()
+                raise
             with self._lock:
                 closed_during_start = self._closed
+                if self.config.max_pooled_app_servers:
+                    self._pending_creations -= 1
                 if not closed_during_start:
                     self._clients[key] = client
             if closed_during_start:
@@ -808,7 +826,12 @@ class AppServerPool:
         with self._lock:
             active_children = sum(1 for client in self._clients.values() if not client.closed)
             restarts = self._restart_count
-        return {"active_app_server_children": active_children, "app_server_restarts": restarts}
+            pending_creations = self._pending_creations
+        return {
+            "active_app_server_children": active_children,
+            "app_server_restarts": restarts,
+            "pending_app_server_creations": pending_creations,
+        }
 
     def close_all(self) -> None:
         self._sweeper_stop.set()
@@ -827,8 +850,6 @@ class AppServerPool:
             self._sweep()
 
     def _sweep(self) -> None:
-        if self.config.pool_idle_ttl_seconds <= 0:
-            return
         now = time.monotonic()
         stale: list[AppServerClient] = []
         with self._lock:
@@ -837,8 +858,60 @@ class AppServerPool:
                     self._clients.pop(key, None)
                     self._restart_count += 1
                     stale.append(client)
-                elif not client.has_active_contexts and now - client.last_used_at > self.config.pool_idle_ttl_seconds:
+                elif (
+                    self.config.pool_idle_ttl_seconds > 0
+                    and not client.has_active_contexts
+                    and now - client.last_used_at > self.config.pool_idle_ttl_seconds
+                ):
                     self._clients.pop(key, None)
+                    stale.append(client)
+        for client in stale:
+            client.close()
+
+    def _reserve_child_slot(self) -> list[AppServerClient]:
+        """Reserve one slot, evicting least-recently-used idle children first."""
+        limit = self.config.max_pooled_app_servers
+        if limit == 0:
+            return []
+        evicted: list[AppServerClient] = []
+        with self._lock:
+            while len(self._clients) + self._pending_creations >= limit:
+                candidates = [
+                    (key, client)
+                    for key, client in self._clients.items()
+                    if client.closed or not client.has_active_contexts
+                ]
+                if not candidates:
+                    raise AppServerError(
+                        "App Server pool capacity is exhausted; all pooled children are handling active turns."
+                    )
+                key, client = min(candidates, key=lambda item: item[1].last_used_at)
+                self._clients.pop(key, None)
+                if client.closed:
+                    self._restart_count += 1
+                evicted.append(client)
+            self._pending_creations += 1
+        return evicted
+
+    def _release_child_slot(self) -> None:
+        if self.config.max_pooled_app_servers == 0:
+            return
+        with self._lock:
+            self._pending_creations -= 1
+
+    def _close_idle_stale_mcp_secret_variant(self, key: tuple[Any, ...]) -> None:
+        """Discard idle children after a secret-backed MCP value rotates."""
+        if not key[-1]:
+            return
+        stale: list[AppServerClient] = []
+        with self._lock:
+            for existing_key, client in list(self._clients.items()):
+                if (
+                    existing_key[:-1] == key[:-1]
+                    and existing_key[-1] != key[-1]
+                    and not client.has_active_contexts
+                ):
+                    self._clients.pop(existing_key, None)
                     stale.append(client)
         for client in stale:
             client.close()

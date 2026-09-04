@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,7 @@ from .util import ensure_dir, json_dumps, json_loads, random_id, utc_now
 class StateStore:
     def __init__(self, path: Path, *, sanitizer: SecretSanitizer | None = None) -> None:
         ensure_dir(path.parent)
+        os.chmod(path.parent, 0o700)
         self.path = path
         # Keep this boundary safe by default while allowing callers that have
         # explicitly enabled trusted debugging to supply a raw-mode sanitizer.
@@ -24,6 +26,13 @@ class StateStore:
         self._events_condition = threading.Condition(self._lock)
         self._closed = False
         self._init_schema()
+        self._tighten_file_permissions()
+
+    def _tighten_file_permissions(self) -> None:
+        """Keep the state DB and SQLite sidecars private even with a loose umask."""
+        for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+            if candidate.exists():
+                os.chmod(candidate, 0o600)
 
     def _sanitize(self, value: Any) -> Any:
         return self.sanitizer.sanitize(value)

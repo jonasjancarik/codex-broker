@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import sqlite3
+import os
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,21 @@ from test_broker import config_for
 
 
 class StateStoreTests(unittest.TestCase):
+    def test_state_files_and_parent_directory_are_private(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = config_for(Path(tmp_raw)).state_db_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(path.parent, 0o755)
+            state = StateStore(path)
+            try:
+                self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                for sidecar in (Path(f"{path}-wal"), Path(f"{path}-shm")):
+                    self.assertTrue(sidecar.exists())
+                    self.assertEqual(sidecar.stat().st_mode & 0o777, 0o600)
+            finally:
+                state.close()
+
     def _thread_and_turn(self, state: StateStore) -> tuple[dict[str, object], dict[str, object]]:
         profile = state.ensure_profile("principal_hash", "default")
         thread = state.create_thread(

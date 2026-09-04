@@ -191,6 +191,7 @@ class BrokerConfig:
     json_logs: bool
     shutdown_mode: str
     shutdown_drain_timeout_seconds: float
+    max_pooled_app_servers: int = 0
     codex_passthrough_env: tuple[str, ...] = ()
     config_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     auth_principal_mappings: dict[str, str] = field(default_factory=dict)
@@ -212,6 +213,8 @@ class BrokerConfig:
             raise ValueError("Codex command must not be empty.")
         if self.max_active_turns < 0:
             raise ValueError("CODEX_BROKER_MAX_ACTIVE_TURNS must be zero or greater.")
+        if self.max_pooled_app_servers < 0:
+            raise ValueError("CODEX_BROKER_MAX_POOLED_APP_SERVERS must be zero or greater.")
         if self.max_queued_turns <= 0:
             raise ValueError("CODEX_BROKER_MAX_QUEUED_TURNS must be greater than zero.")
         if self.inline_bundle_max_bytes <= 0:
@@ -281,6 +284,7 @@ class BrokerConfig:
             allowed_bundle_roots=_paths(os.environ.get("CODEX_BROKER_ALLOWED_BUNDLE_ROOTS"), str(Path.cwd())),
             max_active_turns=_int_env("CODEX_BROKER_MAX_ACTIVE_TURNS", 0),
             pool_idle_ttl_seconds=_int_env("CODEX_BROKER_POOL_IDLE_TTL_SECONDS", 900),
+            max_pooled_app_servers=_int_env("CODEX_BROKER_MAX_POOLED_APP_SERVERS", 0),
             codex_command=tuple(shlex.split(codex_bin)),
             allowed_tool_commands=tuple(
                 item.strip()

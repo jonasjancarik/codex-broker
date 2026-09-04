@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import threading
 import sys
 import tempfile
@@ -112,7 +113,7 @@ class AppServerRoutingTests(unittest.TestCase):
             codex_home.mkdir(parents=True)
             runtime_home.mkdir(parents=True)
             captured: dict[str, str] = {}
-            real_popen = __import__("subprocess").Popen
+            real_popen = subprocess.Popen
 
             def capture_popen(*args: Any, **kwargs: Any) -> Any:
                 env = kwargs["env"]
@@ -421,7 +422,8 @@ class AppServerRoutingTests(unittest.TestCase):
             )
             client.codex_config_args = ()
 
-            command = client._build_command()
+            with patch.dict(os.environ, {"MCP_SECRET_SOURCE": "resolved-secret"}):
+                command = client._build_command()
             config_overrides = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-c"]
 
             self.assertIn('mcp_servers.host_mcp.command="mcp-proxy"', config_overrides)
@@ -430,8 +432,57 @@ class AppServerRoutingTests(unittest.TestCase):
                 config_overrides,
             )
             self.assertIn('mcp_servers.host_mcp.cwd="/bundles"', config_overrides)
-            self.assertIn('mcp_servers.host_mcp.env={ "LOG_LEVEL" = "info" }', config_overrides)
+            self.assertIn(
+                'mcp_servers.host_mcp.env={ "LOG_LEVEL" = "info", "MCP_API_KEY" = "resolved-secret" }',
+                config_overrides,
+            )
             self.assertFalse(any(value.startswith('mcp_servers."host_mcp"') for value in config_overrides))
+
+    def test_mcp_secret_is_pinned_in_mcp_config_not_app_server_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = config_for(tmp)
+            pool = AppServerPool(config)
+            codex_home = config.auth_root / "owner_hash" / "profiles" / "default" / "codex-home"
+            codex_home.mkdir(parents=True)
+            mcp_servers = (
+                McpServerRef(
+                    name="host_mcp",
+                    command="python",
+                    args=(),
+                    env={"MCP_API_KEY": "env:MCP_SECRET_SOURCE"},
+                    cwd=None,
+                ),
+            )
+            captured: dict[str, Any] = {}
+            real_popen = subprocess.Popen
+
+            def capture_popen(*args: Any, **kwargs: Any) -> Any:
+                captured["command"] = args[0]
+                captured["env"] = kwargs["env"]
+                return real_popen(*args, **kwargs)
+
+            try:
+                with patch.dict(os.environ, {"MCP_SECRET_SOURCE": "resolved-secret"}), patch(
+                    "codex_broker.app_server.subprocess.Popen", side_effect=capture_popen
+                ):
+                    pool.get(
+                        auth_principal_hash="owner_hash",
+                        profile="default",
+                        codex_home=codex_home,
+                        config_profile="default",
+                        mcp_servers=mcp_servers,
+                    )
+
+                self.assertNotIn("MCP_SECRET_SOURCE", captured["env"])
+                self.assertNotIn("MCP_API_KEY", captured["env"])
+                self.assertNotIn("resolved-secret", captured["env"].values())
+                self.assertIn(
+                    'mcp_servers.host_mcp.env={ "MCP_API_KEY" = "resolved-secret" }',
+                    captured["command"],
+                )
+            finally:
+                pool.close_all()
 
     def test_pool_key_includes_resolved_mcp_env_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
@@ -470,10 +521,70 @@ class AppServerRoutingTests(unittest.TestCase):
 
                 self.assertIsNot(first_client, second_client)
                 self.assertNotEqual(first_client.pool_key_hash, second_client.pool_key_hash)
-                self.assertEqual(pool.metrics()["active_app_server_children"], 2)
+                self.assertTrue(first_client.closed)
+                self.assertEqual(pool.metrics()["active_app_server_children"], 1)
             finally:
                 pool.close_all()
                 state.close()
+
+    def test_pool_limit_evicts_least_recently_used_idle_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = replace(config_for(tmp), max_pooled_app_servers=1)
+            pool = AppServerPool(config)
+            codex_home = config.auth_root / "owner_hash" / "profiles" / "default" / "codex-home"
+            codex_home.mkdir(parents=True)
+            try:
+                first = pool.get(
+                    auth_principal_hash="owner_hash",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=(),
+                )
+                second = pool.get(
+                    auth_principal_hash="owner_hash",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="work",
+                    mcp_servers=(),
+                )
+
+                self.assertTrue(first.closed)
+                self.assertFalse(second.closed)
+                self.assertEqual(pool.metrics()["active_app_server_children"], 1)
+            finally:
+                pool.close_all()
+
+    def test_pool_limit_applies_backpressure_when_every_child_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            tmp = Path(tmp_raw)
+            config = replace(config_for(tmp), max_pooled_app_servers=1)
+            pool = AppServerPool(config)
+            codex_home = config.auth_root / "owner_hash" / "profiles" / "default" / "codex-home"
+            codex_home.mkdir(parents=True)
+            try:
+                first = pool.get(
+                    auth_principal_hash="owner_hash",
+                    profile="default",
+                    codex_home=codex_home,
+                    config_profile="default",
+                    mcp_servers=(),
+                )
+                active_context = FakeContext()
+                first.register_context(active_context)
+
+                with self.assertRaisesRegex(AppServerError, "capacity is exhausted"):
+                    pool.get(
+                        auth_principal_hash="owner_hash",
+                        profile="default",
+                        codex_home=codex_home,
+                        config_profile="work",
+                        mcp_servers=(),
+                    )
+                first.unregister_context(active_context)
+            finally:
+                pool.close_all()
 
     def test_shared_principal_mcp_children_remain_owner_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
