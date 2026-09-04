@@ -142,6 +142,8 @@ class SandboxProbe:
                 mounted_skill.chmod(0o555)
                 probe_config = replace(
                     self.config,
+                    data_dir=root / "broker-data",
+                    allowed_workspace_roots=(workspace,),
                     allowed_bundle_roots=(bundle_root,),
                     sandbox_deny_paths=(*self.config.sandbox_deny_paths, control_plane),
                 )

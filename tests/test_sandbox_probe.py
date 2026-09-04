@@ -198,6 +198,37 @@ class SandboxProbeTests(unittest.TestCase):
             self.assertNotIn("adminDiagnostic", result.public())
             self.assertIs(probe.run_once(), result)
 
+    def test_failed_linux_probe_does_not_touch_production_data_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ,
+            {"FAKE_CODEX_PROBE_CANARY_READABLE": "1"},
+        ):
+            config = config_for(Path(raw))
+            production_marker = config.data_dir / "production-marker"
+            production_marker.parent.mkdir(parents=True)
+            production_marker.write_bytes(b"production-state")
+
+            def snapshot() -> tuple[tuple[str, str, int, bytes | None], ...]:
+                if not config.data_dir.exists():
+                    return ()
+                entries: list[tuple[str, str, int, bytes | None]] = []
+                for path in sorted(config.data_dir.rglob("*")):
+                    relative = str(path.relative_to(config.data_dir))
+                    mode = path.stat().st_mode & 0o777
+                    if path.is_dir():
+                        entries.append((relative, "directory", mode, None))
+                    else:
+                        entries.append((relative, "file", mode, path.read_bytes()))
+                return tuple(entries)
+
+            before = snapshot()
+            result = SandboxProbe(config, platform_name="linux").run_once()
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("protected canary", result.admin_diagnostic or "")
+            self.assertEqual(snapshot(), before)
+            self.assertEqual(production_marker.read_bytes(), b"production-state")
+
     def test_probe_keeps_broker_state_denies_under_configured_data_directory(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
