@@ -262,7 +262,7 @@ per-request key authorizes it, and it does not provide the managed isolation
 guarantee.
 
 The cached no-model canary uses `command/exec` with a temporary workspace as
-`cwd`. Pinned Codex `0.153.2` has no `runtimeWorkspaceRoots` field on that
+`cwd`. Pinned Codex `0.153.3` has no `runtimeWorkspaceRoots` field on that
 command, so `cwd` supplies the canary's runtime workspace root. The broker
 continues to send canonicalized `runtimeWorkspaceRoots` on managed thread and
 turn calls.
