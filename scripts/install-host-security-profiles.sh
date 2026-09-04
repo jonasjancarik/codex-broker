@@ -150,7 +150,9 @@ validate_apparmor() {
 
 installed_file_matches() {
   [ -f "$2" ] || return 1
-  [ "$(file_sha256 "$1")" = "$(file_sha256 "$2")" ]
+  source_sha=$(file_sha256 "$1") || return 1
+  installed_sha=$(file_sha256 "$2") || return 1
+  [ "$source_sha" = "$installed_sha" ]
 }
 
 file_has_root_0644() {

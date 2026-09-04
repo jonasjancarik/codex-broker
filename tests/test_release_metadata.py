@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -102,6 +105,39 @@ class ReleaseMetadataTests(unittest.TestCase):
 
         workflow = (repository / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
         self.assertIn("sudo ./scripts/install-host-security-profiles.sh --check", workflow)
+
+    def test_host_profile_installer_fails_without_a_checksum_utility(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        installer = repository / "scripts/install-host-security-profiles.sh"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            for command in ("dirname", "grep", "python3"):
+                executable = shutil.which(command, path="/usr/bin:/bin")
+                self.assertIsNotNone(executable)
+                (bin_dir / command).symlink_to(str(executable))
+
+            security_root = root / "security"
+            installed_seccomp = security_root / "v1" / "seccomp.json"
+            installed_seccomp.parent.mkdir(parents=True)
+            installed_seccomp.write_bytes((repository / "examples/seccomp/codex-broker.json").read_bytes())
+            environment = {
+                **os.environ,
+                "PATH": str(bin_dir),
+                "CODEX_BROKER_SECURITY_ROOT": str(security_root),
+                "CODEX_BROKER_APPARMOR_PATH": str(root / "apparmor-profile"),
+            }
+            completed = subprocess.run(
+                [str(installer), "--check"],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("sha256sum or shasum is required", completed.stderr)
 
 
 if __name__ == "__main__":
