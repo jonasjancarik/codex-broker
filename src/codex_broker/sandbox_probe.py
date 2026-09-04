@@ -112,7 +112,13 @@ class SandboxProbe:
         state: StateStore | None = None
         version = self._safe_version()
         try:
-            with tempfile.TemporaryDirectory(prefix="codex-broker-sandbox-") as root_text:
+            ensure_dir(self.config.data_dir)
+            # Keep disposable state on the configured volume: workspace-write
+            # denies /tmp, which prevents nested deny mounts beneath it.
+            with (
+                tempfile.TemporaryDirectory(prefix="codex-broker-sandbox-") as root_text,
+                tempfile.TemporaryDirectory(prefix=".sandbox-probe-", dir=self.config.data_dir) as data_text,
+            ):
                 root = Path(root_text)
                 home = root / "codex-home"
                 jobs = root / "jobs"
@@ -142,7 +148,7 @@ class SandboxProbe:
                 mounted_skill.chmod(0o555)
                 probe_config = replace(
                     self.config,
-                    data_dir=root / "broker-data",
+                    data_dir=Path(data_text),
                     allowed_workspace_roots=(workspace,),
                     allowed_bundle_roots=(bundle_root,),
                     sandbox_deny_paths=(*self.config.sandbox_deny_paths, control_plane),
