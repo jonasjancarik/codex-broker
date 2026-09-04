@@ -133,7 +133,7 @@ unavailable. Job hosts must supply the individual job directory as `cwd`, not a
 parent directory containing other jobs.
 
 The no-model sandbox preflight uses `command/exec` with its temporary workspace
-as `cwd`. Pinned Codex `0.153.0` does not expose `runtimeWorkspaceRoots` on
+as `cwd`. Pinned Codex `0.153.2` does not expose `runtimeWorkspaceRoots` on
 `command/exec`, so `cwd` is the preflight command's runtime workspace root.
 
 `danger-full-access` is intentionally outside this isolation boundary. It is
