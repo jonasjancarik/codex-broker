@@ -89,7 +89,7 @@ jobs:
       - name: Install and preflight host security profiles
         run: |
           sudo ./scripts/install-host-security-profiles.sh
-          ./scripts/install-host-security-profiles.sh --check
+          sudo ./scripts/install-host-security-profiles.sh --check
 
       - name: Run no-model sandbox canary
         run: |
