@@ -144,8 +144,9 @@ validate_apparmor() {
     error "apparmor_parser is required to validate the AppArmor profile"
     return 1
   fi
-  # -Q parses without loading into the kernel; -W keeps warnings visible.
-  "$parser" -Q -W "$APPARMOR_SOURCE" >/dev/null
+  # -Q parses without loading into the kernel; -K avoids reading or writing
+  # the host policy cache so --check and --dry-run remain non-mutating.
+  "$parser" -Q -K "$APPARMOR_SOURCE" >/dev/null
 }
 
 installed_file_matches() {

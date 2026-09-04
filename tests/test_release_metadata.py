@@ -102,6 +102,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("rerun --check with sudo", installer_source)
         self.assertIn("loaded in complain mode; enforcement is required", installer_source)
         self.assertNotIn('|| grep -Fqx "codex-broker-bwrap (complain)"', installer_source)
+        self.assertIn('"$parser" -Q -K "$APPARMOR_SOURCE"', installer_source)
+        self.assertNotIn('"$parser" -Q -W "$APPARMOR_SOURCE"', installer_source)
 
         workflow = (repository / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
         self.assertIn("sudo ./scripts/install-host-security-profiles.sh --check", workflow)
