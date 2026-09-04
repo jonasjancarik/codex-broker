@@ -561,12 +561,12 @@ class BrokerTests(unittest.TestCase):
             fake_client.mcp_servers = bundle.mcp_servers
             with patch.dict(os.environ, {"MCP_SECRET_SOURCE": "resolved-secret"}):
                 self.assertEqual(
-                    fake_client._mcp_config_env(bundle.mcp_servers[0]),
-                    {"PUBLIC_FLAG": "1", "MCP_API_KEY": "resolved-secret"},
+                    fake_client._mcp_process_env(),
+                    {"MCP_API_KEY": "resolved-secret"},
                 )
             with patch.dict(os.environ, {}, clear=True):
                 with self.assertRaises(AppServerError):
-                    fake_client._mcp_config_env(bundle.mcp_servers[0])
+                    fake_client._mcp_process_env()
             outside = bundle_dir / "bad.json"
             outside.write_text(json.dumps({"id": "bad", "allowedPaths": ["/etc"]}), encoding="utf-8")
             with self.assertRaises(BundleError):

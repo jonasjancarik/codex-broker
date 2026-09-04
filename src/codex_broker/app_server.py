@@ -149,6 +149,7 @@ class AppServerClient:
         self._process_record_id: int | None = None
         self._process_record_closed = False
         self._stderr_lines: list[str] = []
+        mcp_process_env = self._mcp_process_env()
         command = self._build_command()
         env = env_with(
             clean_process_env(config.codex_passthrough_env),
@@ -158,6 +159,11 @@ class AppServerClient:
                 "HOME": str(runtime_home),
             },
         )
+        # Codex 0.153.0 reads only env_vars named by each MCP server when it
+        # starts that server. Shell commands use the policy appended in
+        # _build_command(), which excludes these values and disables login
+        # shells that could reintroduce them from profile files.
+        env.update(mcp_process_env)
         self._process = subprocess.Popen(
             command,
             cwd=str(codex_home),
@@ -344,30 +350,64 @@ class AppServerClient:
             if server.cwd:
                 args.extend(["-c", f"{config_prefix}.cwd={json.dumps(str(server.cwd))}"])
             if server.env:
-                # Codex applies this mapping when it starts this specific MCP
-                # child.  Do not put env:VAR values in the app-server process
-                # environment: command execution inherits that environment.
-                config_env = self._mcp_config_env(server)
+                config_env = self._mcp_static_config_env(server)
                 if config_env:
                     env_items = ", ".join(
                         f"{json.dumps(key)} = {json.dumps(value)}"
                         for key, value in sorted(config_env.items())
                     )
                     args.extend(["-c", f"{config_prefix}.env={{ {env_items} }}"])
+            env_vars = self._mcp_env_var_names(server)
+            if env_vars:
+                args.extend(["-c", f"{config_prefix}.env_vars={json.dumps(env_vars)}"])
+        secret_names = self._mcp_secret_variable_names()
+        if secret_names:
+            args.extend(
+                [
+                    "-c",
+                    f"shell_environment_policy.exclude={json.dumps(secret_names)}",
+                    "-c",
+                    "allow_login_shell=false",
+                ]
+            )
         return args
 
     @staticmethod
-    def _mcp_config_env(server: McpServerRef) -> dict[str, str]:
-        """Resolve one MCP server's environment for Codex's child-only config."""
+    def _mcp_static_config_env(server: McpServerRef) -> dict[str, str]:
+        """Return literal, non-secret values for Codex's MCP configuration."""
+        return {target: value for target, value in server.env.items() if not value.startswith("env:")}
+
+    @staticmethod
+    def _mcp_env_var_names(server: McpServerRef) -> list[str]:
+        return sorted(target for target, value in server.env.items() if value.startswith("env:"))
+
+    def _mcp_secret_variable_names(self) -> list[str]:
+        names = {
+            name
+            for server in self.mcp_servers
+            for target, value in server.env.items()
+            if value.startswith("env:")
+            for name in (target, value.removeprefix("env:"))
+        }
+        return sorted(names)
+
+    def _mcp_process_env(self) -> dict[str, str]:
+        """Prepare only the named values Codex will pass to MCP children."""
         resolved: dict[str, str] = {}
-        for target, value in server.env.items():
-            if not value.startswith("env:"):
-                resolved[target] = value
-                continue
-            source = value.removeprefix("env:")
-            if source not in os.environ:
-                raise AppServerError(f"Missing MCP env source: {source}")
-            resolved[target] = os.environ[source]
+        for server in self.mcp_servers:
+            for target, value in server.env.items():
+                if not value.startswith("env:"):
+                    continue
+                source = value.removeprefix("env:")
+                if source not in os.environ:
+                    raise AppServerError(f"Missing MCP env source: {source}")
+                secret = os.environ[source]
+                previous = resolved.get(target)
+                if previous is not None and previous != secret:
+                    raise AppServerError(
+                        f"MCP env target {target} resolves to conflicting values across servers."
+                    )
+                resolved[target] = secret
         return resolved
 
     def _read_stdout(self) -> None:

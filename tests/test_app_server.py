@@ -433,12 +433,18 @@ class AppServerRoutingTests(unittest.TestCase):
             )
             self.assertIn('mcp_servers.host_mcp.cwd="/bundles"', config_overrides)
             self.assertIn(
-                'mcp_servers.host_mcp.env={ "LOG_LEVEL" = "info", "MCP_API_KEY" = "resolved-secret" }',
+                'mcp_servers.host_mcp.env={ "LOG_LEVEL" = "info" }',
                 config_overrides,
             )
+            self.assertIn('mcp_servers.host_mcp.env_vars=["MCP_API_KEY"]', config_overrides)
+            self.assertIn(
+                'shell_environment_policy.exclude=["MCP_API_KEY", "MCP_SECRET_SOURCE"]',
+                config_overrides,
+            )
+            self.assertIn("allow_login_shell=false", config_overrides)
             self.assertFalse(any(value.startswith('mcp_servers."host_mcp"') for value in config_overrides))
 
-    def test_mcp_secret_is_pinned_in_mcp_config_not_app_server_environment(self) -> None:
+    def test_mcp_secret_is_only_named_in_argv_and_excluded_from_model_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:
             tmp = Path(tmp_raw)
             config = config_for(tmp)
@@ -475,12 +481,17 @@ class AppServerRoutingTests(unittest.TestCase):
                     )
 
                 self.assertNotIn("MCP_SECRET_SOURCE", captured["env"])
-                self.assertNotIn("MCP_API_KEY", captured["env"])
-                self.assertNotIn("resolved-secret", captured["env"].values())
+                self.assertEqual(captured["env"]["MCP_API_KEY"], "resolved-secret")
+                self.assertNotIn("resolved-secret", "\0".join(captured["command"]))
                 self.assertIn(
-                    'mcp_servers.host_mcp.env={ "MCP_API_KEY" = "resolved-secret" }',
+                    'mcp_servers.host_mcp.env_vars=["MCP_API_KEY"]',
                     captured["command"],
                 )
+                self.assertIn(
+                    'shell_environment_policy.exclude=["MCP_API_KEY", "MCP_SECRET_SOURCE"]',
+                    captured["command"],
+                )
+                self.assertIn("allow_login_shell=false", captured["command"])
             finally:
                 pool.close_all()
 
