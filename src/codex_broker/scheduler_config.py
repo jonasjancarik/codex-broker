@@ -286,7 +286,7 @@ def codex_image_items(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             result.append(item)
             continue
         prepared = dict(item)
-        # Codex 0.153.3 can replace low-detail images with an omission notice.
+        # Codex 0.153.4 can replace low-detail images with an omission notice.
         if prepared.get("type") in ("image", "localImage", "input_image") and prepared.get("detail") == "low":
             prepared["detail"] = "high"
         if prepared.get("type") == "message" and isinstance(prepared.get("content"), list):
