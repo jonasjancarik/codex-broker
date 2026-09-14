@@ -1,0 +1,1 @@
+Mounted skill snapshots are read from the current turn attachment.

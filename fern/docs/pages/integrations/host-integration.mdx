@@ -167,6 +167,17 @@ Auth status can be:
 
 Failed turns include `errorCode`, `publicMessage`, and `adminMessage`. Host UIs should show `publicMessage` or `error` to end users and keep `adminMessage` for admin-only logs.
 
+`bundle_skill_unavailable` means the broker could not prepare a required skill
+snapshot before model execution. Preserve that code and its public message in
+the host job record so users see the prerequisite failure rather than a later
+missing-output error. This classification comes from a broker preparation
+failure, not from interpreting the model's final message or a generic shell
+permission error.
+
+A `turn.completed` event only confirms that Codex finished the turn. The host
+must still validate its documents, files, or other requested results before
+marking the product job successful.
+
 ## Production checklist
 
 - Call the broker only from trusted server-side code.

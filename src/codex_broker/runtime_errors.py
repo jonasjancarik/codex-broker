@@ -19,6 +19,11 @@ SANDBOX_UNAVAILABLE = "sandbox_unavailable"
 SANDBOX_UNAVAILABLE_PUBLIC_MESSAGE = (
     "The managed execution sandbox is unavailable. Please contact an administrator."
 )
+BUNDLE_SKILL_UNAVAILABLE = "bundle_skill_unavailable"
+BUNDLE_SKILL_UNAVAILABLE_PUBLIC_MESSAGE = (
+    "This task cannot start because a required skill or its instructions are unavailable. "
+    "Ask an administrator to check the task bundle."
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,19 @@ def classify_runtime_error(message: str) -> RuntimeErrorInfo:
             admin_message=message,
         )
     return RuntimeErrorInfo(code="codex_runtime_error", public_message=message, admin_message=message)
+
+
+def classify_runtime_exception(error: Exception) -> RuntimeErrorInfo:
+    """Classify broker preparation errors without interpreting model-provided prose."""
+    from .bundles import BundleSkillUnavailableError
+
+    if isinstance(error, BundleSkillUnavailableError):
+        return RuntimeErrorInfo(
+            code=BUNDLE_SKILL_UNAVAILABLE,
+            public_message=BUNDLE_SKILL_UNAVAILABLE_PUBLIC_MESSAGE,
+            admin_message=str(error),
+        )
+    return classify_runtime_error(str(error))
 
 
 def is_auth_refresh_failure(message: str) -> bool:

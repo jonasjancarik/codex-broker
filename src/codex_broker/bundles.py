@@ -23,6 +23,18 @@ class BundleError(ValueError):
     pass
 
 
+class BundleSkillUnavailableError(BundleError):
+    """A required per-turn skill snapshot cannot be supplied to Codex."""
+
+    def __init__(self, skill_name: str, cause: str | None = None) -> None:
+        self.skill_name = skill_name
+        self.cause = cause
+        message = f"Materialized skill is unavailable: {skill_name}"
+        if cause:
+            message = f"{message}: {cause}"
+        super().__init__(message)
+
+
 def materialized_skill_path(overlay: Path, skill: "SkillRef") -> Path:
     """Return the native skill path exposed from one per-turn overlay."""
     safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", skill.name)
@@ -393,13 +405,16 @@ class BundleRegistry:
                         shutil.rmtree(target)
                     else:
                         target.unlink()
-                skill_snapshots.append(
-                    snapshot_skill_directory(
-                        skill.path.parent,
-                        target,
-                        limits=self.skill_snapshot_limits,
+                try:
+                    skill_snapshots.append(
+                        snapshot_skill_directory(
+                            skill.path.parent,
+                            target,
+                            limits=self.skill_snapshot_limits,
+                        )
                     )
-                )
+                except BundleError as exc:
+                    raise BundleSkillUnavailableError(skill.name, str(exc)) from exc
             if bundle.prompts:
                 prompts_root = ensure_dir(overlay / "prompts")
                 for prompt in bundle.prompts:

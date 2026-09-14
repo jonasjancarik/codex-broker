@@ -1,0 +1,16 @@
+{
+  "id": "mounted-skill-canary-v1",
+  "version": "2026-09-14",
+  "skills": [
+    {
+      "name": "mounted-skill-canary",
+      "source": {
+        "type": "mount",
+        "path": "/bundles/mounted-skill-canary-v1/skills/mounted-skill-canary"
+      }
+    }
+  ],
+  "sandbox": {
+    "mode": "workspace-write"
+  }
+}

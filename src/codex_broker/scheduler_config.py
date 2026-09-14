@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .bundles import BundleError, ResolvedBundle, materialized_skill_path
+from .bundles import BundleError, BundleSkillUnavailableError, ResolvedBundle, materialized_skill_path
 
 
 _MANAGED_SANDBOX_PERMISSIONS = {
@@ -307,9 +307,18 @@ def build_input(
         assert overlay is not None or not bundle.skills
         for skill in bundle.skills:
             path = materialized_skill_path(overlay, skill)
-            if not path.is_file():
-                raise BundleError(f"Materialized skill is unavailable: {skill.name}")
+            _validate_materialized_skill(path, skill.name)
             items.append({"type": "skill", "name": skill.name, "path": str(path)})
+            items.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"Read and follow the verified skill at {path}. "
+                        f"Resolve every relative file named by that skill from {path.parent}."
+                    ),
+                    "text_elements": [],
+                }
+            )
         if bundle.instructions:
             items.append({"type": "text", "text": "\n\n".join(bundle.instructions), "text_elements": []})
         for prompt in bundle.prompts:
@@ -322,6 +331,19 @@ def build_input(
                 }
             )
     return [*items, *input_items]
+
+
+def _validate_materialized_skill(path: Path, skill_name: str) -> None:
+    """Fail before model contact when a required snapshot disappeared or cannot be read."""
+    try:
+        if not path.is_file():
+            raise BundleSkillUnavailableError(skill_name)
+        with path.open("rb"):
+            pass
+    except BundleSkillUnavailableError:
+        raise
+    except OSError as exc:
+        raise BundleSkillUnavailableError(skill_name, str(exc)) from exc
 
 
 def config_profile_config(scheduler: Any, name: str) -> dict[str, Any]:

@@ -23,6 +23,7 @@ from .runtime_errors import (
     SANDBOX_UNAVAILABLE_PUBLIC_MESSAGE,
     RuntimeErrorInfo,
     classify_app_server_error,
+    classify_runtime_exception,
     classify_runtime_error,
 )
 from .sandbox_probe import SandboxProbe
@@ -1098,8 +1099,7 @@ class TurnScheduler:
             if finalized:
                 self._metric("turns_completed" if status == "completed" else "turns_failed", 1)
         except Exception as exc:  # noqa: BLE001 - background worker must persist failure state.
-            message = str(exc)
-            error_info = classify_runtime_error(message)
+            error_info = classify_runtime_exception(exc)
             turn = self.state.get_turn(owner_hash, thread_id, turn_id)
             finalized = self.state.finalize_turn(
                 owner_hash,

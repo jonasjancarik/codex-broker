@@ -273,6 +273,16 @@ never inferred from an OpenAI `tools` request.
 
 The broker emits normalized events while preserving optional raw app-server data for debugging when enabled.
 
+`turn.completed` means Codex finished executing the turn. It does not certify
+that the host application's requested work succeeded. Hosts must validate their
+own artifacts and business requirements before marking a job successful.
+
+If the broker cannot prepare a required skill snapshot, it fails the turn before
+model execution with `errorCode: bundle_skill_unavailable`. The public message
+explains that the required skill is unavailable; the administrator diagnostic
+retains the preparation error. The broker does not infer this code from model
+messages or arbitrary shell permission errors.
+
 Important event types:
 
 - `thread.started`

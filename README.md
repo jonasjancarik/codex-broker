@@ -119,7 +119,9 @@ For a bundled managed turn with an explicit working directory, the broker
 passes exactly two runtime roots: that canonical working directory and the
 turn's ephemeral overlay. Native skill input always names
 `<overlay>/.agents/skills/<skill>/SKILL.md`, never the original mounted source
-path. The broker snapshots the mounted skill directory into that unique,
+path. It also sends a plain-text instruction with that exact `SKILL.md` path
+and its parent directory for relative skill files. The broker snapshots the
+mounted skill directory into that unique,
 per-turn path, verifies its content digest before Codex starts, and rejects
 symbolic links or non-regular entries. The overlay contains only disposable
 bundle material and is removed when the turn ends; it may share the
@@ -131,6 +133,12 @@ read-only to the broker during a turn. The Linux release path uses POSIX
 descriptor-relative snapshotting and fails closed where that support is
 unavailable. Job hosts must supply the individual job directory as `cwd`, not a
 parent directory containing other jobs.
+
+After changing Codex or skill dispatch, run the opt-in
+[mounted-skill real-model check](docs/mounted-skill-canary.md). It verifies
+initial and resumed turns using their current skill snapshot and a relative
+fixture, including command evidence, hashes, and audit records. This supplements
+the no-model sandbox preflight; ordinary unit tests do not invoke a real model.
 
 The no-model sandbox preflight uses `command/exec` with its temporary workspace
 as `cwd`. Pinned Codex `0.153.4` does not expose `runtimeWorkspaceRoots` on
