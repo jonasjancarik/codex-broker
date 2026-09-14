@@ -302,6 +302,46 @@ cross-owner access restrictions on the actual Linux deployment before expanding
 the supported workload. This is a trigger for reassessing the design, not a
 decision to migrate the current runtime.
 
+## Resource limits do not require a container per user
+
+`CODEX_BROKER_MAX_ACTIVE_TURNS`, the app-server pool cap, and idle eviction
+control concurrency and retained processes. They do not impose CPU, memory, or
+process-count budgets on each runtime. The checked-in Compose example does not
+set container resource limits either.
+
+For an overall host-protection limit, Compose supports `cpus`, `mem_limit`, and
+`pids_limit`. These apply to the entire broker container; one workload can still
+consume the shared allowance and disrupt its neighbors or the broker. See the
+[Compose service reference](https://docs.docker.com/reference/compose-file/services/).
+
+For separate runtime budgets within one container, Linux cgroup v2 can group an
+App Server with its descendant commands and MCP tools. `cpu.max`, `memory.max`,
+and `pids.max` control their combined CPU bandwidth, memory, and task count;
+swap needs its own policy. This requires host-side delegation of the relevant
+controllers and a trusted launcher with access to that delegated subtree.
+It is not enabled by the current Compose setup. Keep cgroup management
+inaccessible to workloads; do not expose the host's full writable cgroup tree
+or enable privileged mode as a shortcut. See the
+[kernel cgroup v2 documentation](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html).
+
+Launch runtimes in their assigned groups before they spawn children. Keep the
+broker in a separate group with capacity budgeted for it, and handle resource
+exhaustion as a runtime failure. Because the current pool can share an App
+Server across owners, a per-runtime cap is not automatically a per-owner cap;
+strict owner budgets require corresponding process separation.
+
+Process limits such as `ulimit` or `setrlimit` can supplement this, but are not
+equivalent to aggregate runtime budgets: `RLIMIT_CPU` limits accumulated CPU
+time rather than CPU bandwidth, `RLIMIT_AS` limits each process's virtual
+address space rather than combined resident memory, and `RLIMIT_NPROC` counts
+tasks by Linux user ID, which our runtimes share. See
+[getrlimit(2)](https://man7.org/linux/man-pages/man2/getrlimit.2.html).
+
+Resource control alone does not require a container migration. Compare the
+operational cost of safe cgroup delegation with per-runtime containers when
+hard workload budgets become necessary; neither replaces filesystem isolation
+or tool authorization.
+
 ## Shutdown
 
 On process shutdown, the server stops accepting work and calls scheduler shutdown:

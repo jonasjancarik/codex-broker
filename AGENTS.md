@@ -14,3 +14,13 @@ isolation. Keep tool authorization and credential protection even if containers
 are introduced. See the
 [architecture trust assumptions](fern/docs/pages/runtime/architecture.mdx#untrusted-executable-tools-require-stronger-runtime-isolation)
 for the risks and criteria; this note does not schedule a container migration.
+
+## Distinguish concurrency limits from resource limits
+
+read_when: changing runtime capacity, CPU or memory budgets, process limits, pooling, or container deployment.
+
+Active-turn and pool caps do not impose CPU, memory, or process-tree budgets.
+Before choosing per-user containers for resource control, consider delegated
+cgroup v2 groups within the shared container. Account for owners sharing an
+App Server and protect the broker's own capacity. See the
+[resource-control tradeoffs](fern/docs/pages/runtime/architecture.mdx#resource-limits-do-not-require-a-container-per-user).
