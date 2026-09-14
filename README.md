@@ -119,7 +119,9 @@ For a bundled managed turn with an explicit working directory, the broker
 passes exactly two runtime roots: that canonical working directory and the
 turn's ephemeral overlay. Native skill input always names
 `<overlay>/.agents/skills/<skill>/SKILL.md`, never the original mounted source
-path. The broker snapshots the mounted skill directory into that unique,
+path. It also sends a plain-text instruction with that exact `SKILL.md` path
+and its parent directory for relative skill files. The broker snapshots the
+mounted skill directory into that unique,
 per-turn path, verifies its content digest before Codex starts, and rejects
 symbolic links or non-regular entries. The overlay contains only disposable
 bundle material and is removed when the turn ends; it may share the

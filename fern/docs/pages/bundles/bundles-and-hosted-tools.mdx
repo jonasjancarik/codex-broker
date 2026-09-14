@@ -80,7 +80,9 @@ For a managed turn with an explicit `cwd`, the broker gives Codex exactly two
 runtime roots: the canonical `cwd` and that turn's overlay. Native skill input
 uses the overlay path
 `<overlay>/.agents/skills/<skill-name>/SKILL.md`, rather than the mounted source
-path. The broker copies the full mounted skill directory into this unique,
+path. It also sends a plain-text instruction with that exact `SKILL.md` path
+and its parent directory for relative skill files. The broker copies the full
+mounted skill directory into this unique,
 per-turn snapshot and verifies its digest before the turn starts. Snapshot
 trees reject symbolic links and non-regular entries so every resolved path stays
 inside the authorized overlay. The overlay is disposable and deleted after the

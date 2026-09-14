@@ -292,6 +292,16 @@ def build_input(
             if not path.is_file():
                 raise BundleError(f"Materialized skill is unavailable: {skill.name}")
             items.append({"type": "skill", "name": skill.name, "path": str(path)})
+            items.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"Read and follow the verified skill at {path}. "
+                        f"Resolve every relative file named by that skill from {path.parent}."
+                    ),
+                    "text_elements": [],
+                }
+            )
         if bundle.instructions:
             items.append({"type": "text", "text": "\n\n".join(bundle.instructions), "text_elements": []})
         for prompt in bundle.prompts:

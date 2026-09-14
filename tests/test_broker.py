@@ -554,9 +554,21 @@ class BrokerTests(unittest.TestCase):
                 bundle,
                 overlay,
             )
-            self.assertEqual(input_items[0]["path"], str(overlay / ".agents" / "skills" / "demo" / "SKILL.md"))
-            self.assertEqual(input_items[2]["name"], "legacy")
-            self.assertEqual(input_items[2]["text"], "Legacy host prompt.")
+            skill_path = overlay / ".agents" / "skills" / "demo" / "SKILL.md"
+            self.assertEqual(input_items[0], {"type": "skill", "name": "demo", "path": str(skill_path)})
+            self.assertEqual(
+                input_items[1],
+                {
+                    "type": "text",
+                    "text": (
+                        f"Read and follow the verified skill at {skill_path}. "
+                        f"Resolve every relative file named by that skill from {skill_path.parent}."
+                    ),
+                    "text_elements": [],
+                },
+            )
+            self.assertEqual(input_items[3]["name"], "legacy")
+            self.assertEqual(input_items[3]["text"], "Legacy host prompt.")
             fake_client = AppServerClient.__new__(AppServerClient)
             fake_client.mcp_servers = bundle.mcp_servers
             with patch.dict(os.environ, {"MCP_SECRET_SOURCE": "resolved-secret"}):
