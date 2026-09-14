@@ -271,6 +271,37 @@ Sanitization is defense in depth. The host app must still avoid placing
 credentials intentionally in prompts or input items, because the model receives
 those values before any output sanitization occurs.
 
+## Untrusted executable tools require stronger runtime isolation
+
+The shared-container design assumes trusted host backends and operator-reviewed
+App Server and MCP executables. Managed sandboxing restricts model-run commands,
+including commands induced by malicious prompts or repository content. It does
+not contain a compromised App Server or a malicious locally launched MCP
+executable: those processes run outside the command sandbox and share the
+broker's container. Separate auth directories and pool entries do not provide
+OS-enforced separation between those trusted processes.
+
+Revisit runtime isolation before accepting user-supplied MCP executables,
+plugins, hooks, or tool configuration that lets users choose arbitrary commands
+to run outside the managed sandbox. Unsandboxed workloads for unrelated owners
+also change the trust assumptions. A reviewed MCP integration within the
+existing policy does not by itself require a runtime redesign; accepting code
+we no longer trust does.
+
+Per-owner or per-workspace containers are one possible additional protection.
+They must expose only the intended files and credentials, restrict network
+access, and keep the Docker socket and broker state out of worker runtimes.
+Choose which workloads can share a runtime by their access rights, rather than
+by whether they share an upstream Codex account. Containerization does not
+replace authorization in broker and host-tool APIs, or protection of credentials
+from commands inside each container.
+
+The sandbox preflight checks specific filesystem restrictions; it is not a
+general security audit or proof that untrusted MCP code is contained. Verify
+cross-owner access restrictions on the actual Linux deployment before expanding
+the supported workload. This is a trigger for reassessing the design, not a
+decision to migrate the current runtime.
+
 ## Shutdown
 
 On process shutdown, the server stops accepting work and calls scheduler shutdown:
