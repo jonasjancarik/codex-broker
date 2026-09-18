@@ -141,7 +141,7 @@ fixture, including command evidence, hashes, and audit records. This supplements
 the no-model sandbox preflight; ordinary unit tests do not invoke a real model.
 
 The no-model sandbox preflight uses `command/exec` with its temporary workspace
-as `cwd`. Pinned Codex `0.153.4` does not expose `runtimeWorkspaceRoots` on
+as `cwd`. Pinned Codex `0.155.0` does not expose `runtimeWorkspaceRoots` on
 `command/exec`, so `cwd` is the preflight command's runtime workspace root.
 
 `danger-full-access` is intentionally outside this isolation boundary. It is
