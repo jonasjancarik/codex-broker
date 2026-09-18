@@ -140,6 +140,11 @@ initial and resumed turns using their current skill snapshot and a relative
 fixture, including command evidence, hashes, and audit records. This supplements
 the no-model sandbox preflight; ordinary unit tests do not invoke a real model.
 
+Before releasing an image change that can affect model-driven command
+execution, run the opt-in [command-tool canary](docs/command-tool-canary.md).
+It uses the Broker HTTP API and independently verifies both native command
+success and the exact workspace artifact.
+
 The no-model sandbox preflight uses `command/exec` with its temporary workspace
 as `cwd`. Pinned Codex `0.155.0` does not expose `runtimeWorkspaceRoots` on
 `command/exec`, so `cwd` is the preflight command's runtime workspace root.
