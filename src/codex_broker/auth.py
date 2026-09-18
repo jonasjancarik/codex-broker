@@ -66,6 +66,9 @@ def render_managed_codex_config(config: BrokerConfig) -> str:
         'default_permissions = "broker-read-only"',
         "",
     ]
+    if config.managed_network_domains:
+        lines.extend(["[features]", "network_proxy = true", ""])
+
     profiles = (
         ("broker-read-only", ":read-only", "read", ()),
         ("broker-workspace-write", ":workspace", "write", (":slash_tmp", ":tmpdir")),
@@ -89,6 +92,19 @@ def render_managed_codex_config(config: BrokerConfig) -> str:
         lines.extend(["", f"[{workspace_table}]", f'"." = "{workspace_access}"'])
         lines.extend(f'{_toml_string(pattern)} = "deny"' for pattern in _WORKSPACE_SECRET_GLOBS)
         lines.append("")
+        if name == "broker-workspace-write" and config.managed_network_domains:
+            network_table = f"{table}.network"
+            lines.extend(
+                [
+                    f"[{network_table}]",
+                    "enabled = true",
+                    f"allow_local_binding = {'true' if config.managed_network_allow_local_binding else 'false'}",
+                    "",
+                    f"[{network_table}.domains]",
+                ]
+            )
+            lines.extend(f'{_toml_string(domain)} = "allow"' for domain in config.managed_network_domains)
+            lines.append("")
     return "\n".join(lines)
 
 

@@ -206,6 +206,8 @@ class BrokerConfig:
     event_sanitization_mode: str = "safe"
     sandbox_preflight_mode: str = "required" if sys.platform == "linux" else "warn"
     sandbox_deny_paths: tuple[Path, ...] = ()
+    managed_network_domains: tuple[str, ...] = ()
+    managed_network_allow_local_binding: bool = False
     danger_full_access_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -234,6 +236,10 @@ class BrokerConfig:
         for path in self.sandbox_deny_paths:
             if not path.is_absolute():
                 raise ValueError("CODEX_BROKER_SANDBOX_DENY_PATHS entries must be absolute paths.")
+        if self.managed_network_allow_local_binding and not self.managed_network_domains:
+            raise ValueError(
+                "CODEX_BROKER_MANAGED_NETWORK_ALLOW_LOCAL_BINDING requires CODEX_BROKER_MANAGED_NETWORK_DOMAINS."
+            )
         for name, value in (
             ("CODEX_BROKER_REQUEST_TIMEOUT_SECONDS", self.request_timeout_seconds),
             ("CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS", self.host_response_timeout_seconds),
@@ -323,5 +329,9 @@ class BrokerConfig:
                 "required" if sys.platform == "linux" else "warn",
             ),
             sandbox_deny_paths=_absolute_paths_env("CODEX_BROKER_SANDBOX_DENY_PATHS"),
+            managed_network_domains=_csv(os.environ.get("CODEX_BROKER_MANAGED_NETWORK_DOMAINS")),
+            managed_network_allow_local_binding=_bool_env(
+                "CODEX_BROKER_MANAGED_NETWORK_ALLOW_LOCAL_BINDING", False
+            ),
             danger_full_access_key=_danger_full_access_key(),
         )

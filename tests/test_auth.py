@@ -92,6 +92,7 @@ class AuthProfileTests(unittest.TestCase):
             self.assertEqual(workspace_write["filesystem"][":workspace_roots"]["."], "write")
             self.assertEqual(workspace_write["filesystem"][":slash_tmp"], "deny")
             self.assertEqual(workspace_write["filesystem"][":tmpdir"], "deny")
+
             recursive_secret_globs = {
                 "**/.env",
                 "**/.env.*",
@@ -126,6 +127,22 @@ class AuthProfileTests(unittest.TestCase):
                 self.assertTrue(recursive_secret_globs.issubset(workspace_denies))
                 self.assertTrue(all(workspace_denies[pattern] == "deny" for pattern in recursive_secret_globs))
                 self.assertTrue(redundant_root_masks.isdisjoint(workspace_denies))
+
+    def test_managed_workspace_profile_can_enable_filtered_network_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            config = replace(
+                config_for(Path(tmp_raw)),
+                managed_network_domains=("*", "host.docker.internal"),
+                managed_network_allow_local_binding=True,
+            )
+            parsed = tomllib.loads(render_managed_codex_config(config))
+
+        self.assertTrue(parsed["features"]["network_proxy"])
+        self.assertNotIn("network", parsed["permissions"]["broker-read-only"])
+        network = parsed["permissions"]["broker-workspace-write"]["network"]
+        self.assertTrue(network["enabled"])
+        self.assertTrue(network["allow_local_binding"])
+        self.assertEqual(network["domains"], {"*": "allow", "host.docker.internal": "allow"})
 
     def test_managed_config_file_is_private_and_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:

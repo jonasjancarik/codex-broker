@@ -32,6 +32,8 @@ class ConfigProfileTests(unittest.TestCase):
         self.assertEqual(config.sandbox_deny_paths, ())
         self.assertIsNone(config.danger_full_access_key)
         self.assertEqual(config.max_pooled_app_servers, 0)
+        self.assertEqual(config.managed_network_domains, ())
+        self.assertFalse(config.managed_network_allow_local_binding)
 
     def test_pool_child_limit_loads_from_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
@@ -124,6 +126,32 @@ class ConfigProfileTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, message):
                     BrokerConfig.from_env()
+
+    def test_managed_network_policy_loads_from_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {
+                "CODEX_BROKER_DATA_DIR": tmp_raw,
+                "CODEX_BROKER_MANAGED_NETWORK_DOMAINS": "*, host.docker.internal",
+                "CODEX_BROKER_MANAGED_NETWORK_ALLOW_LOCAL_BINDING": "true",
+            },
+            clear=True,
+        ):
+            config = BrokerConfig.from_env()
+
+        self.assertEqual(config.managed_network_domains, ("*", "host.docker.internal"))
+        self.assertTrue(config.managed_network_allow_local_binding)
+
+    def test_local_network_binding_requires_an_explicit_domain_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {
+                "CODEX_BROKER_DATA_DIR": tmp_raw,
+                "CODEX_BROKER_MANAGED_NETWORK_ALLOW_LOCAL_BINDING": "true",
+            },
+            clear=True,
+        ), self.assertRaisesRegex(ValueError, "requires CODEX_BROKER_MANAGED_NETWORK_DOMAINS"):
+            BrokerConfig.from_env()
 
     def test_openai_compat_bindings_load_from_digest_only_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw:

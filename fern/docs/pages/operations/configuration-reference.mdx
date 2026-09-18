@@ -137,6 +137,8 @@ the profile home. The child process environment is otherwise scrubbed.
 | `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS` | `30` | Time an app-server approval, permission request, user-input prompt, or MCP elicitation waits for host resolution before fallback. |
 | `CODEX_BROKER_SANDBOX_PREFLIGHT` | `required` on Linux, otherwise `warn` | Runs a bounded no-model managed-sandbox canary once at startup. `required` aborts startup unless it is healthy, allowing a service manager to restart or alert on the failure; `warn` reports the result but permits work; `disabled` skips it. |
 | `CODEX_BROKER_SANDBOX_DENY_PATHS` | empty | Path-separator-delimited absolute control-plane paths to deny in every managed Codex permission profile, in addition to broker auth/state paths and `/run/secrets`. |
+| `CODEX_BROKER_MANAGED_NETWORK_DOMAINS` | empty | CSV allowlist for command traffic from the managed workspace-write profile. A non-empty value enables Codex's network proxy; use `*` only for products that must fetch arbitrary public URLs. The read-only profile remains offline. |
+| `CODEX_BROKER_MANAGED_NETWORK_ALLOW_LOCAL_BINDING` | `false` | Permits allowlisted hostnames that resolve to local/private addresses. Requires a non-empty managed network domain allowlist; keep it false unless the product intentionally calls a local sidecar or host bridge. |
 | `CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE` | unset | File containing the separate key required to authorize `danger-full-access` on a request. The key is never accepted from a regular config profile or option. |
 
 For user-input prompts, Codex may provide `autoResolutionMs`; the broker uses the smaller positive value between that prompt timeout and `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`.
