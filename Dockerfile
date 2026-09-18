@@ -38,7 +38,9 @@ RUN set -eux; \
 # The default-deny permission profiles retain Codex's :minimal runtime reads,
 # which include /usr/local but intentionally do not expose arbitrary /opt data.
 # Install a real binary here rather than leaving the release symlink into /opt.
-RUN cp --remove-destination /opt/codex/bin/codex /usr/local/bin/codex
+RUN cp --remove-destination /opt/codex/bin/codex /usr/local/bin/codex \
+    && cp /opt/codex/bin/codex-code-mode-host /usr/local/bin/codex-code-mode-host \
+    && codex-code-mode-host --help >/dev/null
 
 RUN mv /usr/bin/bwrap /usr/bin/bwrap-real
 

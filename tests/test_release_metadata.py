@@ -13,6 +13,16 @@ from codex_broker import __version__
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_docker_image_installs_code_mode_host_in_sandbox_visible_path(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        dockerfile = (repository / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "cp /opt/codex/bin/codex-code-mode-host /usr/local/bin/codex-code-mode-host",
+            dockerfile,
+        )
+        self.assertIn("codex-code-mode-host --help >/dev/null", dockerfile)
+
     def test_documented_codex_default_matches_dockerfile(self) -> None:
         repository = Path(__file__).resolve().parents[1]
         dockerfile = (repository / "Dockerfile").read_text(encoding="utf-8")
