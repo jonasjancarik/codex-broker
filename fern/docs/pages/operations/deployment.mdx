@@ -1,6 +1,8 @@
 ---
 title: "Deployment"
 description: "How to run Codex Broker as an internal Docker service next to a host app, including mounts, secrets, readiness, and operations behavior."
+read_when:
+  - Running locally on macOS or deploying with Docker security profiles
 ---
 
 # Deployment
@@ -173,9 +175,116 @@ compatible API.
 The managed Codex profiles depend on Bubblewrap being able to create Linux user
 and PID namespaces. Docker's default seccomp profile can deny the required
 namespace setup, and Docker's default AppArmor policy can deny Bubblewrap's
-nested mount operations. Those profiles are selected by Docker before the
-container starts, so they must be installed on the host rather than placed only
-in the image or Compose project.
+nested mount operations. The shipped seccomp JSON filters Linux system calls:
+it permits the operations needed to create the sandbox while retaining the
+other restrictions described below. `no-new-privileges:true` prevents a process
+from gaining privileges through execution of another program.
+
+### Where Docker reads security profiles
+
+Docker selects these policies before the container starts, but they have
+different setup requirements:
+
+| Setting | Where it is read or loaded |
+| --- | --- |
+| `docker run --security-opt seccomp=FILE` | The Docker CLI reads JSON on the client machine, relative to the shell's current directory unless the path is absolute, and sends the contents to the daemon. |
+| Compose `security_opt: [seccomp=FILE]` | Compose reads JSON on the client, relative to the project directory: normally the directory of the first `-f` file, or the directory selected by `--project-directory`. Absolute paths remain absolute. |
+| `apparmor=codex-broker-bwrap` | This names a policy already loaded in the Linux kernel on the Docker daemon host. It is not a JSON file for the client to upload. |
+
+This holds when the daemon runs in an OrbStack or Docker Desktop Linux VM, or
+on a remote Linux host. Putting seccomp JSON only in the image, mounting it
+inside the container, or copying it only into the VM does not satisfy the
+client's file lookup. A checked-in file on the Mac is sufficient for that
+lookup; the VM still needs to support the requested sandbox operations.
+
+The client-side reads are explicit in Docker CLI's
+[`parseSecurityOpts`](https://github.com/docker/cli/blob/v29.4.0/cli/command/container/opts.go#L879-L909)
+and Compose's
+[`parseSecurityOpts`](https://github.com/docker/compose/blob/v5.1.2/pkg/compose/create.go#L431-L465).
+See also Docker's [Compose path rules](https://docs.docker.com/compose/how-tos/multiple-compose-files/merge/)
+and [AppArmor guide](https://docs.docker.com/engine/security/apparmor/).
+
+### Local macOS development
+
+Start OrbStack or Docker Desktop and use Docker Compose **2.24.4 or later**.
+Run from the repository root:
+
+```bash
+docker context show
+docker compose version
+docker info --format '{{json .SecurityOptions}}'
+test -r examples/seccomp/codex-broker.json
+docker compose -p codex-broker-local \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.macos.yml \
+  -f examples/docker-compose.local.yml \
+  config
+docker compose -p codex-broker-local \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.macos.yml \
+  -f examples/docker-compose.local.yml \
+  up --build -d --wait codex-broker
+curl --fail http://127.0.0.1:3400/readyz
+```
+
+The example uses a development key from `examples/secrets/` and only publishes
+the loopback port. Replace that key before using the service outside local
+development. Keep the same project name and file list for subsequent Compose
+commands, such as `logs --tail=100 codex-broker`.
+
+The macOS overlay contains:
+
+```yaml
+services:
+  codex-broker:
+    security_opt: !override
+      - no-new-privileges:true
+      - seccomp=./seccomp/codex-broker.json
+```
+
+[`!override`](https://docs.docker.com/reference/compose-file/merge/#replace-value)
+requires Compose 2.24.4 or later and replaces the complete list. Without it,
+merging security options can retain both seccomp entries and still try to open
+the missing `/etc` file. Check that `config` shows exactly the two options
+above. The first Compose file is in `examples/`, so this seccomp path points to
+`examples/seccomp/codex-broker.json`, even when the command runs elsewhere.
+When adapting the overlay to another app, use a path relative to that app's
+first Compose file (or an absolute client path), and retain any other required
+security options in the replacement list. `config` checks the merge; it does
+not prove that the JSON can be opened at container creation or that the
+sandbox can run.
+
+The `.local.yml` file remains a port-only overlay for either platform. Use the
+macOS overlay without the AppArmor overlay; it does not install or disable
+AppArmor. If your selected engine reports AppArmor support, use the Linux
+profile setup below on its daemon host instead of dropping that protection.
+No host security installer is needed for the macOS seccomp path.
+
+OrbStack uses the [`orbstack` context](https://docs.orbstack.dev/docker/#docker-context-socket);
+Docker Desktop normally uses `desktop-linux`. Confirm the selected engine
+before running the commands. Both use the same client-side seccomp lookup,
+but their VM kernels and runtimes can differ. Docker Desktop's optional
+[Enhanced Container Isolation](https://docs.docker.com/enterprise/security/hardened-desktop/enhanced-container-isolation/)
+uses the Sysbox runtime and user namespaces, so a result on OrbStack does not
+establish compatibility with that configuration. Keep those protections
+enabled and run the no-model check below on your selected engine. If it
+fails, use a supported Linux deployment; do not bypass the sandbox preflight.
+
+### Missing seccomp file
+
+```text
+opening seccomp profile (/etc/codex-broker/security/v1/seccomp.json) failed:
+open /etc/codex-broker/security/v1/seccomp.json: no such file or directory
+```
+
+This means the client cannot open the production seccomp path. On macOS,
+include `docker-compose.macos.yml` as shown above and verify the resolved list
+no longer contains `/etc/codex-broker/security/v1/seccomp.json`. On Linux with
+the client and daemon on the same host, run the installer below. For a remote
+context, make the JSON available on the client or point Compose at a readable
+client copy. Rebuilding the image alone cannot fix this error.
+
+### Linux host setup
 
 Run the commands below from the repository root. The example build pins the
 same Codex version as the Dockerfile; release tests check that they agree.
@@ -190,9 +299,11 @@ sudo ./scripts/install-host-security-profiles.sh
 sudo ./scripts/install-host-security-profiles.sh --check
 ```
 
-Run the installer on the Linux system running the Docker daemon. It cannot
-install a policy into a remote daemon or a Docker Desktop Linux VM when run
-from a macOS or Windows client.
+These commands assume the Docker client and daemon run on the same Linux host.
+The installer copies seccomp JSON for the client and loads AppArmor in that
+host's kernel. With a remote client, also provide a client-readable seccomp
+file. Running the installer on macOS or Windows cannot load an AppArmor policy
+into a remote daemon host or Linux VM.
 
 It verifies the repository profile checksums and syntax, installs the seccomp
 policy at `/etc/codex-broker/security/v1/seccomp.json`, installs the AppArmor
@@ -266,9 +377,10 @@ docker compose -f examples/docker-compose.yml -f examples/docker-compose.apparmo
 Expect `codex-broker-bwrap (enforce)` and a successful readiness result. Use
 your app's Compose files and service name when integrating these checks.
 
-If Docker reports the profile is missing, rerun the installer on the daemon
-host and confirm `sudo ./scripts/install-host-security-profiles.sh --check`
-succeeds before retrying.
+If Docker reports the named AppArmor profile is missing, rerun the installer
+on the Linux daemon host and confirm
+`sudo ./scripts/install-host-security-profiles.sh --check` succeeds before
+retrying. For a missing seccomp file, follow the client-path remedy above.
 For namespace or mount permission errors, verify the resolved seccomp path and
 active AppArmor profile, then inspect `sudo journalctl -k --since "10 minutes ago"`
 on the host for AppArmor `DENIED` records. Host policy must permit unprivileged
@@ -305,6 +417,42 @@ docker run --rm \
   codex-broker:sandbox-canary \
   python -m codex_broker.sandbox_probe
 ```
+
+For an isolated macOS check, build from the repository root and use the
+client-side profile directly. This starts no service, publishes no port,
+mounts no host credentials or persistent data, and makes no model request:
+
+```bash
+docker build -t codex-broker:local .
+docker run --rm \
+  --network none \
+  --read-only \
+  --security-opt no-new-privileges:true \
+  --security-opt seccomp=./examples/seccomp/codex-broker.json \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1777 \
+  --tmpfs /data:rw,nosuid,nodev,uid=1000,gid=1000,mode=0700 \
+  --tmpfs /workspaces:rw,nosuid,nodev,uid=1000,gid=1000,mode=0755 \
+  --tmpfs /bundles:rw,nosuid,nodev,uid=1000,gid=1000,mode=0755 \
+  -e CODEX_BROKER_ALLOW_UNAUTHENTICATED=1 \
+  codex-broker:local \
+  python -m codex_broker.sandbox_probe
+```
+
+Expect exit status zero and `"status": "healthy"`. A namespace, mount, or
+procfs error after container creation is a separate runtime limitation from
+the missing-file error. Keep the seccomp filter, `no-new-privileges`, and
+required startup preflight enabled while diagnosing it.
+
+Validation on 2026-09-22: the no-model check passed on Apple Silicon with
+OrbStack 2.2.3, Docker Engine/CLI 29.4.0, Compose 5.1.2, and the checkout's
+Codex 0.155.0 image. That daemon reported seccomp support and no AppArmor
+support. Both the Linux and macOS Compose configurations were resolved and
+checked. A separate disposable Compose service using the macOS overlay also
+passed the probe and reported `NoNewPrivs: 1` and `Seccomp: 2`. Docker Desktop,
+including Enhanced Container Isolation, was not runtime-tested; its path
+guidance above is based on the Docker client source
+and documentation. This check does not exercise a model request or the full
+host application's integration.
 
 Keep both host profiles pinned and re-run the real preflight whenever the Moby
 baseline, profiles, Bubblewrap, or Codex version changes. The profile version

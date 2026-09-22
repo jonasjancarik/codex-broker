@@ -1,0 +1,10 @@
+# Local OrbStack / Docker Desktop setup; requires Docker Compose >= 2.24.4.
+# Use with docker-compose.yml and docker-compose.local.yml. Do not combine
+# with the AppArmor overlay: named AppArmor policies require a Linux host setup.
+services:
+  codex-broker:
+    # Replace the list so Compose never tries to open the production /etc path.
+    security_opt: !override
+      - no-new-privileges:true
+      # Read by Compose on the Mac, relative to the first Compose file's folder.
+      - seccomp=./seccomp/codex-broker.json

@@ -18,8 +18,9 @@ services:
     read_only: true
     security_opt:
       - no-new-privileges:true
-      # Installed by scripts/install-host-security-profiles.sh. Docker reads
-      # this host path before the container image starts.
+      # Installed by scripts/install-host-security-profiles.sh on Linux.
+      # Compose reads this on the client, then sends the JSON to the daemon.
+      # For macOS, add docker-compose.macos.yml to use the checked-in file.
       - seccomp=/etc/codex-broker/security/v1/seccomp.json
     tmpfs:
       - /tmp

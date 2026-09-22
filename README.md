@@ -437,14 +437,69 @@ CODEX_BROKER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS=30
 
 The Docker image installs the official Codex CLI Linux release archive from `openai/codex` at build time. It runs as the non-root `broker` user and includes a `/readyz` healthcheck.
 
+### Local macOS setup (OrbStack or Docker Desktop)
+
+Start OrbStack or Docker Desktop, then run these commands from the repository
+root with Docker Compose **2.24.4 or later**:
+
+```bash
+docker context show
+docker compose version
+test -r examples/seccomp/codex-broker.json
+docker compose -p codex-broker-local \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.macos.yml \
+  -f examples/docker-compose.local.yml \
+  config
+docker compose -p codex-broker-local \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.macos.yml \
+  -f examples/docker-compose.local.yml \
+  up --build -d --wait codex-broker
+curl --fail http://127.0.0.1:3400/readyz
+```
+
+Check that the context is your intended local engine (`orbstack` or usually
+`desktop-linux`). This uses the sample development key and binds only
+`127.0.0.1:3400`; keep that key local. The macOS overlay replaces the production
+seccomp path with the shipped JSON while retaining `no-new-privileges:true`.
+The separate `.local.yml` overlay only publishes the loopback port and also
+works with the Linux setup below.
+
+Seccomp filters the Linux system calls a container can make. This profile
+permits Bubblewrap's sandbox setup while retaining the other restrictions
+described below. **Docker CLI and Compose read the JSON on the client machine**
+and send its contents to the Linux daemon. It needs no installation inside the
+VM or container. Compose resolves `./seccomp/codex-broker.json` relative to
+`examples/`, the directory of the first `-f` file. A direct `docker run` resolves
+a relative seccomp path from your shell's current directory.
+
+If startup reports:
+
+```text
+opening seccomp profile (/etc/codex-broker/security/v1/seccomp.json) failed:
+open /etc/codex-broker/security/v1/seccomp.json: no such file or directory
+```
+
+use the macOS Compose command above, including `.macos.yml`. The error means
+the client tried to read the Linux deployment path. Copying the JSON into the
+image or VM does not fix that client-side lookup. See the
+[deployment guide](fern/docs/pages/operations/deployment.mdx#local-macos-development)
+for Compose merge rules, Docker Desktop differences, an isolated no-model
+check, and the tested scope. A readable profile fixes this error; a healthy
+`/readyz` is still required to confirm that the VM permits sandbox execution.
+
+### Linux deployment
+
 ```bash
 docker build -t codex-broker .
 ```
 
 First install the host security profiles using the
 [deployment guide](fern/docs/pages/operations/deployment.mdx#managed-sandbox-requirements).
-Run the installer on the Linux Docker daemon host. Hosts without AppArmor
-still need seccomp and should omit only the AppArmor option below.
+The commands below assume the Docker client and daemon run on the same Linux
+host. Hosts without AppArmor still need seccomp and should omit only the
+AppArmor option below.
 
 ```bash
 docker run --rm \
@@ -465,10 +520,9 @@ Override the pinned Codex version with `--build-arg CODEX_VERSION=<version>`.
 
 Managed sandbox deployments need the shipped
 [`examples/seccomp/codex-broker.json`](examples/seccomp/codex-broker.json)
-profile. Docker selects seccomp and AppArmor policies before the image starts,
-so install them on the host—not inside the image or only in a deployment
-checkout. The installer is idempotent: its check path makes no host changes;
-the `sudo` invocation installs root-owned, persistent policy files.
+profile. For production, the installer puts a root-owned copy at a stable path
+and loads the separate AppArmor policy when supported. Its check path makes
+no host changes; the installation is idempotent.
 
 ```bash
 ./scripts/install-host-security-profiles.sh --dry-run
@@ -476,11 +530,12 @@ sudo ./scripts/install-host-security-profiles.sh
 sudo ./scripts/install-host-security-profiles.sh --check
 ```
 
-Run the installer on the Linux Docker host. When Docker Desktop is controlled
-from macOS or Windows, its Linux VM—not the client machine—must contain the
-profiles.
+AppArmor is different from seccomp JSON: its named policy must already be
+loaded in the Linux daemon host's kernel. Running this installer on macOS
+cannot load AppArmor in a VM. With a remote Docker context, the seccomp file
+must be readable on the client, while AppArmor is managed on the daemon host.
 
-The example Compose service always uses the stable seccomp path and
+The base Compose service uses the stable seccomp path and
 `no-new-privileges:true`. On an AppArmor-enabled host, include its overlay;
 otherwise use the base file only:
 
@@ -488,7 +543,6 @@ otherwise use the base file only:
 docker compose \
   -f examples/docker-compose.yml \
   -f examples/docker-compose.apparmor.yml \
-  -f examples/docker-compose.local.yml \
   up -d
 ```
 
