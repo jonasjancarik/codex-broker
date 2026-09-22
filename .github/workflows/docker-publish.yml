@@ -46,9 +46,8 @@ jobs:
             -f examples/docker-compose.apparmor.yml \
             -f examples/docker-compose.local.yml \
             config >/dev/null
-          docker compose \
+          CODEX_BROKER_SECCOMP_PROFILE=./seccomp/codex-broker.json docker compose \
             -f examples/docker-compose.yml \
-            -f examples/docker-compose.macos.yml \
             -f examples/docker-compose.local.yml \
             config >/dev/null
 

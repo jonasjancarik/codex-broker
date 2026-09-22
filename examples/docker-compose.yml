@@ -20,8 +20,8 @@ services:
       - no-new-privileges:true
       # Installed by scripts/install-host-security-profiles.sh on Linux.
       # Compose reads this on the client, then sends the JSON to the daemon.
-      # For macOS, add docker-compose.macos.yml to use the checked-in file.
-      - seccomp=/etc/codex-broker/security/v1/seccomp.json
+      # For local development, set CODEX_BROKER_SECCOMP_PROFILE to the shipped JSON.
+      - seccomp=${CODEX_BROKER_SECCOMP_PROFILE:-/etc/codex-broker/security/v1/seccomp.json}
     tmpfs:
       - /tmp
     volumes:

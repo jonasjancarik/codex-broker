@@ -440,20 +440,19 @@ The Docker image installs the official Codex CLI Linux release archive from `ope
 ### Local macOS setup (OrbStack or Docker Desktop)
 
 Start OrbStack or Docker Desktop, then run these commands from the repository
-root with Docker Compose **2.24.4 or later**:
+root with Docker Compose:
 
 ```bash
 docker context show
 docker compose version
 test -r examples/seccomp/codex-broker.json
+export CODEX_BROKER_SECCOMP_PROFILE=./seccomp/codex-broker.json
 docker compose -p codex-broker-local \
   -f examples/docker-compose.yml \
-  -f examples/docker-compose.macos.yml \
   -f examples/docker-compose.local.yml \
   config
 docker compose -p codex-broker-local \
   -f examples/docker-compose.yml \
-  -f examples/docker-compose.macos.yml \
   -f examples/docker-compose.local.yml \
   up --build -d --wait codex-broker
 curl --fail http://127.0.0.1:3400/readyz
@@ -461,8 +460,9 @@ curl --fail http://127.0.0.1:3400/readyz
 
 Check that the context is your intended local engine (`orbstack` or usually
 `desktop-linux`). This uses the sample development key and binds only
-`127.0.0.1:3400`; keep that key local. The macOS overlay replaces the production
-seccomp path with the shipped JSON while retaining `no-new-privileges:true`.
+`127.0.0.1:3400`; keep that key local. The environment variable selects the
+shipped JSON while retaining `no-new-privileges:true`. When unset or empty,
+the seccomp path defaults to `/etc/codex-broker/security/v1/seccomp.json`.
 The separate `.local.yml` overlay only publishes the loopback port and also
 works with the Linux setup below.
 
@@ -481,11 +481,11 @@ opening seccomp profile (/etc/codex-broker/security/v1/seccomp.json) failed:
 open /etc/codex-broker/security/v1/seccomp.json: no such file or directory
 ```
 
-use the macOS Compose command above, including `.macos.yml`. The error means
-the client tried to read the Linux deployment path. Copying the JSON into the
+set `CODEX_BROKER_SECCOMP_PROFILE` as shown above before running Compose. The
+error means the client tried to read the Linux deployment path. Copying the JSON into the
 image or VM does not fix that client-side lookup. See the
 [deployment guide](fern/docs/pages/operations/deployment.mdx#local-macos-development)
-for Compose merge rules, Docker Desktop differences, an isolated no-model
+for path configuration, Docker Desktop differences, an isolated no-model
 check, and the tested scope. A readable profile fixes this error; a healthy
 `/readyz` is still required to confirm that the VM permits sandbox execution.
 
@@ -535,8 +535,8 @@ loaded in the Linux daemon host's kernel. Running this installer on macOS
 cannot load AppArmor in a VM. With a remote Docker context, the seccomp file
 must be readable on the client, while AppArmor is managed on the daemon host.
 
-The base Compose service uses the stable seccomp path and
-`no-new-privileges:true`. On an AppArmor-enabled host, include its overlay;
+With `CODEX_BROKER_SECCOMP_PROFILE` unset, the base Compose service uses the
+stable seccomp path and `no-new-privileges:true`. On an AppArmor-enabled host, include its overlay;
 otherwise use the base file only:
 
 ```bash

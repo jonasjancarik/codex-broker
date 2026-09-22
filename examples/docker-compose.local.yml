@@ -1,5 +1,5 @@
 # Optional loopback port binding for either Linux or macOS local development.
-# On macOS, also include docker-compose.macos.yml for the seccomp file path.
+# Set CODEX_BROKER_SECCOMP_PROFILE for a client-local seccomp file path.
 services:
   codex-broker:
     ports:

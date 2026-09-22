@@ -3,9 +3,9 @@
 #
 # Install and preflight profiles for Linux deployments where the Docker client
 # and daemon run on the same host. Seccomp JSON is read by the client; AppArmor
-# is loaded in the daemon host's kernel. For macOS clients, use the shipped
-# docker-compose.macos.yml overlay instead. The checked-in profiles are the
-# source of truth; this script never downloads or generates a profile.
+# is loaded in the daemon host's kernel. For macOS clients, select the shipped
+# JSON with CODEX_BROKER_SECCOMP_PROFILE instead. The checked-in profiles are
+# the source of truth; this script never downloads or generates a profile.
 
 set -eu
 
@@ -20,7 +20,7 @@ Usage: install-host-security-profiles.sh [--check | --dry-run]
 CODEX_BROKER_SECURITY_ROOT may be set for a test/staged destination.
 CODEX_BROKER_APPARMOR_PATH may be set for a test/staged AppArmor file.
 
-For Linux deployments. macOS local development uses docker-compose.macos.yml;
+For Linux deployments. macOS local development sets CODEX_BROKER_SECCOMP_PROFILE;
 running this installer on a Mac cannot load AppArmor in the Docker Linux VM.
 EOF
 }

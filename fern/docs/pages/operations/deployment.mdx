@@ -206,7 +206,7 @@ and [AppArmor guide](https://docs.docker.com/engine/security/apparmor/).
 
 ### Local macOS development
 
-Start OrbStack or Docker Desktop and use Docker Compose **2.24.4 or later**.
+Start OrbStack or Docker Desktop and use Docker Compose.
 Run from the repository root:
 
 ```bash
@@ -214,14 +214,13 @@ docker context show
 docker compose version
 docker info --format '{{json .SecurityOptions}}'
 test -r examples/seccomp/codex-broker.json
+export CODEX_BROKER_SECCOMP_PROFILE=./seccomp/codex-broker.json
 docker compose -p codex-broker-local \
   -f examples/docker-compose.yml \
-  -f examples/docker-compose.macos.yml \
   -f examples/docker-compose.local.yml \
   config
 docker compose -p codex-broker-local \
   -f examples/docker-compose.yml \
-  -f examples/docker-compose.macos.yml \
   -f examples/docker-compose.local.yml \
   up --build -d --wait codex-broker
 curl --fail http://127.0.0.1:3400/readyz
@@ -232,33 +231,33 @@ the loopback port. Replace that key before using the service outside local
 development. Keep the same project name and file list for subsequent Compose
 commands, such as `logs --tail=100 codex-broker`.
 
-The macOS overlay contains:
+The base Compose file selects the seccomp path with one environment variable:
 
 ```yaml
-services:
-  codex-broker:
-    security_opt: !override
-      - no-new-privileges:true
-      - seccomp=./seccomp/codex-broker.json
+security_opt:
+  - no-new-privileges:true
+  - seccomp=${CODEX_BROKER_SECCOMP_PROFILE:-/etc/codex-broker/security/v1/seccomp.json}
 ```
 
-[`!override`](https://docs.docker.com/reference/compose-file/merge/#replace-value)
-requires Compose 2.24.4 or later and replaces the complete list. Without it,
-merging security options can retain both seccomp entries and still try to open
-the missing `/etc` file. Check that `config` shows exactly the two options
-above. The first Compose file is in `examples/`, so this seccomp path points to
-`examples/seccomp/codex-broker.json`, even when the command runs elsewhere.
-When adapting the overlay to another app, use a path relative to that app's
-first Compose file (or an absolute client path), and retain any other required
-security options in the replacement list. `config` checks the merge; it does
-not prove that the JSON can be opened at container creation or that the
-sandbox can run.
+When the variable is unset or empty, production keeps the installed `/etc`
+path. The local export selects the checked-in JSON without replacing the
+security-options list. Keep that variable set for subsequent local Compose
+commands; use `unset CODEX_BROKER_SECCOMP_PROFILE` before returning to the
+production default in the same shell.
 
-The `.local.yml` file remains a port-only overlay for either platform. Use the
-macOS overlay without the AppArmor overlay; it does not install or disable
-AppArmor. If your selected engine reports AppArmor support, use the Linux
-profile setup below on its daemon host instead of dropping that protection.
-No host security installer is needed for the macOS seccomp path.
+Check that `config` shows `no-new-privileges:true` and exactly one seccomp
+entry, `seccomp=./seccomp/codex-broker.json`. The first Compose file is in
+`examples/`, so this points to `examples/seccomp/codex-broker.json`, even when
+the command runs elsewhere. When adapting the example to another app, use a
+path relative to that app's first Compose file or an absolute client path.
+`config` checks the configuration; it does not prove that the JSON can be
+opened at container creation or that the sandbox can run.
+
+The `.local.yml` file only publishes the loopback port on either platform.
+No host security installer is needed for the macOS seccomp path. Setting the
+path does not install or disable AppArmor. If your selected engine reports
+AppArmor support, use the Linux profile setup and AppArmor overlay below on
+its daemon host instead of dropping that protection.
 
 OrbStack uses the [`orbstack` context](https://docs.orbstack.dev/docker/#docker-context-socket);
 Docker Desktop normally uses `desktop-linux`. Confirm the selected engine
@@ -278,8 +277,8 @@ open /etc/codex-broker/security/v1/seccomp.json: no such file or directory
 ```
 
 This means the client cannot open the production seccomp path. On macOS,
-include `docker-compose.macos.yml` as shown above and verify the resolved list
-no longer contains `/etc/codex-broker/security/v1/seccomp.json`. On Linux with
+set `CODEX_BROKER_SECCOMP_PROFILE=./seccomp/codex-broker.json` as shown above
+and verify the resolved list no longer contains `/etc/codex-broker/security/v1/seccomp.json`. On Linux with
 the client and daemon on the same host, run the installer below. For a remote
 context, make the JSON available on the client or point Compose at a readable
 client copy. Rebuilding the image alone cannot fix this error.
@@ -316,7 +315,8 @@ loaded-profile list fails and tells the operator to re-run it with `sudo`; it
 never treats an unreadable AppArmor status as AppArmor being disabled.
 
 The base Compose service supplies `no-new-privileges:true` and references the
-stable seccomp path. On hosts with AppArmor enabled, add the AppArmor overlay:
+stable seccomp path by default. Leave `CODEX_BROKER_SECCOMP_PROFILE` unset
+for that installed path. On hosts with AppArmor enabled, add the AppArmor overlay:
 
 ```bash
 docker compose \
@@ -447,8 +447,8 @@ Validation on 2026-09-22: the no-model check passed on Apple Silicon with
 OrbStack 2.2.3, Docker Engine/CLI 29.4.0, Compose 5.1.2, and the checkout's
 Codex 0.155.0 image. That daemon reported seccomp support and no AppArmor
 support. Both the Linux and macOS Compose configurations were resolved and
-checked. A separate disposable Compose service using the macOS overlay also
-passed the probe and reported `NoNewPrivs: 1` and `Seccomp: 2`. Docker Desktop,
+checked. A separate disposable Compose service using the configured local
+seccomp path also passed the probe and reported `NoNewPrivs: 1` and `Seccomp: 2`. Docker Desktop,
 including Enhanced Container Isolation, was not runtime-tested; its path
 guidance above is based on the Docker client source
 and documentation. This check does not exercise a model request or the full

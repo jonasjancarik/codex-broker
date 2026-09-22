@@ -54,7 +54,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         compose = (repository / "examples/docker-compose.yml").read_text(encoding="utf-8")
         local_compose = (repository / "examples/docker-compose.local.yml").read_text(encoding="utf-8")
         self.assertIn(f'CODEX_VERSION: "{match.group(1)}"', compose)
-        self.assertIn("seccomp=/etc/codex-broker/security/v1/seccomp.json", compose)
+        self.assertIn(
+            "seccomp=${CODEX_BROKER_SECCOMP_PROFILE:-/etc/codex-broker/security/v1/seccomp.json}",
+            compose,
+        )
         self.assertIn("no-new-privileges:true", compose)
         self.assertNotIn("../..:/workspaces", compose)
         self.assertIn("./workspace:/workspaces/app:rw", compose)
