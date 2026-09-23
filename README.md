@@ -146,7 +146,7 @@ It uses the Broker HTTP API and independently verifies both native command
 success and the exact workspace artifact.
 
 The no-model sandbox preflight uses `command/exec` with its temporary workspace
-as `cwd`. Pinned Codex `0.155.1` does not expose `runtimeWorkspaceRoots` on
+as `cwd`. Pinned Codex `0.156.1` does not expose `runtimeWorkspaceRoots` on
 `command/exec`, so `cwd` is the preflight command's runtime workspace root.
 
 `danger-full-access` is intentionally outside this isolation boundary. It is
