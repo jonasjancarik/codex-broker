@@ -1,6 +1,6 @@
 # Example Bundles
 
-This directory contains mounted host bundles used by `examples/docker-compose.yml`.
+This directory contains mounted host bundles used by the root `compose.yaml`.
 That Compose example deliberately mounts only `examples/workspace` at
 `/workspaces/app`; it does not expose the repository parent or a host home
 directory. In a real deployment, replace that mount only with the specific job
