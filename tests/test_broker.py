@@ -11,6 +11,7 @@ from contextlib import redirect_stderr
 from datetime import datetime, timezone
 from http import HTTPStatus
 import unittest
+import http.client
 import urllib.request
 from dataclasses import replace
 from pathlib import Path
@@ -181,6 +182,53 @@ class BrokerTests(unittest.TestCase):
                 self.assertIn("<redacted>", captured)
             finally:
                 os.environ.pop("FAKE_CODEX_RESPONSE_SPLITS_JSON", None)
+                if server is not None:
+                    server.shutdown()
+                    server.server_close()
+                if worker is not None:
+                    worker.join(1)
+                services.scheduler.shutdown("interrupt", 1)
+                services.pool.close_all()
+                services.state.close()
+
+    def test_keep_alive_connection_survives_routes_that_ignore_the_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            services = BrokerServices.build(config_for(Path(tmp_raw)))
+            server: BrokerHTTPServer | None = None
+            worker: threading.Thread | None = None
+            connection: http.client.HTTPConnection | None = None
+            try:
+                thread = services.scheduler.create_thread("owner-a", {})
+                active_services = services
+
+                class Handler(BrokerHandler):
+                    broker = active_services
+
+                server = BrokerHTTPServer(("127.0.0.1", 0), Handler)
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                headers = {"Authorization": "Bearer test-key", "Content-Type": "application/json"}
+                thread_path = f"/v1/owners/owner-a/threads/{thread['threadId']}"
+
+                def post(path: str, expected: HTTPStatus, request_headers: dict[str, str] = headers) -> dict[str, Any]:
+                    # Each request carries `{}` the way Node fetch sends an empty JSON body.
+                    assert connection is not None
+                    connection.request("POST", path, body=b"{}", headers=request_headers)
+                    response = connection.getresponse()
+                    body = response.read()
+                    self.assertEqual(response.status, expected, body)
+                    return json.loads(body)
+
+                post(f"{thread_path}/turns/missing-turn/interrupt", HTTPStatus.CONFLICT)
+                socket_after_first_request = connection.sock
+                self.assertEqual(post(f"{thread_path}/archive", HTTPStatus.OK)["status"], "archived")
+                post("/v1/owners/owner-a/threads", HTTPStatus.UNAUTHORIZED, {"Content-Type": "application/json"})
+                self.assertTrue(post("/v1/owners/owner-a/threads", HTTPStatus.CREATED)["threadId"])
+                self.assertIs(connection.sock, socket_after_first_request)
+            finally:
+                if connection is not None:
+                    connection.close()
                 if server is not None:
                     server.shutdown()
                     server.server_close()

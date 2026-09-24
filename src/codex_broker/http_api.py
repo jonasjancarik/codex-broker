@@ -72,6 +72,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         started_at = time.monotonic()
         self._metric_status = HTTPStatus.INTERNAL_SERVER_ERROR
+        self._request_body_consumed = False
         metric_endpoint = metric_path_template(urlparse(self.path).path)
         try:
             parsed = urlparse(self.path)
@@ -119,6 +120,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001 - HTTP boundary must return JSON errors.
             self._json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         finally:
+            self._discard_unread_request_body()
             elapsed = time.monotonic() - started_at
             status = int(getattr(self, "_metric_status", HTTPStatus.INTERNAL_SERVER_ERROR))
             self.broker.scheduler.note_http_request(metric_endpoint, status, elapsed)
@@ -398,10 +400,35 @@ class BrokerHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             raise ValueError("JSON request body is too large.")
         data = self.rfile.read(length)
+        self._request_body_consumed = True
         parsed = json.loads(data.decode("utf-8"))
         if not isinstance(parsed, dict):
             raise ValueError("JSON request body must be an object.")
         return parsed
+
+    def _discard_unread_request_body(self) -> None:
+        # Keep-alive clients reuse the socket, so a body that a route ignored
+        # (archive, interrupt, errors raised before parsing) would otherwise be
+        # parsed as the start of the next request line.
+        if self.close_connection or getattr(self, "_request_body_consumed", False):
+            return
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            self.close_connection = True
+            return
+        if length == 0:
+            return
+        if length < 0 or length > 1_000_000:
+            self.close_connection = True
+            return
+        try:
+            self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
 
     def _json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json_dumps(payload).encode("utf-8")
