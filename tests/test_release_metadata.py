@@ -51,8 +51,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIsNotNone(match)
         assert match is not None
 
-        compose = (repository / "examples/docker-compose.yml").read_text(encoding="utf-8")
-        local_compose = (repository / "examples/docker-compose.local.yml").read_text(encoding="utf-8")
+        compose = (repository / "compose.yaml").read_text(encoding="utf-8")
+        local_compose = (repository / "compose.local.yaml").read_text(encoding="utf-8")
         self.assertIn(f'CODEX_VERSION: "{match.group(1)}"', compose)
         self.assertIn(
             "seccomp=${CODEX_BROKER_SECCOMP_PROFILE:-/etc/codex-broker/security/v1/seccomp.json}",
@@ -60,7 +60,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         )
         self.assertIn("no-new-privileges:true", compose)
         self.assertNotIn("../..:/workspaces", compose)
-        self.assertIn("./workspace:/workspaces/app:rw", compose)
+        self.assertIn("./examples/workspace:/workspaces/app:rw", compose)
         self.assertIn('"127.0.0.1:3400:3400"', local_compose)
 
     def test_host_security_profiles_preserve_moby_hardening(self) -> None:

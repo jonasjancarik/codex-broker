@@ -1,7 +1,7 @@
 services:
   codex-broker:
     build:
-      context: ..
+      context: .
       args:
         CODEX_VERSION: "0.156.1"
     image: codex-broker:local
@@ -28,9 +28,9 @@ services:
       - codex-broker-data:/data
       # A deliberately narrow, empty sample workspace. Replace only with the
       # specific job or project directory this broker is authorized to change.
-      - ./workspace:/workspaces/app:rw
+      - ./examples/workspace:/workspaces/app:rw
       - job-data:/host-data/jobs:rw
-      - ./bundles:/bundles:ro
+      - ./examples/bundles:/bundles:ro
     secrets:
       - codex_broker_key
     restart: unless-stopped
@@ -41,4 +41,4 @@ volumes:
 
 secrets:
   codex_broker_key:
-    file: ./secrets/codex_broker_key.example
+    file: ./examples/secrets/codex_broker_key.example

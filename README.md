@@ -446,14 +446,14 @@ root with Docker Compose:
 docker context show
 docker compose version
 test -r examples/seccomp/codex-broker.json
-export CODEX_BROKER_SECCOMP_PROFILE=./seccomp/codex-broker.json
-docker compose -p codex-broker-local \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.local.yml \
+export CODEX_BROKER_SECCOMP_PROFILE=./examples/seccomp/codex-broker.json
+docker compose -p codex-broker \
+  -f compose.yaml \
+  -f compose.local.yaml \
   config
-docker compose -p codex-broker-local \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.local.yml \
+docker compose -p codex-broker \
+  -f compose.yaml \
+  -f compose.local.yaml \
   up --build -d --wait codex-broker
 curl --fail http://127.0.0.1:3400/readyz
 ```
@@ -470,8 +470,8 @@ Seccomp filters the Linux system calls a container can make. This profile
 permits Bubblewrap's sandbox setup while retaining the other restrictions
 described below. **Docker CLI and Compose read the JSON on the client machine**
 and send its contents to the Linux daemon. It needs no installation inside the
-VM or container. Compose resolves `./seccomp/codex-broker.json` relative to
-`examples/`, the directory of the first `-f` file. A direct `docker run` resolves
+VM or container. Compose resolves `./examples/seccomp/codex-broker.json` relative
+to the repository root, where `compose.yaml` lives. A direct `docker run` resolves
 a relative seccomp path from your shell's current directory.
 
 If startup reports:
@@ -541,8 +541,8 @@ otherwise use the base file only:
 
 ```bash
 docker compose \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.apparmor.yml \
+  -f compose.yaml \
+  -f compose.apparmor.yaml \
   up -d
 ```
 
@@ -571,8 +571,7 @@ privileged mode, or `CAP_SYS_ADMIN`; those remove the outer-container
 protection that makes the managed sandbox meaningful.
 
 See the Fern [deployment guide](fern/docs/pages/operations/deployment.mdx) and
-[examples/docker-compose.yml](examples/docker-compose.yml) for a Docker Compose
-example.
+[`compose.yaml`](compose.yaml) for the default Docker Compose stack.
 
 ## Current Integrations
 

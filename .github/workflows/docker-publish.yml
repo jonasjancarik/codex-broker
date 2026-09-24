@@ -40,15 +40,15 @@ jobs:
           git diff --exit-code -- fern/openapi/openapi.json
       - name: Validate host security profile metadata and Compose examples
         run: |
-          docker compose -f examples/docker-compose.yml config >/dev/null
+          docker compose -f compose.yaml config >/dev/null
           docker compose \
-            -f examples/docker-compose.yml \
-            -f examples/docker-compose.apparmor.yml \
-            -f examples/docker-compose.local.yml \
+            -f compose.yaml \
+            -f compose.apparmor.yaml \
+            -f compose.local.yaml \
             config >/dev/null
           CODEX_BROKER_SECCOMP_PROFILE=./seccomp/codex-broker.json docker compose \
-            -f examples/docker-compose.yml \
-            -f examples/docker-compose.local.yml \
+            -f compose.yaml \
+            -f compose.local.yaml \
             config >/dev/null
 
   build:

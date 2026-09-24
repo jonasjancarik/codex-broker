@@ -214,14 +214,14 @@ docker context show
 docker compose version
 docker info --format '{{json .SecurityOptions}}'
 test -r examples/seccomp/codex-broker.json
-export CODEX_BROKER_SECCOMP_PROFILE=./seccomp/codex-broker.json
-docker compose -p codex-broker-local \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.local.yml \
+export CODEX_BROKER_SECCOMP_PROFILE=./examples/seccomp/codex-broker.json
+docker compose -p codex-broker \
+  -f compose.yaml \
+  -f compose.local.yaml \
   config
-docker compose -p codex-broker-local \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.local.yml \
+docker compose -p codex-broker \
+  -f compose.yaml \
+  -f compose.local.yaml \
   up --build -d --wait codex-broker
 curl --fail http://127.0.0.1:3400/readyz
 ```
@@ -246,8 +246,8 @@ commands; use `unset CODEX_BROKER_SECCOMP_PROFILE` before returning to the
 production default in the same shell.
 
 Check that `config` shows `no-new-privileges:true` and exactly one seccomp
-entry, `seccomp=./seccomp/codex-broker.json`. The first Compose file is in
-`examples/`, so this points to `examples/seccomp/codex-broker.json`, even when
+entry, `seccomp=./examples/seccomp/codex-broker.json`. The Compose file is in
+the repository root, so this path resolves from there, even when
 the command runs elsewhere. When adapting the example to another app, use a
 path relative to that app's first Compose file or an absolute client path.
 `config` checks the configuration; it does not prove that the JSON can be
@@ -320,12 +320,12 @@ for that installed path. On hosts with AppArmor enabled, add the AppArmor overla
 
 ```bash
 docker compose \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.apparmor.yml \
+  -f compose.yaml \
+  -f compose.apparmor.yaml \
   config
 docker compose \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.apparmor.yml \
+  -f compose.yaml \
+  -f compose.apparmor.yaml \
   up -d
 ```
 
@@ -366,11 +366,11 @@ and seccomp settings. Keep all three settings in the resolved configuration.
 For the example AppArmor stack, inspect the active profile and broker response:
 
 ```bash
-docker compose -f examples/docker-compose.yml -f examples/docker-compose.apparmor.yml \
+docker compose -f compose.yaml -f compose.apparmor.yaml \
   exec codex-broker cat /proc/self/attr/current
-docker compose -f examples/docker-compose.yml -f examples/docker-compose.apparmor.yml \
+docker compose -f compose.yaml -f compose.apparmor.yaml \
   exec codex-broker curl -sS http://127.0.0.1:3400/readyz
-docker compose -f examples/docker-compose.yml -f examples/docker-compose.apparmor.yml \
+docker compose -f compose.yaml -f compose.apparmor.yaml \
   logs --tail=100 codex-broker
 ```
 

@@ -38,9 +38,9 @@ overlay:
 ```bash
 docker info --format '{{json .SecurityOptions}}'
 docker compose \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.apparmor.yml \
-  -f examples/docker-compose.local.yml \
+  -f compose.yaml \
+  -f compose.apparmor.yaml \
+  -f compose.local.yaml \
   up --build
 ```
 
@@ -52,14 +52,14 @@ Run from the repository root:
 
 ```bash
 docker compose \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.local.yml \
+  -f compose.yaml \
+  -f compose.local.yaml \
   up --build
 ```
 
-`examples/docker-compose.yml` is the broker service slice you would fold into a real app stack. It uses persistent `/data`, reviewed bundles mounted at `/bundles`, a deliberately empty narrow sample workspace mounted under `/workspaces/app`, and the broker key loaded from a Docker secret. Replace that sample with only the individual job or project directory Codex may access; never mount a repository parent or your home directory.
+`compose.yaml` is the default standalone broker stack. It uses persistent `/data`, reviewed bundles mounted at `/bundles`, a deliberately empty narrow sample workspace mounted under `/workspaces/app`, and the broker key loaded from a Docker secret. Replace that sample with only the individual job or project directory Codex may access; never mount a repository parent or your home directory.
 
-`examples/docker-compose.local.yml` publishes `127.0.0.1:3400` so you can call the broker from your shell while testing.
+`compose.local.yaml` publishes `127.0.0.1:3400` so you can call the broker from your shell while testing.
 
 The example secret file contains the development key used below:
 
@@ -255,8 +255,8 @@ Browser clients should not call the broker directly because the stream requires 
 
 ```bash
 docker compose \
-  -f examples/docker-compose.yml \
-  -f examples/docker-compose.local.yml \
+  -f compose.yaml \
+  -f compose.local.yaml \
   down
 ```
 
