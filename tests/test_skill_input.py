@@ -167,7 +167,10 @@ class SkillInputTests(unittest.TestCase):
                     second = services.scheduler.start_turn(
                         "owner-a",
                         thread["threadId"],
-                        {"input": [{"type": "text", "text": "Resumed turn.", "text_elements": []}]},
+                        {
+                            "input": [{"type": "text", "text": "Resumed turn.", "text_elements": []}],
+                            "mode": "queue",
+                        },
                     )
                     self.assertEqual(wait_turn(services, "owner-a", thread["threadId"], second["turnId"])["status"], "completed")
 
