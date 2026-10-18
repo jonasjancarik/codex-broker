@@ -1,14 +1,15 @@
 ---
 title: "OpenAI compatibility"
-description: "Use Codex Broker through OpenAI SDKs with server-bound identity, Responses and Chat Completions, streaming, chaining, and explicit compatibility limits."
+description: "Use Codex Broker through OpenAI SDKs with server-bound identity, Responses and Chat Completions, function tools, streaming, chaining, and explicit compatibility limits."
 ---
 
 # The supported OpenAI API subset works as a drop-in endpoint
 
 Codex Broker exposes a defined subset of the OpenAI API. Existing
-OpenAI SDK clients can use the supported text and image workflow by changing their base
-URL and API key; the broker then runs the request through its existing Codex
-identity, scheduler, persistence, and app-server controls.
+OpenAI SDK clients can use the supported text, image, and function-tool
+workflow by changing their base URL and API key; the broker then runs the
+request through its existing Codex identity, scheduler, persistence, and
+app-server controls.
 
 This is not a claim of compatibility with every OpenAI endpoint or parameter.
 The broker accepts behavior it can reproduce faithfully and returns an
@@ -112,11 +113,11 @@ for the complete environment contract.
 | --- | --- |
 | `GET /v1/models` | Lists direct model names and aliases available to the binding. |
 | `GET /v1/models/{model}` | Retrieves one available direct model or alias. |
-| `POST /v1/responses` | Creates synchronous or streamed text responses from text and image input. |
+| `POST /v1/responses` | Creates synchronous or streamed responses from text, image, and function-call input. |
 | `GET /v1/responses/{responseId}` | Reconstructs a persisted compatible response. |
 | `GET /v1/responses/{responseId}/input_items` | Lists the normalized text and image input persisted for a response. |
 | `POST /v1/responses/{responseId}/cancel` | Interrupts an active response and returns its updated state. |
-| `POST /v1/chat/completions` | Provides synchronous or streamed Chat Completions from text and image input. |
+| `POST /v1/chat/completions` | Provides synchronous or streamed Chat Completions from text, image, and tool messages. |
 
 Completed responses prefer Codex raw response items when available. Codex
 versions that omit those events are reconstructed from their persisted
@@ -135,6 +136,9 @@ Responses requests accept:
 - `text.format` with `text` or `json_schema`
 - string-to-string `metadata`
 - omitted `store` or `store: true`
+- function `tools`, `tool_choice` of `auto` or `none`, `parallel_tool_calls: true`,
+  and `function_call` / `function_call_output` input items (see
+  [Function tools](#function-tools-run-in-the-client))
 
 JSON Schema output is passed to Codex as an enforceable app-server
 `outputSchema`:
@@ -217,6 +221,8 @@ Chat Completions accepts:
 - string-to-string `metadata`
 - `response_format` with `text` or `json_schema`
 - `stream_options.include_usage`
+- function `tools`, `tool_choice` of `auto` or `none`, `parallel_tool_calls: true`,
+  assistant messages with `tool_calls`, and `tool` messages with `tool_call_id`
 
 ```python
 completion = client.chat.completions.create(
@@ -245,6 +251,110 @@ print(completion.choices[0].message.content)
 Responses should be preferred for new integrations. Chat Completions exists for
 applications whose current abstraction is message-based. Its `detail` value may
 be `auto`, `low`, `high`, or `original`.
+
+## Function tools run in the client
+
+Clients can declare their own functions with `tools`. The model decides whether
+to call them; when it does, the response ends with the calls and your application
+runs them, exactly as with OpenAI. The follow-up request carries the whole
+conversation plus the results, and the model continues from there.
+
+```python
+import json
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Look up the current weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+messages = [{"role": "user", "content": "Is it raining in Prague?"}]
+
+first = client.chat.completions.create(model="gpt-5.6", messages=messages, tools=tools)
+choice = first.choices[0]
+if choice.finish_reason == "tool_calls":
+    messages.append(choice.message)
+    for call in choice.message.tool_calls:
+        args = json.loads(call.function.arguments)
+        messages.append(
+            {"role": "tool", "tool_call_id": call.id, "content": lookup_weather(args["city"])}
+        )
+    final = client.chat.completions.create(model="gpt-5.6", messages=messages, tools=tools)
+    print(final.choices[0].message.content)
+```
+
+What the broker supports:
+
+| Feature | Behavior |
+| --- | --- |
+| Tool declarations | `type: "function"` with `name`, optional `description`, and a JSON Schema object as `parameters`. Names must match `^[A-Za-z0-9_-]{1,64}$`; `mcp` and `mcp__*` are reserved by Codex. At most 128 tools per request. |
+| `tool_choice` | `auto` (the default) lets the model decide. `none` keeps the tools from the model for that request; earlier tool calls and results in the history still count. |
+| Several calls at once | When the model asks for several functions in one response, all of them are returned together. `parallel_tool_calls` may be omitted or `true`. |
+| Text before calls | Text the model writes before calling a tool is returned as the message `content` (Chat) or a message output item (Responses). Otherwise Chat `content` is `null`. |
+| Finish reason | Chat Completions report `finish_reason: "tool_calls"`; Responses return `function_call` output items with status `completed`. |
+| Streaming | Chat streams the standard `tool_calls` deltas: the first chunk for each call has `index`, `id`, `type`, and the function name, and the next carries the complete `arguments` string. Responses streams `response.output_item.added`, `response.function_call_arguments.delta`, `response.function_call_arguments.done`, and `response.output_item.done`. Calls appear once the model has finished its response, so arguments arrive in one delta rather than token by token. |
+| Tool results | Chat `tool` messages take a string or text parts. Responses `function_call_output` items take a string or `input_text` parts. Images in tool results are not accepted; send them in a following user message instead. |
+| Responses chaining | A request with `previous_response_id` can answer the previous response's calls with `function_call_output` items. |
+
+Requests that Codex cannot honor fail with `400 unsupported_parameter`:
+`tool_choice: "required"` or a named function (Codex cannot force a call),
+`parallel_tool_calls: false`, `strict: true` on a function (Codex does not
+enforce strict schemas for caller-defined tools; `strict: false` is accepted),
+and tool types other than `function`. A history in which a tool call has no
+result, or a result answers no earlier call, fails with `400 invalid_parameter`.
+
+### The broker replays tool results into a new Codex turn
+
+OpenAI's API is stateless: the client sends the full history every time. Codex
+works differently. A Codex turn that calls a caller-defined function sends
+`item/tool/call` to the broker and waits for the answer inside the same running
+turn.
+
+The broker does not keep that turn waiting for the client. When the model's
+response contains calls to the client's functions, the broker records the calls,
+ends the HTTP response, and interrupts the Codex turn. The follow-up request
+starts a new Codex thread with the same tools, injects the whole conversation,
+including the calls and their results, with `thread/inject_items`, and starts a
+turn with no new user input so the model continues from the results.
+
+Replaying history fits how the compatible API already works: every compatible
+request runs on a fresh broker thread. It also means the broker holds no state
+between the two requests, so:
+
+- a client that never sends the follow-up leaves nothing behind to time out or
+  clean up;
+- a client that edits, trims, or reorders its history gets exactly what it sent;
+  the broker never compares it with an earlier turn;
+- a broker restart between the call and the result changes nothing.
+
+The cost is that each follow-up sends the whole conversation to the model again,
+and reasoning from the earlier request is not carried over. Keeping the Codex
+turn alive across HTTP requests would avoid that, but it would tie each pending
+tool call to one App Server process and need timeouts, matching of edited
+histories, and recovery after restarts.
+
+### Built-in Codex tools are off unless a bundle allows them
+
+A client that brings its own functions expects a model that calls those
+functions, not one that runs commands on the broker's machine. When a request
+declares `tools` or replays earlier tool calls, and the compatibility binding
+has no `bundleId`, the broker starts the Codex thread without an execution
+environment, which removes shell commands, file edits, image viewing, and
+permission requests. It also turns off web search, sub-agents, image
+generation, apps, plugins, tool suggestions, and code mode for that thread.
+
+A binding with a reviewed bundle keeps that bundle's skills, MCP servers,
+hosted tools, and sandbox policy alongside the caller's functions, because the
+operator assigned them. Caller-defined functions never grant or select bundle
+capabilities.
 
 ## Image and token limits are explicit
 
@@ -313,7 +423,8 @@ Normalized image items are persisted with the response just like text items.
 
 The broker rejects fields it cannot honor exactly:
 
-- `tools`, `tool_choice`, function calls, tool messages, and function outputs
+- `tool_choice: "required"` or a named function, `parallel_tool_calls: false`,
+  `strict: true` functions, and tool types other than `function`
 - `store: false` and response deletion
 - temperature, top-p, penalties, logprobs, seed, and token bias
 - audio, files, remote input, and other unsupported non-text content
@@ -331,11 +442,9 @@ skills, MCP servers, or broker-hosted tools. Those capabilities are assigned by
 the operator and remain governed by bundle, workspace, sandbox, and host
 authorization policy.
 
-They are not caller-defined OpenAI functions. Codex 0.146.0 exposes
-`dynamicTools` on `thread/start` and the `item/tool/call` request type, but the
-broker does not yet implement the complete declaration, call, result,
-cancellation, and streaming mapping needed for exact OpenAI semantics. Sending
-`tools` therefore never grants or selects bundle capabilities.
+They are separate from caller-defined OpenAI functions. Sending `tools` never
+grants or selects bundle capabilities; see
+[Built-in Codex tools are off unless a bundle allows them](#built-in-codex-tools-are-off-unless-a-bundle-allows-them).
 
 ## Errors preserve the OpenAI envelope without exposing internals
 

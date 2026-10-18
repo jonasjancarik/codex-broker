@@ -240,6 +240,7 @@ OpenAI-compatible routes use a separate bearer credential whose SHA-256 digest
 maps to a fixed compatibility binding. Request bodies and headers cannot select
 owner, auth principal, profile, configuration profile, host app, bundle, or
 workspace. Compatible Responses support text and base64 image input,
+caller-defined function tools,
 synchronous and typed SSE delivery, retrieval, input-item retrieval,
 cancellation, response chaining, reasoning/service-tier controls, metadata, and
 text or JSON Schema output. Chat Completions supports ordered text and base64
@@ -261,13 +262,34 @@ Omitted or empty custom maps retain the default. Alias targets must be available
 in Codex's model catalog; canonical model ids remain usable directly.
 
 Unknown fields and unsupported behavior must fail with OpenAI-shaped errors.
-In particular, caller-defined tools, tool choice, tool messages, `store: false`,
+In particular, forced tool choice (`required` or a named function),
+`parallel_tool_calls: false`, strict function schemas, `store: false`,
 sampling/logprob controls, `max_output_tokens` on Responses, background mode,
 and unsupported content are not silently approximated. Chat
 `max_tokens` and `max_completion_tokens` are compatibility fields that are
 accepted and discarded for every value, including when both are supplied; they
 do not cap output. Reviewed bundle/MCP tools remain deployment policy and are
 never inferred from an OpenAI `tools` request.
+
+Caller-defined function tools map onto Codex `thread/start.dynamicTools`. The
+compatible API stays stateless: when the model's response calls caller tools,
+the broker collects every call of that response from raw response items
+(`experimentalRawEvents`), persists them as `compat.tool_call` events, returns
+them with `finish_reason: "tool_calls"` (Chat) or `function_call` output items
+(Responses), interrupts the Codex turn, and answers any held `item/tool/call`
+request as handed off. The client's follow-up request runs on a fresh thread
+that declares the same tools, injects the full history including
+`function_call` and `function_call_output` items with `thread/inject_items`,
+and starts a turn with empty input. The broker therefore keeps no pending tool
+state between HTTP requests: abandoned follow-ups need no timeout or cleanup,
+edited histories are taken as sent, and restarts do not matter. The cost is
+replaying the conversation and losing prior reasoning items. `tool_choice: none`
+withholds the tools from Codex for that request. Requests that declare tools or
+replay tool calls on a binding without a bundle run with `environments: []`
+and per-thread config that disables web search, sub-agents, image generation,
+apps, plugins, tool suggestions, and code mode, so the model can only call the
+caller's functions; bindings with a reviewed bundle keep that bundle's tools
+and sandbox policy.
 
 ## Events
 

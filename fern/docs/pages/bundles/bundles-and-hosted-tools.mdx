@@ -12,9 +12,11 @@ The host app still implements tool behavior and final permission checks.
 An OpenAI compatibility binding may select one reviewed `bundleId`, but the
 client cannot choose or override it. Bundle skills, MCP servers, and hosted
 tools remain operator-assigned Codex capabilities; they are not exposed as
-caller-defined OpenAI functions. Compatible requests containing `tools`,
-`tool_choice`, tool messages, or function outputs are rejected even when the
-binding has a bundle.
+caller-defined OpenAI functions, and a request's `tools` never grant them. When a
+compatible request brings its own functions, a binding with a bundle keeps the
+bundle's tools and sandbox policy, while a binding without one runs those
+requests with Codex's built-in tools turned off. See
+[OpenAI compatibility](../integrations/openai-compatibility.mdx#function-tools-run-in-the-client).
 
 ## Bundle lookup
 

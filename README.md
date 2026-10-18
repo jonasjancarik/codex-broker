@@ -353,14 +353,16 @@ includes the built-in alias `gpt-5.6` → `gpt-5.6-sol`. Each binding's optional
 require an available Codex model; canonical model names work directly. It
 supports text and base64 image input, streaming, response retrieval,
 input-item retrieval, cancellation, response chaining, reasoning controls,
-service tiers, and JSON Schema output. Compatible requests accept at most 10
+service tiers, JSON Schema output, and caller-defined function tools, which
+the client runs itself between requests. Compatible requests accept at most 10
 images, 20 MiB per image, and 20 MiB total decoded image data; their JSON body
 limit is 32 MiB. Chat `max_tokens` and `max_completion_tokens` are accepted and
 discarded without imposing an output cap, while Responses `max_output_tokens`
-is rejected. It fails closed for caller-defined tools, `store: false`,
+is rejected. It fails closed for forced tool choice, `store: false`,
 sampling and logprob controls, background mode, and unsupported content.
-Reviewed Codex bundles and MCP tools remain deployment policy; OpenAI request
-`tools` are not treated as equivalent capabilities. Compatible images must be
+Requests with function tools run without Codex's built-in shell and file tools
+unless the binding selects a reviewed bundle; OpenAI request `tools` never
+grant bundle capabilities. Compatible images must be
 PNG, JPEG, WEBP, or GIF base64 data URLs; remote URLs, file IDs, and local paths
 are not accepted. See the Fern
 [OpenAI compatibility guide](fern/docs/pages/integrations/openai-compatibility.mdx)

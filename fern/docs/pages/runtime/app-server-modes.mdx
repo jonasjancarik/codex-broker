@@ -26,7 +26,7 @@ The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `def
 | Stable compatible output | `rawResponseItem/completed` | Persisted independently of optional raw-event debugging | `compat.response.output_item`; Responses and Chat Completions output |
 | Token usage | `thread/tokenUsage/updated` | Persists and validates exact turn and cumulative thread counts plus the model context window | Native `Turn.usage` and `turn.usage.updated`; OpenAI response and optional Chat stream usage |
 | Compatible response history | `thread/inject_items` | Injects validated same-owner `previous_response_id` chains before `turn/start` | Responses `previous_response_id` |
-| Caller-defined dynamic tools | `thread/start.dynamicTools`, `DynamicToolSpec`, and server request `item/tool/call` | Not mapped; compatible `tools`, `tool_choice`, tool messages, and function outputs are rejected until the broker implements the full lifecycle | OpenAI-shaped `400 unsupported_parameter` |
+| Caller-defined dynamic tools | `thread/start.dynamicTools`, `experimentalRawEvents`, `environments`, `rawResponse/completed`, and server request `item/tool/call` | Mapped for OpenAI-compatible requests: calls end the response and interrupt the turn; results are replayed into a fresh thread with `thread/inject_items` and an empty-input turn | Chat `tool_calls` / Responses `function_call` items |
 | Plan collaboration mode | `ModeKind = "default" \| "plan"`, `ThreadSettings.collaborationMode`, `turn/plan/updated`, `item/plan/delta` | Event normalization implemented | `thread.settings.updated`, `plan.updated`, `plan.delta` events |
 | Goal tracking | `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`, `thread/goal/updated`, `thread/goal/cleared` | Event normalization implemented; direct broker goal API not yet implemented | `goal.updated`, `goal.cleared` events |
 | Review mode | `review/start`, `enteredReviewMode`, `exitedReviewMode`, auto-approval review notifications | Event normalization implemented; direct broker review API not yet implemented | `review.entered`, `review.exited`, `approval.review.started`, `approval.review.completed` events |
@@ -38,16 +38,19 @@ The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `def
 
 The broker treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. Model discovery directly maps `model/list` and preserves every model field for forward compatibility.
 
-Codex 0.146.0 exposes `experimentalRawEvents` on `ThreadStartParams`. The
-broker leaves that experimental stream disabled and consumes the declared
-`rawResponseItem/completed` notification for stable compatible output.
+Codex exposes `experimentalRawEvents` on `ThreadStartParams`. Codex 0.163.0
+sends `rawResponseItem/completed` and `rawResponse/completed` only to threads
+that opt in. The broker opts in only for compatible requests that declare
+function tools: raw items list every function call of a model response, and
+`rawResponse/completed` marks the end of that response. Raw items that echo
+injected history carry no matching turn id and are ignored. Other turns
+reconstruct compatible output from completed agent messages.
 
-The generated protocol includes `thread/start.dynamicTools`, `item/tool/call`,
-and dynamic-tool result types. Reviewed bundle and MCP tools are deployment
-policy, not caller-granted functions, and the broker does not yet map the full
-OpenAI declaration, call, result, cancellation, and streaming lifecycle.
-Compatible tool semantics therefore remain rejected instead of being only
-partially implemented.
+Codex runs dynamic tools one at a time and holds each `item/tool/call` until it
+is answered, so waiting for those requests alone would reveal only the first of
+several calls. The broker holds the requests, returns all collected calls,
+interrupts the turn, and then answers the held requests as handed off. Reviewed
+bundle and MCP tools are deployment policy, not caller-granted functions.
 
 The 0.146.0 Linux package does not include the former
 `codex-responses-api-proxy` executable. Codex Broker continues to own identity
