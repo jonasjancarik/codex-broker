@@ -18,6 +18,9 @@ OPENAI_MAX_IMAGE_BYTES = 20 * 1024 * 1024
 OPENAI_MAX_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
 _IMAGE_DETAILS = {"auto", "low", "high", "original"}
 _MAX_DATA_IMAGE_URL_CHARS = len("data:image/jpeg;base64,") + 4 * ((OPENAI_MAX_IMAGE_BYTES + 2) // 3)
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+OPENAI_MAX_TOOLS_PER_REQUEST = 128
+TOOL_CALL_EVENT = "compat.tool_call"
 
 
 class OpenAIProtocolError(Exception):
@@ -65,9 +68,28 @@ class ParsedOpenAIRequest:
     text_config: dict[str, Any]
     output_schema: dict[str, Any] | None
     include_usage: bool = False
+    tools: tuple[dict[str, Any], ...] = ()
+    tool_choice: str = "auto"
+
+    def dynamic_tools(self) -> list[dict[str, Any]]:
+        """Codex dynamicTools for this request; tool_choice none withholds them."""
+        if self.tool_choice == "none":
+            return []
+        return [
+            {
+                "type": "function",
+                "name": tool["name"],
+                "description": tool["description"],
+                "inputSchema": tool["parameters"],
+            }
+            for tool in self.tools
+        ]
 
     def turn_input(self) -> list[dict[str, Any]]:
         current = self.canonical_input[-1]
+        if current.get("type") != "message":
+            # A request ending in tool results continues from the injected history.
+            return []
         input_items: list[dict[str, Any]] = []
         for part in current["content"]:
             if part["type"] == "input_text":
@@ -94,6 +116,9 @@ def parse_responses_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
         "text",
         "metadata",
         "store",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
     }
     _reject_unknown(body, allowed)
     model = _required_string(body, "model")
@@ -101,6 +126,9 @@ def parse_responses_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
         raise unsupported("store=false is not supported because Codex Broker persists operational turn history.", "store")
     if body.get("store", True) is not True:
         raise invalid("store must be true when provided.", "store")
+    tools = _parse_tools(body.get("tools"), "responses")
+    tool_choice = _parse_tool_choice(body.get("tool_choice"))
+    _parse_parallel_tool_calls(body.get("parallel_tool_calls"))
     stream = _optional_bool(body, "stream", False)
     previous = _optional_string(body, "previous_response_id")
     instructions = _optional_string(body, "instructions")
@@ -131,6 +159,8 @@ def parse_responses_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
         text_config=text_config,
         output_schema=output_schema,
         include_usage=False,
+        tools=tools,
+        tool_choice=tool_choice,
     )
 
 
@@ -149,6 +179,9 @@ def parse_chat_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
         # These values are deliberately neither validated nor forwarded.
         "max_tokens",
         "max_completion_tokens",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
     }
     _reject_unknown(body, allowed)
     model = _required_string(body, "model")
@@ -156,6 +189,9 @@ def parse_chat_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
         raise unsupported("store=false is not supported because Codex Broker persists operational turn history.", "store")
     if body.get("store", True) is not True:
         raise invalid("store must be true when provided.", "store")
+    tools = _parse_tools(body.get("tools"), "chat.completions")
+    tool_choice = _parse_tool_choice(body.get("tool_choice"))
+    _parse_parallel_tool_calls(body.get("parallel_tool_calls"))
     stream = _optional_bool(body, "stream", False)
     stream_options = body.get("stream_options")
     include_usage = False
@@ -174,33 +210,60 @@ def parse_chat_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
     conversation: list[dict[str, Any]] = []
     image_counter = _ImageCounter()
     for index, raw in enumerate(messages):
+        param = f"messages.{index}"
         if not isinstance(raw, dict):
-            raise invalid("Every message must be an object.", f"messages.{index}")
+            raise invalid("Every message must be an object.", param)
         role = raw.get("role")
-        if role not in {"system", "developer", "user", "assistant"}:
-            raise unsupported(f"Message role {role!r} is not supported.", f"messages.{index}.role")
-        unsupported_keys = set(raw) - {"role", "content", "name"}
+        if role not in {"system", "developer", "user", "assistant", "tool"}:
+            raise unsupported(f"Message role {role!r} is not supported.", f"{param}.role")
+        allowed_keys = {"role", "content", "name"}
+        if role == "assistant":
+            allowed_keys.add("tool_calls")
+        if role == "tool":
+            allowed_keys = {"role", "content", "tool_call_id", "name"}
+        unsupported_keys = set(raw) - allowed_keys
         if unsupported_keys:
             key = sorted(unsupported_keys)[0]
-            raise unsupported(f"Message field {key!r} is not supported.", f"messages.{index}.{key}")
-        content = _chat_content_parts(raw.get("content"), role, f"messages.{index}.content", image_counter)
+            raise unsupported(f"Message field {key!r} is not supported.", f"{param}.{key}")
+        if role == "tool":
+            conversation.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": _tool_call_id(raw.get("tool_call_id"), f"{param}.tool_call_id"),
+                    "output": _tool_output_text(raw.get("content"), f"{param}.content", chat=True),
+                }
+            )
+            continue
+        tool_calls = raw.get("tool_calls") if role == "assistant" else None
+        if role == "assistant" and tool_calls is not None and raw.get("content") in (None, ""):
+            content: list[dict[str, Any]] = []
+        else:
+            content = _chat_content_parts(raw.get("content"), role, f"{param}.content", image_counter)
         text = _parts_text(content)
         if role == "system":
             base_parts.append(text)
         elif role == "developer":
             developer_parts.append(text)
         else:
-            conversation.append(_canonical_message(role, content))
-    if not conversation or conversation[-1]["role"] != "user":
-        raise unsupported("The final non-instruction Chat message must have role 'user'.", "messages")
-    current = _message_text(conversation[-1])
+            if content:
+                conversation.append(_canonical_message(role, content))
+            if tool_calls is not None:
+                conversation.extend(_chat_tool_calls(tool_calls, f"{param}.tool_calls"))
+    if not conversation or not _is_turn_ending_item(conversation[-1]):
+        raise unsupported(
+            "The final non-instruction Chat message must have role 'user' or 'tool'.",
+            "messages",
+        )
+    validate_tool_history(conversation, "messages")
+    current = _message_text(conversation[-1]) if conversation[-1]["type"] == "message" else ""
+    history = conversation[:-1] if conversation[-1]["type"] == "message" else conversation
     response_format = body.get("response_format")
     text_config, output_schema = _parse_chat_response_format(response_format)
     return ParsedOpenAIRequest(
         protocol="chat.completions",
         requested_model=model,
         canonical_input=tuple(conversation),
-        request_history=tuple(conversation[:-1]),
+        request_history=tuple(history),
         current_text=current,
         instructions="\n\n".join(developer_parts) or None,
         base_instructions="\n\n".join(base_parts) or None,
@@ -213,7 +276,37 @@ def parse_chat_request(body: dict[str, Any]) -> ParsedOpenAIRequest:
         text_config=text_config,
         output_schema=output_schema,
         include_usage=include_usage,
+        tools=tools,
+        tool_choice=tool_choice,
     )
+
+
+def validate_tool_history(items: list[dict[str, Any]], param: str) -> None:
+    """Require every function call to be answered before the conversation moves on."""
+    pending: dict[str, int] = {}
+    answered: set[str] = set()
+    for index, item in enumerate(items):
+        item_type = item.get("type")
+        if item_type == "function_call":
+            call_id = str(item["call_id"])
+            if call_id in pending or call_id in answered:
+                raise invalid(f"Tool call id {call_id!r} is used more than once.", param)
+            pending[call_id] = index
+        elif item_type == "function_call_output":
+            call_id = str(item["call_id"])
+            if call_id not in pending:
+                raise invalid(
+                    f"Tool result {call_id!r} does not answer an earlier tool call.",
+                    param,
+                )
+            del pending[call_id]
+            answered.add(call_id)
+        elif pending:
+            missing = sorted(pending, key=pending.__getitem__)[0]
+            raise invalid(f"Tool call {missing!r} has no tool result before the next message.", param)
+    if pending:
+        missing = sorted(pending, key=pending.__getitem__)[0]
+        raise invalid(f"Tool call {missing!r} has no tool result.", param)
 
 
 def response_id_from_turn(turn_id: str) -> str:
@@ -235,7 +328,7 @@ def turn_id_from_chat(completion_id: str) -> str:
 def response_object(turn: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     compat = compatibility_metadata(turn, "responses")
     status = response_status(str(turn["status"]))
-    output = public_output_items(events)
+    output = public_output_items(events) + [response_function_call(call) for call in tool_calls(events)]
     if status == "completed" and not output:
         raise server_error("Codex completed without a compatible response output item.")
     usage = response_usage(events, required=status == "completed")
@@ -263,7 +356,7 @@ def response_object(turn: dict[str, Any], events: list[dict[str, Any]]) -> dict[
         "max_tool_calls": None,
         "model": compat.get("requestedModel") or compat.get("resolvedModel"),
         "output": output,
-        "parallel_tool_calls": False,
+        "parallel_tool_calls": bool(compat.get("tools")),
         "previous_response_id": compat.get("previousResponseId"),
         "reasoning": {
             "effort": reasoning.get("effort"),
@@ -273,8 +366,18 @@ def response_object(turn: dict[str, Any], events: list[dict[str, Any]]) -> dict[
         "store": True,
         "temperature": None,
         "text": text_config,
-        "tool_choice": "none",
-        "tools": [],
+        "tool_choice": compat.get("toolChoice") or ("auto" if compat.get("tools") else "none"),
+        "tools": [
+            {
+                "type": "function",
+                "name": tool.get("name"),
+                "description": tool.get("description"),
+                "parameters": tool.get("parameters"),
+                "strict": False,
+            }
+            for tool in compat.get("tools") or []
+            if isinstance(tool, dict)
+        ],
         "top_p": None,
         "truncation": "disabled",
         "usage": usage,
@@ -288,8 +391,17 @@ def chat_completion_object(turn: dict[str, Any], events: list[dict[str, Any]]) -
     if str(turn["status"]) != "completed":
         raise server_error("The completion failed.")
     text = output_text(events)
+    calls = tool_calls(events)
     usage = response_usage(events, required=True)
     assert usage is not None
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": text if text or not calls else None,
+        "refusal": None,
+        "annotations": [],
+    }
+    if calls:
+        message["tool_calls"] = [chat_tool_call(call) for call in calls]
     return {
         "id": chat_id_from_turn(str(turn["turn_id"])),
         "object": "chat.completion",
@@ -298,14 +410,9 @@ def chat_completion_object(turn: dict[str, Any], events: list[dict[str, Any]]) -
         "choices": [
             {
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": text,
-                    "refusal": None,
-                    "annotations": [],
-                },
+                "message": message,
                 "logprobs": None,
-                "finish_reason": "stop",
+                "finish_reason": "tool_calls" if calls else "stop",
             }
         ],
         "usage": {
@@ -420,6 +527,39 @@ def output_text(events: list[dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def tool_calls(events: list[dict[str, Any]]) -> list[dict[str, str]]:
+    calls: list[dict[str, str]] = []
+    for event in events:
+        if event.get("event_type") != TOOL_CALL_EVENT:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        call_id, name, arguments = payload.get("callId"), payload.get("name"), payload.get("arguments")
+        if isinstance(call_id, str) and isinstance(name, str) and isinstance(arguments, str):
+            calls.append({"callId": call_id, "name": name, "arguments": arguments})
+    return calls
+
+
+def chat_tool_call(call: dict[str, str]) -> dict[str, Any]:
+    return {
+        "id": call["callId"],
+        "type": "function",
+        "function": {"name": call["name"], "arguments": call["arguments"]},
+    }
+
+
+def response_function_call(call: dict[str, str]) -> dict[str, Any]:
+    return {
+        "id": f"fc_{call['callId']}",
+        "type": "function_call",
+        "status": "completed",
+        "call_id": call["callId"],
+        "name": call["name"],
+        "arguments": call["arguments"],
+    }
+
+
 def response_usage(events: list[dict[str, Any]], *, required: bool) -> dict[str, Any] | None:
     last: dict[str, Any] | None = None
     for event in events:
@@ -512,24 +652,191 @@ def _parse_response_input(value: Any) -> tuple[list[dict[str, Any]], list[dict[s
     canonical: list[dict[str, Any]] = []
     image_counter = _ImageCounter()
     for index, item in enumerate(value):
+        param = f"input.{index}"
         if not isinstance(item, dict):
-            raise invalid("Every input item must be an object.", f"input.{index}")
+            raise invalid("Every input item must be an object.", param)
         item_type = item.get("type")
+        if item_type == "function_call":
+            _reject_unknown(item, {"type", "call_id", "name", "arguments", "id", "status"}, prefix=param)
+            canonical.append(
+                {
+                    "type": "function_call",
+                    "call_id": _tool_call_id(item.get("call_id"), f"{param}.call_id"),
+                    "name": _tool_call_name(item.get("name"), f"{param}.name"),
+                    "arguments": _tool_call_arguments(item.get("arguments"), f"{param}.arguments"),
+                }
+            )
+            continue
+        if item_type == "function_call_output":
+            _reject_unknown(item, {"type", "call_id", "output", "id", "status"}, prefix=param)
+            canonical.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": _tool_call_id(item.get("call_id"), f"{param}.call_id"),
+                    "output": _tool_output_text(item.get("output"), f"{param}.output", chat=False),
+                }
+            )
+            continue
         if item_type not in {None, "message"}:
-            raise unsupported(f"Input item type {item_type!r} is not supported.", f"input.{index}.type")
+            raise unsupported(f"Input item type {item_type!r} is not supported.", f"{param}.type")
         role = item.get("role")
         if role not in {"system", "developer", "user", "assistant"}:
-            raise unsupported(f"Input role {role!r} is not supported.", f"input.{index}.role")
+            raise unsupported(f"Input role {role!r} is not supported.", f"{param}.role")
         unsupported_keys = set(item) - {"type", "role", "content", "id", "status"}
         if unsupported_keys:
             key = sorted(unsupported_keys)[0]
-            raise unsupported(f"Input item field {key!r} is not supported.", f"input.{index}.{key}")
-        content = _response_content_parts(item.get("content"), role, f"input.{index}.content", image_counter)
+            raise unsupported(f"Input item field {key!r} is not supported.", f"{param}.{key}")
+        content = _response_content_parts(item.get("content"), role, f"{param}.content", image_counter)
         canonical.append(_canonical_message(role, content))
-    if canonical[-1]["role"] != "user":
-        raise unsupported("The final input item must have role 'user'.", "input")
+    if not _is_turn_ending_item(canonical[-1]):
+        raise unsupported("The final input item must have role 'user' or be a function_call_output.", "input")
+    if canonical[-1]["type"] != "message":
+        return canonical, canonical, ""
     current = _message_text(canonical[-1])
     return canonical, canonical[:-1], current
+
+
+def _is_turn_ending_item(item: dict[str, Any]) -> bool:
+    if item.get("type") == "function_call_output":
+        return True
+    return item.get("type") == "message" and item.get("role") == "user"
+
+
+def _parse_tools(value: Any, protocol: str) -> tuple[dict[str, Any], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise invalid("tools must be an array.", "tools")
+    if len(value) > OPENAI_MAX_TOOLS_PER_REQUEST:
+        raise invalid(f"A request may declare at most {OPENAI_MAX_TOOLS_PER_REQUEST} tools.", "tools")
+    tools: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        param = f"tools.{index}"
+        if not isinstance(raw, dict):
+            raise invalid("Every tool must be an object.", param)
+        if raw.get("type") != "function":
+            raise unsupported("Only function tools are supported.", f"{param}.type")
+        if protocol == "chat.completions":
+            _reject_unknown(raw, {"type", "function"}, prefix=param)
+            definition = raw.get("function")
+            param = f"{param}.function"
+            if not isinstance(definition, dict):
+                raise invalid("tools[].function must be an object.", param)
+            _reject_unknown(definition, {"name", "description", "parameters", "strict"}, prefix=param)
+        else:
+            _reject_unknown(raw, {"type", "name", "description", "parameters", "strict"}, prefix=param)
+            definition = raw
+        name = _tool_call_name(definition.get("name"), f"{param}.name")
+        if name == "mcp" or name.startswith("mcp__"):
+            raise invalid("Tool names 'mcp' and 'mcp__*' are reserved by Codex.", f"{param}.name")
+        if name in seen:
+            raise invalid(f"Tool name {name!r} is declared more than once.", f"{param}.name")
+        seen.add(name)
+        description = definition.get("description", "")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            raise invalid("Tool description must be a string.", f"{param}.description")
+        parameters = definition.get("parameters")
+        if parameters is None:
+            parameters = {"type": "object", "properties": {}}
+        if not isinstance(parameters, dict) or parameters.get("type", "object") != "object":
+            raise invalid("Tool parameters must be a JSON Schema object with type 'object'.", f"{param}.parameters")
+        strict = definition.get("strict")
+        if strict not in (None, False):
+            if strict is True:
+                raise unsupported(
+                    "strict function schemas are not supported; Codex does not enforce them for caller-defined tools.",
+                    f"{param}.strict",
+                )
+            raise invalid("strict must be a boolean.", f"{param}.strict")
+        tools.append({"name": name, "description": description, "parameters": parameters})
+    return tuple(tools)
+
+
+def _parse_tool_choice(value: Any) -> str:
+    if value is None or value == "auto":
+        return "auto"
+    if value == "none":
+        return "none"
+    if value == "required" or isinstance(value, dict):
+        raise unsupported(
+            "tool_choice can only be 'auto' or 'none'; Codex cannot force a tool call.",
+            "tool_choice",
+        )
+    raise invalid("tool_choice must be 'auto' or 'none'.", "tool_choice")
+
+
+def _parse_parallel_tool_calls(value: Any) -> None:
+    if value is None or value is True:
+        return
+    if value is False:
+        raise unsupported(
+            "parallel_tool_calls=false is not supported; the model may return several tool calls at once.",
+            "parallel_tool_calls",
+        )
+    raise invalid("parallel_tool_calls must be a boolean.", "parallel_tool_calls")
+
+
+def _chat_tool_calls(value: Any, param: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise invalid("tool_calls must be a non-empty array.", param)
+    calls: list[dict[str, Any]] = []
+    for index, raw in enumerate(value):
+        call_param = f"{param}.{index}"
+        if not isinstance(raw, dict):
+            raise invalid("Every tool call must be an object.", call_param)
+        _reject_unknown(raw, {"id", "type", "function"}, prefix=call_param)
+        if raw.get("type", "function") != "function":
+            raise unsupported("Only function tool calls are supported.", f"{call_param}.type")
+        function = raw.get("function")
+        if not isinstance(function, dict):
+            raise invalid("tool_calls[].function must be an object.", f"{call_param}.function")
+        _reject_unknown(function, {"name", "arguments"}, prefix=f"{call_param}.function")
+        calls.append(
+            {
+                "type": "function_call",
+                "call_id": _tool_call_id(raw.get("id"), f"{call_param}.id"),
+                "name": _tool_call_name(function.get("name"), f"{call_param}.function.name"),
+                "arguments": _tool_call_arguments(function.get("arguments"), f"{call_param}.function.arguments"),
+            }
+        )
+    return calls
+
+
+def _tool_call_id(value: Any, param: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise invalid("Tool call ids must be non-empty strings.", param)
+    return value
+
+
+def _tool_call_name(value: Any, param: str) -> str:
+    if not isinstance(value, str) or not _TOOL_NAME_RE.fullmatch(value):
+        raise invalid("Tool names must match ^[A-Za-z0-9_-]{1,64}$.", param)
+    return value
+
+
+def _tool_call_arguments(value: Any, param: str) -> str:
+    if not isinstance(value, str):
+        raise invalid("Tool call arguments must be a JSON string.", param)
+    return value
+
+
+def _tool_output_text(value: Any, param: str, *, chat: bool) -> str:
+    if isinstance(value, str):
+        return value
+    text_type = "text" if chat else "input_text"
+    if isinstance(value, list):
+        parts: list[str] = []
+        for index, part in enumerate(value):
+            part_param = f"{param}.{index}"
+            if not isinstance(part, dict) or part.get("type") != text_type or not isinstance(part.get("text"), str):
+                raise unsupported(f"Tool results support only string or {text_type} content.", part_param)
+            _reject_unknown(part, {"type", "text"}, prefix=part_param)
+            parts.append(part["text"])
+        return "".join(parts)
+    raise invalid("Tool result content must be a string or an array of text parts.", param)
 
 
 def _canonical_message(role: str, content: str | list[dict[str, Any]]) -> dict[str, Any]:

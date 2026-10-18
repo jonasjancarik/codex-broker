@@ -17,6 +17,7 @@ from .auth import AuthManager
 from .bundles import BundleRegistry, ResolvedBundle
 from .config import BrokerConfig
 from .events import normalize_app_server_event, normalize_token_usage
+from .openai_protocol import TOOL_CALL_EVENT
 from .runtime_errors import (
     CODEX_AUTH_REQUIRES_ADMIN,
     SANDBOX_UNAVAILABLE,
@@ -74,6 +75,13 @@ class QueuedTurn:
 class OpenAICompatTurn:
     metadata: dict[str, Any]
     history_items: tuple[dict[str, Any], ...] = ()
+    dynamic_tools: tuple[dict[str, Any], ...] = ()
+    isolate_builtin_tools: bool = False
+
+
+# A returned tool call should carry the usage of the model response that made it.
+TOOL_STOP_USAGE_WAIT_SECONDS = 3.0
+TOOL_STOP_INTERRUPT_WAIT_SECONDS = 5.0
 
 
 class BrokerTurnContext:
@@ -89,6 +97,7 @@ class BrokerTurnContext:
         product_correlation_id: str | None,
         debug_raw_events: bool,
         sanitizer: SecretSanitizer | None = None,
+        dynamic_tool_names: frozenset[str] = frozenset(),
     ) -> None:
         self.state = state
         self.owner_hash = owner_hash
@@ -117,6 +126,17 @@ class BrokerTurnContext:
             tuple[str, str], tuple[str, dict[str, Any], str, dict[str, Any], bool]
         ] = {}
         self._lock = threading.RLock()
+        # Caller-defined (OpenAI-compatible) tools are answered by the caller in a
+        # later HTTP request, so the turn stops once the model asks for them.
+        self.dynamic_tool_names = dynamic_tool_names
+        self.tool_calls: list[dict[str, str]] = []
+        self.pending_tool_requests: list[Any] = []
+        self.tool_stop = False
+        self.raw_items_seen = 0
+        self.usage_count = 0
+        self.usage_count_at_tool_stop = 0
+        self.usage_event = threading.Event()
+        self.codex_turn_done = threading.Event()
 
     def register_thread(self, codex_thread_id: str) -> None:
         with self._lock:
@@ -129,6 +149,28 @@ class BrokerTurnContext:
             self.state.update_turn(self.owner_hash, self.thread_id, self.turn_id, codex_turn_id=codex_turn_id)
 
     def handle_notification(self, method: str, params: dict[str, Any], *, ambiguous: bool) -> None:
+        if method in {"turn/completed", "turn/interrupted"}:
+            self.codex_turn_done.set()
+        if method == "rawResponseItem/completed" and params.get("turnId") != self.codex_turn_id:
+            # Raw items also echo injected history; only this turn's model output counts.
+            return
+        with self._lock:
+            if self.tool_stop:
+                if method == "thread/tokenUsage/updated":
+                    self._note_usage(method, params, ambiguous=ambiguous)
+                return
+            if method == "rawResponseItem/completed":
+                self.raw_items_seen += 1
+                self._collect_tool_call(params.get("item"))
+            elif method == "thread/tokenUsage/updated":
+                self._note_usage(method, params, ambiguous=ambiguous)
+                if self.tool_calls:
+                    self._stop_for_tool_calls(usage_received=True)
+                return
+            elif method == "rawResponse/completed":
+                if self.tool_calls:
+                    self._stop_for_tool_calls(usage_received=False)
+                return
         event_type, payload = self._normalize(method, params)
         error_info: RuntimeErrorInfo | None = None
         if method == "turn/completed":
@@ -164,6 +206,51 @@ class BrokerTurnContext:
                 thread_id=self.thread_id,
                 turn_id=self.turn_id,
             )
+
+    def _note_usage(self, method: str, params: dict[str, Any], *, ambiguous: bool) -> None:
+        event_type, payload = self._normalize(method, params)
+        self._append_event(event_type, payload, method, params, ambiguous=ambiguous)
+        self.usage_count += 1
+        self.usage_event.set()
+
+    def _collect_tool_call(self, item: Any, *, arguments: Any = None) -> None:
+        if not isinstance(item, dict) or item.get("type") != "function_call" or item.get("namespace"):
+            return
+        call_id, name = item.get("call_id"), item.get("name")
+        if not isinstance(call_id, str) or not call_id or name not in self.dynamic_tool_names:
+            return
+        if any(call["callId"] == call_id for call in self.tool_calls):
+            return
+        raw_arguments = item.get("arguments") if arguments is None else arguments
+        if not isinstance(raw_arguments, str):
+            raw_arguments = json_dumps(raw_arguments if raw_arguments is not None else {})
+        self.tool_calls.append({"callId": call_id, "name": str(name), "arguments": raw_arguments})
+
+    def _stop_for_tool_calls(self, *, usage_received: bool) -> None:
+        self._flush_stream_turn()
+        self.tool_stop = True
+        self.usage_count_at_tool_stop = self.usage_count - (1 if usage_received else 0)
+        self.final_status = "completed"
+        self._set_error_info(None)
+        self.terminal_event_type = "turn.completed"
+        self.terminal_payload = {"finishReason": "tool_calls"}
+        self.completed_event.set()
+
+    def handle_dynamic_tool_request(self, message_id: Any, params: dict[str, Any]) -> bool:
+        """Hold Codex's item/tool/call until the caller's next request; False if not ours."""
+        with self._lock:
+            if params.get("namespace") or params.get("tool") not in self.dynamic_tool_names:
+                return False
+            self.pending_tool_requests.append(message_id)
+            if not self.tool_stop and not self.raw_items_seen:
+                # Without raw items, only this request names the call; return it alone.
+                self._collect_tool_call(
+                    {"type": "function_call", "call_id": params.get("callId"), "name": params.get("tool")},
+                    arguments=params.get("arguments"),
+                )
+                if self.tool_calls:
+                    self._stop_for_tool_calls(usage_received=False)
+            return True
 
     def record_tool_requested(self, method: str, params: dict[str, Any], *, ambiguous: bool) -> None:
         self._append_event("tool.requested", {"method": method, "params": params}, method, params, ambiguous=ambiguous)
@@ -374,12 +461,16 @@ class TurnScheduler:
         *,
         metadata: dict[str, Any],
         history_items: list[dict[str, Any]] | None = None,
+        dynamic_tools: list[dict[str, Any]] | None = None,
+        isolate_builtin_tools: bool = False,
         danger_full_access_authorized: bool = False,
     ) -> dict[str, Any]:
         internal_body = dict(body)
         internal_body["_openaiCompat"] = OpenAICompatTurn(
             metadata=dict(metadata),
             history_items=tuple(dict(item) for item in (history_items or [])),
+            dynamic_tools=tuple(dict(tool) for tool in (dynamic_tools or [])),
+            isolate_builtin_tools=isolate_builtin_tools,
         )
         return self._start_turn(
             owner_id,
@@ -410,7 +501,8 @@ class TurnScheduler:
         if thread["status"] == "archived":
             raise ConflictError("Thread is archived.")
         input_items = body.get("input")
-        if not isinstance(input_items, list) or not input_items:
+        # A compatible request that ends in tool results continues from injected history.
+        if not isinstance(input_items, list) or (not input_items and not isinstance(compat, OpenAICompatTurn)):
             raise ValueError("input must be a non-empty array.")
         mode = str(body.get("mode") or "reject")
         if mode not in {"reject", "queue", "steer"}:
@@ -1024,6 +1116,8 @@ class TurnScheduler:
                     codex_config_args=codex_config_args,
                     auth_fingerprint=auth_fingerprint,
                 )
+            compat = body.get("_openaiCompat")
+            compat_turn = compat if isinstance(compat, OpenAICompatTurn) else None
             context = BrokerTurnContext(
                 state=self.state,
                 owner_hash=owner_hash,
@@ -1034,6 +1128,9 @@ class TurnScheduler:
                 product_correlation_id=turn.get("product_correlation_id"),
                 debug_raw_events=self.config.debug_raw_events,
                 sanitizer=self.sanitizer,
+                dynamic_tool_names=frozenset(
+                    str(tool["name"]) for tool in (compat_turn.dynamic_tools if compat_turn else ())
+                ),
             )
             context.client = client
             with self._gates_lock:
@@ -1050,12 +1147,15 @@ class TurnScheduler:
                 runtime_read_root=overlay,
                 allow_internal_overlay=bool(overlay and cwd == overlay),
                 danger_full_access_authorized=danger_full_access_authorized,
+                extra_params=scheduler_config.openai_tool_thread_params(
+                    compat_turn.dynamic_tools if compat_turn else (),
+                    isolate_builtin_tools=bool(compat_turn and compat_turn.isolate_builtin_tools),
+                ),
             )
-            compat = body.get("_openaiCompat")
-            if isinstance(compat, OpenAICompatTurn) and compat.history_items:
+            if compat_turn and compat_turn.history_items:
                 client.request(
                     "thread/inject_items",
-                    {"threadId": codex_thread_id, "items": scheduler_config.codex_image_items(compat.history_items)},
+                    {"threadId": codex_thread_id, "items": scheduler_config.codex_image_items(compat_turn.history_items)},
                 )
             params = self._turn_params(
                 codex_thread_id,
@@ -1083,6 +1183,8 @@ class TurnScheduler:
                 if self._persist_context_terminal(context):
                     self._metric("turns_failed", 1)
                 return
+            if context.tool_stop:
+                self._return_tool_calls(client, context, codex_thread_id)
             status = context.final_status or "completed"
             finalized = self._persist_context_terminal(context)
             if context.error_code == CODEX_AUTH_REQUIRES_ADMIN:
@@ -1167,6 +1269,37 @@ class TurnScheduler:
                     durationMs=round(elapsed * 1000, 3),
                 )
 
+    def _return_tool_calls(self, client: AppServerClient, context: BrokerTurnContext, codex_thread_id: str) -> None:
+        """Hand the model's tool calls to the caller and end the Codex turn that requested them."""
+        deadline = time.monotonic() + TOOL_STOP_USAGE_WAIT_SECONDS
+        while context.usage_count <= context.usage_count_at_tool_stop and time.monotonic() < deadline:
+            context.usage_event.clear()
+            if context.usage_count > context.usage_count_at_tool_stop:
+                break
+            context.usage_event.wait(max(0.0, deadline - time.monotonic()))
+        with context._lock:
+            calls = list(context.tool_calls)
+            pending = list(context.pending_tool_requests)
+        for call in calls:
+            context._append_event(TOOL_CALL_EVENT, dict(call), "item/tool/call", dict(call), ambiguous=False)
+        params: dict[str, Any] = {"threadId": codex_thread_id}
+        if context.codex_turn_id:
+            params["turnId"] = context.codex_turn_id
+        try:
+            client.request("turn/interrupt", params, timeout=TOOL_STOP_INTERRUPT_WAIT_SECONDS)
+        except AppServerError:
+            pass
+        handed_off = {
+            "contentItems": [{"type": "inputText", "text": "This tool call was returned to the API client."}],
+            "success": False,
+        }
+        for message_id in pending:
+            try:
+                client.send({"id": message_id, "result": handed_off})
+            except AppServerError:
+                break
+        context.codex_turn_done.wait(TOOL_STOP_INTERRUPT_WAIT_SECONDS)
+
     def _sandbox_preflight_error(self, turn: dict[str, Any]) -> RuntimeErrorInfo | None:
         options = turn.get("resolved_options")
         permission_profile = options.get("permissionProfile") if isinstance(options, dict) else None
@@ -1213,6 +1346,7 @@ class TurnScheduler:
         danger_full_access_authorized: bool = False,
         runtime_read_root: Path | None = None,
         allow_internal_overlay: bool = False,
+        extra_params: dict[str, Any] | None = None,
     ) -> str:
         params = self._thread_params(
             cwd,
@@ -1224,6 +1358,10 @@ class TurnScheduler:
             allow_internal_overlay=allow_internal_overlay,
         )
         codex_thread_id = thread.get("codex_thread_id")
+        if extra_params:
+            if codex_thread_id:
+                raise ConflictError("Caller-defined tools require a new Codex thread.")
+            params.update(extra_params)
         if codex_thread_id:
             result = client.request("thread/resume", {"threadId": codex_thread_id, **params})
             self._record_thread_security_provenance(context, params, result)

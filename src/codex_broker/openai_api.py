@@ -8,11 +8,13 @@ from urllib.parse import unquote
 from .app_server import AppServerError
 from .openai_auth import OpenAICompatAuthError, OpenAICompatBinding
 from .openai_protocol import (
+    TOOL_CALL_EVENT,
     OpenAIProtocolError,
     ParsedOpenAIRequest,
     authentication_error,
     chat_completion_object,
     chat_id_from_turn,
+    chat_tool_call,
     compatibility_metadata,
     invalid,
     is_terminal,
@@ -23,10 +25,13 @@ from .openai_protocol import (
     public_output_items,
     raw_output_items,
     response_id_from_turn,
+    response_function_call,
     response_object,
     response_usage,
     server_error,
+    tool_calls,
     turn_id_from_response,
+    validate_tool_history,
 )
 from .scheduler_errors import ActiveTurnError, ConflictError, NotFoundError
 from .util import json_dumps, json_log
@@ -207,6 +212,10 @@ def _start_request(
     if parsed.previous_response_id:
         history.extend(_previous_history(services, binding, parsed.previous_response_id))
     history.extend(dict(item) for item in parsed.request_history)
+    current_items = [dict(parsed.canonical_input[-1])] if parsed.canonical_input[-1].get("type") == "message" else []
+    if parsed.protocol == "responses":
+        validate_tool_history([*history, *current_items], "input")
+    uses_tools = bool(parsed.tools) or any(item.get("type") == "function_call" for item in history)
     requires_images = any(
         part.get("type") == "input_image"
         for item in [*history, *parsed.canonical_input]
@@ -271,6 +280,8 @@ def _start_request(
         "serviceTier": parsed.service_tier,
         "text": parsed.text_config,
         "metadata": parsed.metadata,
+        "tools": [dict(tool) for tool in parsed.tools],
+        "toolChoice": parsed.tool_choice,
     }
     return services.scheduler.start_openai_turn(
         binding.owner_id,
@@ -278,6 +289,10 @@ def _start_request(
         body,
         metadata=metadata,
         history_items=history,
+        dynamic_tools=parsed.dynamic_tools(),
+        # Without a reviewed bundle, a caller that brings its own functions gets
+        # a model that can only call them, not one that acts on the broker host.
+        isolate_builtin_tools=uses_tools and not binding.bundle_id,
         danger_full_access_authorized=danger_full_access_authorized,
     )
 
@@ -310,7 +325,7 @@ def _previous_history(services: Any, binding: OpenAICompatBinding, response_id: 
         if not isinstance(canonical, list):
             raise server_error("The previous response does not contain reconstructable input.")
         segment = [dict(item) for item in canonical if isinstance(item, dict)]
-        segment.extend(raw_output_items(events))
+        segment.extend(_history_output_items(events))
         segments.append(segment)
         previous = compat.get("previousResponseId")
         current = previous if isinstance(previous, str) else None
@@ -320,6 +335,20 @@ def _previous_history(services: Any, binding: OpenAICompatBinding, response_id: 
     for segment in reversed(segments):
         history.extend(segment)
     return history
+
+
+def _history_output_items(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Replayable model output: assistant messages, reasoning, then returned tool calls."""
+    items = [
+        item
+        for item in raw_output_items(events)
+        if item.get("type") == "reasoning" or (item.get("type") == "message" and item.get("role") == "assistant")
+    ]
+    items.extend(
+        {"type": "function_call", "call_id": call["callId"], "name": call["name"], "arguments": call["arguments"]}
+        for call in tool_calls(events)
+    )
+    return items
 
 
 def _find_response(services: Any, binding: OpenAICompatBinding, response_id: str) -> dict[str, Any]:
@@ -478,6 +507,24 @@ def _stream_response(handler: Any, binding: OpenAICompatBinding, public_turn: di
                         return
                     if not emit("response.output_item.done", {"output_index": output_index, "item": item}):
                         return
+            elif event["event_type"] == TOOL_CALL_EVENT:
+                for call in tool_calls([event]):
+                    item = response_function_call(call)
+                    output_index = len(started_items)
+                    started_items.add(str(item["id"]))
+                    if not emit(
+                        "response.output_item.added",
+                        {"output_index": output_index, "item": {**item, "status": "in_progress", "arguments": ""}},
+                    ):
+                        return
+                    for event_type, payload in (
+                        ("response.function_call_arguments.delta", {"delta": item["arguments"]}),
+                        ("response.function_call_arguments.done", {"arguments": item["arguments"]}),
+                    ):
+                        if not emit(event_type, {"item_id": item["id"], "output_index": output_index, **payload}):
+                            return
+                    if not emit("response.output_item.done", {"output_index": output_index, "item": item}):
+                        return
         turn = handler.broker.state.get_turn(owner_hash, thread_id, turn_id)
         if not turn:
             return
@@ -536,6 +583,7 @@ def _stream_chat(
     if not chunk({"role": "assistant", "content": ""}):
         return
     after = 0
+    tool_call_count = 0
     while True:
         events = handler.broker.state.list_events(owner_hash, thread_id, after=after, turn_id=turn_id, limit=100)
         for event in events:
@@ -544,12 +592,21 @@ def _stream_chat(
                 payload = event.get("payload") or {}
                 if not chunk({"content": str(payload.get("delta") or "")}):
                     return
+            elif event["event_type"] == TOOL_CALL_EVENT:
+                for call in tool_calls([event]):
+                    complete = chat_tool_call(call)
+                    opening = {**complete, "function": {"name": call["name"], "arguments": ""}}
+                    arguments = {"function": {"arguments": call["arguments"]}}
+                    for part in (opening, arguments):
+                        if not chunk({"tool_calls": [{"index": tool_call_count, **part}]}):
+                            return
+                    tool_call_count += 1
         turn = handler.broker.state.get_turn(owner_hash, thread_id, turn_id)
         if not turn:
             return
         if is_terminal(turn):
             if str(turn["status"]) == "completed":
-                if not chunk({}, "stop"):
+                if not chunk({}, "tool_calls" if tool_call_count else "stop"):
                     return
                 if include_usage:
                     try:
@@ -828,6 +885,21 @@ def openapi_schemas() -> dict[str, Any]:
             "Stored input retains the requested value; OpenAI low-detail token costs are not preserved."
         ),
     }
+    tool_choice = {
+        "enum": ["auto", "none"],
+        "description": "Codex cannot force a tool call; required and named functions are rejected.",
+    }
+    parallel_tool_calls = {
+        "const": True,
+        "description": "The model may return several tool calls at once; false is rejected.",
+    }
+    function_parameters = {
+        "type": "object",
+        "description": "JSON Schema object for the arguments. Defaults to an empty object schema.",
+        "additionalProperties": True,
+    }
+    function_strict = {"const": False, "description": "Strict schemas are not enforced; true is rejected."}
+    tool_name = {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}
     ignored_cap = {
         "description": (
             "Accepted for client compatibility and discarded, regardless of its value. "
@@ -865,13 +937,36 @@ def openapi_schemas() -> dict[str, Any]:
                 },
             ],
         },
+        "OpenAIResponseFunctionCall": {
+            "type": "object",
+            "required": ["type", "call_id", "name", "arguments"],
+            "properties": {
+                "type": {"const": "function_call"},
+                "call_id": {"type": "string"},
+                "name": tool_name,
+                "arguments": {"type": "string"},
+                "id": {"type": "string"},
+                "status": {"type": "string"},
+            },
+        },
+        "OpenAIResponseFunctionCallOutput": {
+            "type": "object",
+            "required": ["type", "call_id", "output"],
+            "properties": {
+                "type": {"const": "function_call_output"},
+                "call_id": {"type": "string"},
+                "output": {"type": "string", "description": "A string or an array of input_text parts."},
+                "id": {"type": "string"},
+                "status": {"type": "string"},
+            },
+        },
         "OpenAIResponseInputMessage": {
             "type": "object",
             "required": ["role", "content"],
             "description": (
                 "User messages accept ordered text/image parts or images alone. Other roles "
                 "accept text only; assistant parts use output_text, all others use input_text. "
-                "The final input message must have the user role."
+                "The input must end with a user message or a function_call_output item."
             ),
             "properties": {
                 "type": {"const": "message"},
@@ -889,13 +984,36 @@ def openapi_schemas() -> dict[str, Any]:
         },
         "OpenAIChatMessage": {
             "type": "object",
-            "required": ["role", "content"],
-            "description": "Only user messages accept image parts. Text and images retain their order.",
+            "required": ["role"],
+            "description": (
+                "Only user messages accept image parts. Text and images retain their order. "
+                "Assistant messages may carry tool_calls with null content; tool messages answer "
+                "an earlier call by tool_call_id. The last message must be a user or tool message."
+            ),
             "properties": {
-                "role": {"enum": ["system", "developer", "user", "assistant"]},
+                "role": {"enum": ["system", "developer", "user", "assistant", "tool"]},
                 "name": {"type": "string"},
+                "tool_call_id": {"type": "string"},
+                "tool_calls": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "function"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "type": {"const": "function"},
+                            "function": {
+                                "type": "object",
+                                "required": ["name", "arguments"],
+                                "properties": {"name": tool_name, "arguments": {"type": "string"}},
+                            },
+                        },
+                    },
+                },
                 "content": {
                     "oneOf": [
+                        {"type": "null"},
                         {"type": "string", "minLength": 1},
                         {
                             "type": "array", "minItems": 1,
@@ -967,11 +1085,35 @@ def openapi_schemas() -> dict[str, Any]:
                         {"type": "string", "minLength": 1},
                         {
                             "type": "array", "minItems": 1,
-                            "items": {"$ref": "#/components/schemas/OpenAIResponseInputMessage"},
+                            "items": {
+                                "oneOf": [
+                                    {"$ref": "#/components/schemas/OpenAIResponseInputMessage"},
+                                    {"$ref": "#/components/schemas/OpenAIResponseFunctionCall"},
+                                    {"$ref": "#/components/schemas/OpenAIResponseFunctionCallOutput"},
+                                ]
+                            },
                         },
                     ]
                 },
                 "instructions": {"type": "string"},
+                "tools": {
+                    "type": "array",
+                    "maxItems": 128,
+                    "items": {
+                        "type": "object",
+                        "required": ["type", "name"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "type": {"const": "function"},
+                            "name": tool_name,
+                            "description": {"type": "string"},
+                            "parameters": function_parameters,
+                            "strict": function_strict,
+                        },
+                    },
+                },
+                "tool_choice": tool_choice,
+                "parallel_tool_calls": parallel_tool_calls,
                 "stream": {"type": "boolean"},
                 "previous_response_id": {"type": "string"},
                 "reasoning": open_object,
@@ -999,6 +1141,31 @@ def openapi_schemas() -> dict[str, Any]:
                 "reasoning_effort": {"type": "string"},
                 "service_tier": {"type": "string"},
                 "response_format": open_object,
+                "tools": {
+                    "type": "array",
+                    "maxItems": 128,
+                    "items": {
+                        "type": "object",
+                        "required": ["type", "function"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "type": {"const": "function"},
+                            "function": {
+                                "type": "object",
+                                "required": ["name"],
+                                "additionalProperties": False,
+                                "properties": {
+                                    "name": tool_name,
+                                    "description": {"type": "string"},
+                                    "parameters": function_parameters,
+                                    "strict": function_strict,
+                                },
+                            },
+                        },
+                    },
+                },
+                "tool_choice": tool_choice,
+                "parallel_tool_calls": parallel_tool_calls,
                 "max_tokens": ignored_cap,
                 "max_completion_tokens": ignored_cap,
                 "metadata": {"type": "object", "additionalProperties": {"type": "string"}},

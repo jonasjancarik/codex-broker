@@ -27,6 +27,7 @@ from codex_broker.openai_protocol import (
     response_object,
     turn_id_from_response,
 )
+from codex_broker.scheduler_config import openai_tool_thread_params
 from codex_broker.services import BrokerHTTPServer, BrokerServices
 from test_broker import config_for, wait_turn
 
@@ -107,6 +108,8 @@ class OpenAICompatApiTests(unittest.TestCase):
         os.environ.pop("FAKE_CODEX_MALFORMED_TOKEN_USAGE", None)
         os.environ.pop("FAKE_CODEX_TURN_COMPLETED_ERROR", None)
         os.environ.pop("FAKE_CODEX_RESPONSE_SPLITS_JSON", None)
+        os.environ.pop("FAKE_CODEX_TOOL_CALLS_JSON", None)
+        os.environ.pop("FAKE_CODEX_TOOL_PREAMBLE", None)
 
     def test_models_use_openai_shape_and_aliases(self) -> None:
         models = self._request("GET", "/v1/models")
@@ -545,13 +548,13 @@ class OpenAICompatApiTests(unittest.TestCase):
                 {
                     "model": "gpt-compatible",
                     "input": "Hello",
-                    "tools": [],
+                    "tool_choice": "required",
                 },
             )
         self.assertEqual(unsupported.exception.code, 400)
         payload = json.loads(unsupported.exception.read().decode("utf-8"))
         self.assertEqual(payload["error"]["code"], "unsupported_parameter")
-        self.assertEqual(payload["error"]["param"], "tools")
+        self.assertEqual(payload["error"]["param"], "tool_choice")
 
     def test_native_and_compatibility_credentials_are_not_interchangeable(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as native_on_compat:
@@ -565,6 +568,328 @@ class OpenAICompatApiTests(unittest.TestCase):
                 api_key=COMPAT_KEY,
             )
         self.assertEqual(compat_on_native.exception.code, 401)
+
+    WEATHER_TOOL = {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Look up the weather.",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+        },
+    }
+    TWO_CALLS = [
+        {"id": "call_a", "name": "get_weather", "arguments": '{"city":"Prague"}'},
+        {"id": "call_b", "name": "get_weather", "arguments": '{"city":"Brno"}'},
+    ]
+
+    def test_chat_returns_tool_calls_and_isolates_builtin_tools(self) -> None:
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS)
+        os.environ["FAKE_CODEX_TOOL_PREAMBLE"] = "Checking both cities."
+        os.environ["FAKE_CODEX_EXPECT_THREAD_PARAMS"] = json.dumps(
+            {
+                "dynamicTools": [
+                    {
+                        "type": "function",
+                        "name": "get_weather",
+                        "description": "Look up the weather.",
+                        "inputSchema": self.WEATHER_TOOL["function"]["parameters"],
+                    }
+                ],
+                "experimentalRawEvents": True,
+                "environments": [],
+            }
+        )
+        completion = self._request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [{"role": "user", "content": "Weather in Prague and Brno?"}],
+                "tools": [self.WEATHER_TOOL],
+                "tool_choice": "auto",
+                "parallel_tool_calls": True,
+            },
+        )
+        choice = completion["choices"][0]
+        self.assertEqual(choice["finish_reason"], "tool_calls")
+        self.assertEqual(choice["message"]["content"], "Checking both cities.")
+        self.assertEqual(
+            choice["message"]["tool_calls"],
+            [
+                {"id": "call_a", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":"Prague"}'}},
+                {"id": "call_b", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":"Brno"}'}},
+            ],
+        )
+        self.assertEqual(completion["usage"]["total_tokens"], 12)
+
+    def test_chat_tool_results_are_replayed_into_a_fresh_thread(self) -> None:
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS)
+        os.environ["FAKE_CODEX_RESPONSE_TEXT"] = "Prague is sunny, Brno is rainy."
+        os.environ["FAKE_CODEX_REQUIRE_INJECT_BEFORE_TURN"] = "1"
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps({"input": []})
+        os.environ["FAKE_CODEX_EXPECT_INJECT_ITEMS"] = json.dumps(
+            {
+                "items": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Weather?"}]},
+                    {"type": "function_call", "call_id": "call_a", "name": "get_weather", "arguments": '{"city":"Prague"}'},
+                    {"type": "function_call", "call_id": "call_b", "name": "get_weather", "arguments": '{"city":"Brno"}'},
+                    {"type": "function_call_output", "call_id": "call_a", "output": "sunny"},
+                    {"type": "function_call_output", "call_id": "call_b", "output": "rainy"},
+                ]
+            }
+        )
+        try:
+            completion = self._request(
+                "POST",
+                "/v1/chat/completions",
+                {
+                    "model": "gpt-compatible",
+                    "messages": [
+                        {"role": "user", "content": "Weather?"},
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {"id": call["id"], "type": "function", "function": {"name": call["name"], "arguments": call["arguments"]}}
+                                for call in self.TWO_CALLS
+                            ],
+                        },
+                        {"role": "tool", "tool_call_id": "call_a", "content": "sunny"},
+                        {"role": "tool", "tool_call_id": "call_b", "content": [{"type": "text", "text": "rainy"}]},
+                    ],
+                    "tools": [self.WEATHER_TOOL],
+                },
+            )
+        finally:
+            os.environ.pop("FAKE_CODEX_RESPONSE_TEXT", None)
+        choice = completion["choices"][0]
+        self.assertEqual(choice["finish_reason"], "stop")
+        self.assertEqual(choice["message"]["content"], "Prague is sunny, Brno is rainy.")
+        self.assertNotIn("tool_calls", choice["message"])
+
+    def test_chat_stream_emits_tool_call_deltas(self) -> None:
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS)
+        streamed = self._request_text(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": [self.WEATHER_TOOL],
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+        )
+        chunks = [
+            json.loads(line.removeprefix("data: "))
+            for line in streamed.splitlines()
+            if line.startswith("data: {")
+        ]
+        deltas = [chunk["choices"][0]["delta"] for chunk in chunks if chunk["choices"]]
+        tool_deltas = [delta["tool_calls"][0] for delta in deltas if "tool_calls" in delta]
+        self.assertEqual(
+            tool_deltas,
+            [
+                {"index": 0, "id": "call_a", "type": "function", "function": {"name": "get_weather", "arguments": ""}},
+                {"index": 0, "function": {"arguments": '{"city":"Prague"}'}},
+                {"index": 1, "id": "call_b", "type": "function", "function": {"name": "get_weather", "arguments": ""}},
+                {"index": 1, "function": {"arguments": '{"city":"Brno"}'}},
+            ],
+        )
+        finishes = [chunk["choices"][0]["finish_reason"] for chunk in chunks if chunk["choices"]]
+        self.assertEqual(finishes[-1], "tool_calls")
+        self.assertEqual(chunks[-1]["usage"]["total_tokens"], 12)
+        self.assertTrue(streamed.rstrip().endswith("data: [DONE]"))
+
+    def test_official_sdk_runs_a_chat_tool_round_trip(self) -> None:
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS[:1])
+        client = OpenAI(base_url=f"{self.base_url}/v1", api_key=COMPAT_KEY)
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "Weather in Prague?"}]
+        stream = client.chat.completions.create(
+            model="gpt-compatible", messages=messages, tools=[self.WEATHER_TOOL], stream=True,
+        )
+        calls: dict[int, dict[str, str]] = {}
+        finish = None
+        for chunk in stream:
+            choice = chunk.choices[0]
+            finish = choice.finish_reason or finish
+            for delta in choice.delta.tool_calls or []:
+                call = calls.setdefault(delta.index, {"id": "", "name": "", "arguments": ""})
+                call["id"] = delta.id or call["id"]
+                call["name"] = (delta.function.name if delta.function else None) or call["name"]
+                call["arguments"] += (delta.function.arguments if delta.function else None) or ""
+        self.assertEqual(finish, "tool_calls")
+        self.assertEqual(calls, {0: {"id": "call_a", "name": "get_weather", "arguments": '{"city":"Prague"}'}})
+        messages.append(
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_a", "type": "function", "function": {"name": "get_weather", "arguments": calls[0]["arguments"]}}
+                ],
+            }
+        )
+        messages.append({"role": "tool", "tool_call_id": "call_a", "content": "sunny"})
+        final = client.chat.completions.create(model="gpt-compatible", messages=messages, tools=[self.WEATHER_TOOL])
+        self.assertEqual(final.choices[0].finish_reason, "stop")
+        self.assertEqual(final.choices[0].message.content, "hello")
+
+    def test_tool_call_falls_back_to_the_app_server_request_without_raw_items(self) -> None:
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS)
+        os.environ["FAKE_CODEX_OMIT_RAW_RESPONSE"] = "1"
+        completion = self._request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": [self.WEATHER_TOOL],
+            },
+        )
+        calls = completion["choices"][0]["message"]["tool_calls"]
+        self.assertEqual([call["id"] for call in calls], ["call_a"])
+        self.assertEqual(calls[0]["function"]["arguments"], '{"city":"Prague"}')
+
+    def test_tool_choice_none_withholds_tools_from_codex(self) -> None:
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS)
+        os.environ["FAKE_CODEX_EXPECT_THREAD_PARAMS"] = json.dumps({"dynamicTools": None, "environments": []})
+        completion = self._request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": [self.WEATHER_TOOL],
+                "tool_choice": "none",
+            },
+        )
+        self.assertEqual(completion["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(completion["choices"][0]["message"]["content"], "hello")
+
+    def test_responses_function_calls_round_trip_with_previous_response(self) -> None:
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS[:1])
+        tool = {"type": "function", **self.WEATHER_TOOL["function"]}
+        first = self._request(
+            "POST",
+            "/v1/responses",
+            {"model": "gpt-compatible", "input": "Weather in Prague?", "tools": [tool]},
+        )
+        self.assertEqual(first["status"], "completed")
+        self.assertEqual(first["tool_choice"], "auto")
+        self.assertEqual(first["tools"][0]["name"], "get_weather")
+        self.assertEqual(
+            first["output"],
+            [
+                {
+                    "id": "fc_call_a",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": "call_a",
+                    "name": "get_weather",
+                    "arguments": '{"city":"Prague"}',
+                }
+            ],
+        )
+        os.environ["FAKE_CODEX_REQUIRE_INJECT_BEFORE_TURN"] = "1"
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps({"input": []})
+        os.environ["FAKE_CODEX_EXPECT_INJECT_ITEMS"] = json.dumps(
+            {
+                "items": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Weather in Prague?"}]},
+                    {"type": "function_call", "call_id": "call_a", "name": "get_weather", "arguments": '{"city":"Prague"}'},
+                    {"type": "function_call_output", "call_id": "call_a", "output": "sunny"},
+                ]
+            }
+        )
+        second = self._request(
+            "POST",
+            "/v1/responses",
+            {
+                "model": "gpt-compatible",
+                "previous_response_id": first["id"],
+                "input": [{"type": "function_call_output", "call_id": "call_a", "output": "sunny"}],
+                "tools": [tool],
+            },
+        )
+        self.assertEqual(second["status"], "completed")
+        self.assertEqual(second["output"][0]["content"][0]["text"], "hello")
+
+        os.environ.pop("FAKE_CODEX_EXPECT_INJECT_ITEMS")
+        os.environ.pop("FAKE_CODEX_EXPECT_TURN_PARAMS")
+        os.environ.pop("FAKE_CODEX_REQUIRE_INJECT_BEFORE_TURN")
+        streamed = self._request_text(
+            "POST",
+            "/v1/responses",
+            {"model": "gpt-compatible", "input": "Weather in Prague?", "tools": [tool], "stream": True},
+        )
+        self.assertIn("event: response.function_call_arguments.done", streamed)
+        self.assertIn('"arguments":"{\\"city\\":\\"Prague\\"}"', streamed)
+        self.assertIn("event: response.completed", streamed)
+
+    def test_tool_requests_that_codex_cannot_honor_are_rejected(self) -> None:
+        def chat(**extra: Any) -> dict[str, Any]:
+            return {"model": "m", "messages": [{"role": "user", "content": "x"}], **extra}
+
+        tool = self.WEATHER_TOOL
+        cases = [
+            (chat(tools=[tool], tool_choice="required"), "unsupported_parameter", "tool_choice"),
+            (
+                chat(tools=[tool], tool_choice={"type": "function", "function": {"name": "get_weather"}}),
+                "unsupported_parameter",
+                "tool_choice",
+            ),
+            (chat(tools=[tool], parallel_tool_calls=False), "unsupported_parameter", "parallel_tool_calls"),
+            (
+                chat(tools=[{"type": "function", "function": {**tool["function"], "strict": True}}]),
+                "unsupported_parameter",
+                "tools.0.function.strict",
+            ),
+            (chat(tools=[{"type": "custom", "custom": {"name": "x"}}]), "unsupported_parameter", "tools.0.type"),
+            (chat(tools=[tool, tool]), "invalid_parameter", "tools.1.function.name"),
+            (
+                chat(tools=[{"type": "function", "function": {"name": "mcp__x"}}]),
+                "invalid_parameter",
+                "tools.0.function.name",
+            ),
+            (
+                {
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "x"},
+                        {"role": "assistant", "tool_calls": [
+                            {"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                        ]},
+                        {"role": "user", "content": "never mind"},
+                    ],
+                },
+                "invalid_parameter",
+                "messages",
+            ),
+        ]
+        for body, code, param in cases:
+            with self.subTest(param=param, code=code):
+                with self.assertRaises(OpenAIProtocolError) as raised:
+                    parse_chat_request(body)
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(raised.exception.param, param)
+        with self.assertRaises(urllib.error.HTTPError) as orphan:
+            self._request(
+                "POST",
+                "/v1/responses",
+                {"model": "gpt-compatible", "input": [{"type": "function_call_output", "call_id": "missing", "output": "x"}]},
+            )
+        self.assertEqual(orphan.exception.code, 400)
+        self.assertEqual(json.loads(orphan.exception.read())["error"]["code"], "invalid_parameter")
+
+    def test_bundle_bindings_keep_their_reviewed_tool_policy(self) -> None:
+        tools = [{"type": "function", "name": "f", "description": "", "inputSchema": {"type": "object"}}]
+        self.assertEqual(
+            openai_tool_thread_params(tools, isolate_builtin_tools=False),
+            {"dynamicTools": tools, "experimentalRawEvents": True},
+        )
+        isolated = openai_tool_thread_params([], isolate_builtin_tools=True)
+        self.assertEqual(isolated["environments"], [])
+        self.assertEqual(isolated["config"]["web_search"], "disabled")
+        self.assertNotIn("dynamicTools", isolated)
 
     def test_official_openai_sdk_parses_responses_chat_and_streams(self) -> None:
         client = OpenAI(
@@ -877,14 +1202,6 @@ class OpenAIProtocolTests(unittest.TestCase):
         with self.assertRaises(OpenAIProtocolError) as raised:
             parse_responses_request({"model": "m", "input": "x", "temperature": 0.2})
         self.assertEqual(raised.exception.code, "unsupported_parameter")
-        with self.assertRaises(OpenAIProtocolError):
-            parse_chat_request(
-                {
-                    "model": "m",
-                    "messages": [{"role": "user", "content": "x"}],
-                    "tools": [],
-                }
-            )
         with self.assertRaises(OpenAIProtocolError) as tool_message:
             parse_chat_request(
                 {
@@ -895,7 +1212,7 @@ class OpenAIProtocolTests(unittest.TestCase):
                     ],
                 }
             )
-        self.assertEqual(tool_message.exception.code, "unsupported_parameter")
+        self.assertEqual(tool_message.exception.code, "invalid_parameter")
 
     def test_completed_response_requires_raw_item_and_usage(self) -> None:
         turn = {

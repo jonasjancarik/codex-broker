@@ -278,6 +278,39 @@ def turn_params(
     return params
 
 
+# Built-in capabilities that act beyond the caller's functions. Codex 0.163.0 keys.
+_ISOLATED_TOOL_CONFIG: dict[str, Any] = {
+    "web_search": "disabled",
+    "features.multi_agent": False,
+    "features.multi_agent_v2": False,
+    "features.image_generation": False,
+    "features.apps": False,
+    "features.plugins": False,
+    "features.tool_suggest": False,
+    "features.code_mode": False,
+}
+
+
+def openai_tool_thread_params(
+    dynamic_tools: Iterable[dict[str, Any]],
+    *,
+    isolate_builtin_tools: bool,
+) -> dict[str, Any]:
+    """thread/start additions for OpenAI-compatible requests with caller-defined tools."""
+    params: dict[str, Any] = {}
+    tools = [dict(tool) for tool in dynamic_tools]
+    if tools:
+        params["dynamicTools"] = tools
+        # Raw items list every function call of a model response and mark its end.
+        params["experimentalRawEvents"] = True
+    if isolate_builtin_tools:
+        # No execution environment removes shell, file edits, image viewing, and
+        # permission requests; the config switches off hosted and delegation tools.
+        params["environments"] = []
+        params["config"] = dict(_ISOLATED_TOOL_CONFIG)
+    return params
+
+
 def codex_image_items(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Map unsupported low image detail on execution copies, preserving stored input."""
     result: list[dict[str, Any]] = []

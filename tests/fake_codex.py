@@ -15,6 +15,8 @@ server_responses: dict[int, dict[str, Any]] = {}
 next_thread = 1
 next_turn = 1
 injected_threads: set[str] = set()
+thread_tools: dict[str, set[str]] = {}
+thread_raw_events: dict[str, bool] = {}
 
 
 def expected_params_match(env_name: str, params: dict[str, Any]) -> str | None:
@@ -112,10 +114,47 @@ def handle_exec(args: list[str]) -> int:
     return 0
 
 
-def complete_turn(thread_id: str, turn_id: str) -> None:
+def request_dynamic_tools(thread_id: str, turn_id: str, request_base: int) -> None:
+    """Emulate a model response that calls caller-defined tools, then wait for an interrupt."""
+    calls = json.loads(os.environ["FAKE_CODEX_TOOL_CALLS_JSON"])
+    raw = thread_raw_events.get(thread_id) and os.environ.get("FAKE_CODEX_OMIT_RAW_RESPONSE") != "1"
+    preamble = os.environ.get("FAKE_CODEX_TOOL_PREAMBLE")
+    if preamble:
+        send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg1", "delta": preamble}})
+        if raw:
+            send({"method": "rawResponseItem/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {
+                "id": "msg1", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": preamble}],
+            }}})
+        send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": "msg1", "type": "agentMessage", "text": preamble}}})
+    if raw:
+        # Injected history is echoed without this turn id and must be ignored.
+        send({"method": "rawResponseItem/completed", "params": {"threadId": thread_id, "turnId": "", "item": {
+            "type": "function_call", "call_id": "call_history", "name": calls[0]["name"], "arguments": "{}",
+        }}})
+        for call in calls:
+            send({"method": "rawResponseItem/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {
+                "type": "function_call", "call_id": call["id"], "name": call["name"], "arguments": call["arguments"],
+            }}})
+    first = calls[0]
+    send({"id": request_base + 3, "method": "item/tool/call", "params": {
+        "threadId": thread_id, "turnId": turn_id, "callId": first["id"], "tool": first["name"],
+        "arguments": json.loads(first["arguments"]),
+    }})
+    if raw:
+        send({"method": "rawResponse/completed", "params": {"threadId": thread_id, "turnId": turn_id, "responseId": "resp_fake"}})
+    usage = {"totalTokens": 12, "inputTokens": 7, "cachedInputTokens": 2, "outputTokens": 5, "reasoningOutputTokens": 1}
+    send({"method": "thread/tokenUsage/updated", "params": {"threadId": thread_id, "turnId": turn_id, "tokenUsage": {
+        "total": usage, "last": usage, "modelContextWindow": 200000,
+    }}})
+
+
+def complete_turn(thread_id: str, turn_id: str, input_items: list[Any] | None = None) -> None:
     delay = float(os.environ.get("FAKE_CODEX_TURN_DELAY", "0.01"))
     request_base = 9000 + int(turn_id.rsplit("_", 1)[-1]) * 10
     send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id}}})
+    if os.environ.get("FAKE_CODEX_TOOL_CALLS_JSON") and thread_tools.get(thread_id) and input_items:
+        request_dynamic_tools(thread_id, turn_id, request_base)
+        return
     if os.environ.get("FAKE_CODEX_REQUEST_APPROVAL") == "1":
         request_server(
             "item/commandExecution/requestApproval",
@@ -398,6 +437,8 @@ def handle_app_server() -> int:
                 continue
             thread_id = f"thr_fake_{next_thread}"
             next_thread += 1
+            thread_tools[thread_id] = {str(tool.get("name")) for tool in params.get("dynamicTools") or []}
+            thread_raw_events[thread_id] = params.get("experimentalRawEvents") is True
             permission_profile = params.get("permissions")
             send(
                 {
@@ -513,7 +554,11 @@ def handle_app_server() -> int:
                     }
                 )
                 continue
-            threading.Thread(target=complete_turn, args=(thread_id, turn_id), daemon=True).start()
+            threading.Thread(
+                target=complete_turn,
+                args=(thread_id, turn_id, params.get("input")),
+                daemon=True,
+            ).start()
         elif method == "turn/steer":
             send({"id": request_id, "result": {"accepted": True}})
         elif method == "turn/interrupt":

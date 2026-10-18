@@ -1190,6 +1190,10 @@
           "model": {
             "type": "string"
           },
+          "parallel_tool_calls": {
+            "const": true,
+            "description": "The model may return several tool calls at once; false is rejected."
+          },
           "reasoning_effort": {
             "type": "string"
           },
@@ -1209,6 +1213,55 @@
           "stream_options": {
             "additionalProperties": true,
             "type": "object"
+          },
+          "tool_choice": {
+            "description": "Codex cannot force a tool call; required and named functions are rejected.",
+            "enum": [
+              "auto",
+              "none"
+            ]
+          },
+          "tools": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "function": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "additionalProperties": true,
+                      "description": "JSON Schema object for the arguments. Defaults to an empty object schema.",
+                      "type": "object"
+                    },
+                    "strict": {
+                      "const": false,
+                      "description": "Strict schemas are not enforced; true is rejected."
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "type": {
+                  "const": "function"
+                }
+              },
+              "required": [
+                "type",
+                "function"
+              ],
+              "type": "object"
+            },
+            "maxItems": 128,
+            "type": "array"
           }
         },
         "required": [
@@ -1218,10 +1271,13 @@
         "type": "object"
       },
       "OpenAIChatMessage": {
-        "description": "Only user messages accept image parts. Text and images retain their order.",
+        "description": "Only user messages accept image parts. Text and images retain their order. Assistant messages may carry tool_calls with null content; tool messages answer an earlier call by tool_call_id. The last message must be a user or tool message.",
         "properties": {
           "content": {
             "oneOf": [
+              {
+                "type": "null"
+              },
               {
                 "minLength": 1,
                 "type": "string"
@@ -1294,13 +1350,51 @@
               "system",
               "developer",
               "user",
-              "assistant"
+              "assistant",
+              "tool"
             ]
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "items": {
+              "properties": {
+                "function": {
+                  "properties": {
+                    "arguments": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "arguments"
+                  ],
+                  "type": "object"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "function"
+                }
+              },
+              "required": [
+                "id",
+                "function"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
           }
         },
         "required": [
-          "role",
-          "content"
+          "role"
         ],
         "type": "object"
       },
@@ -1430,7 +1524,17 @@
               },
               {
                 "items": {
-                  "$ref": "#/components/schemas/OpenAIResponseInputMessage"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/OpenAIResponseInputMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OpenAIResponseFunctionCall"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OpenAIResponseFunctionCallOutput"
+                    }
+                  ]
                 },
                 "minItems": 1,
                 "type": "array"
@@ -1448,6 +1552,10 @@
           },
           "model": {
             "type": "string"
+          },
+          "parallel_tool_calls": {
+            "const": true,
+            "description": "The model may return several tool calls at once; false is rejected."
           },
           "previous_response_id": {
             "type": "string"
@@ -1468,6 +1576,46 @@
           "text": {
             "additionalProperties": true,
             "type": "object"
+          },
+          "tool_choice": {
+            "description": "Codex cannot force a tool call; required and named functions are rejected.",
+            "enum": [
+              "auto",
+              "none"
+            ]
+          },
+          "tools": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "name": {
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                "parameters": {
+                  "additionalProperties": true,
+                  "description": "JSON Schema object for the arguments. Defaults to an empty object schema.",
+                  "type": "object"
+                },
+                "strict": {
+                  "const": false,
+                  "description": "Strict schemas are not enforced; true is rejected."
+                },
+                "type": {
+                  "const": "function"
+                }
+              },
+              "required": [
+                "type",
+                "name"
+              ],
+              "type": "object"
+            },
+            "maxItems": 128,
+            "type": "array"
           }
         },
         "required": [
@@ -1476,8 +1624,64 @@
         ],
         "type": "object"
       },
+      "OpenAIResponseFunctionCall": {
+        "properties": {
+          "arguments": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "type": {
+            "const": "function_call"
+          }
+        },
+        "required": [
+          "type",
+          "call_id",
+          "name",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "OpenAIResponseFunctionCallOutput": {
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "output": {
+            "description": "A string or an array of input_text parts.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "type": {
+            "const": "function_call_output"
+          }
+        },
+        "required": [
+          "type",
+          "call_id",
+          "output"
+        ],
+        "type": "object"
+      },
       "OpenAIResponseInputMessage": {
-        "description": "User messages accept ordered text/image parts or images alone. Other roles accept text only; assistant parts use output_text, all others use input_text. The final input message must have the user role.",
+        "description": "User messages accept ordered text/image parts or images alone. Other roles accept text only; assistant parts use output_text, all others use input_text. The input must end with a user message or a function_call_output item.",
         "properties": {
           "content": {
             "oneOf": [

@@ -29,6 +29,9 @@ from .security import SecretSanitizer
 from .util import clean_process_env, env_with, json_log, random_id, redact
 
 
+DYNAMIC_TOOL_CALL_METHOD = "item/tool/call"
+
+
 class AppServerError(RuntimeError):
     pass
 
@@ -542,6 +545,10 @@ class AppServerClient:
 
     def _handle_server_request(self, method: str, message_id: Any, params: dict[str, Any]) -> None:
         context, ambiguous = self._context_for_params(params)
+        if method == DYNAMIC_TOOL_CALL_METHOD and not ambiguous:
+            handler = getattr(context, "handle_dynamic_tool_request", None)
+            if handler and handler(message_id, params):
+                return
         if method in INTERACTION_REQUEST_METHODS:
             self._handle_interaction_request(method, message_id, params, context, ambiguous)
         else:
