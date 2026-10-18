@@ -49,8 +49,16 @@ reconstruct compatible output from completed agent messages.
 Codex runs dynamic tools one at a time and holds each `item/tool/call` until it
 is answered, so waiting for those requests alone would reveal only the first of
 several calls. The broker holds the requests, returns all collected calls,
-interrupts the turn, and then answers the held requests as handed off. Reviewed
-bundle and MCP tools are deployment policy, not caller-granted functions.
+interrupts the turn, and then answers the held requests as handed off.
+
+Models whose catalog entry selects code mode (all GPT-5.6 and GPT-6 models in
+the 0.163.0 catalog) see only `exec` and `wait`; they call dynamic tools from a
+script, so no raw `function_call` exists. An `item/tool/call` whose call id was
+not seen as a raw function call therefore stops the turn on its own. Codex sends
+`thread/tokenUsage/updated` only after tool results, so the broker records the
+usage carried by `rawResponse/completed` for the response that asked for the
+tools. Reviewed bundle and MCP tools are deployment policy, not caller-granted
+functions.
 
 The 0.146.0 Linux package does not include the former
 `codex-responses-api-proxy` executable. Codex Broker continues to own identity

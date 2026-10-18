@@ -277,7 +277,11 @@ the broker collects every call of that response from raw response items
 (`experimentalRawEvents`), persists them as `compat.tool_call` events, returns
 them with `finish_reason: "tool_calls"` (Chat) or `function_call` output items
 (Responses), interrupts the Codex turn, and answers any held `item/tool/call`
-request as handed off. The client's follow-up request runs on a fresh thread
+request as handed off. Code-mode models reach dynamic tools from an `exec`
+script, so no raw `function_call` names the call; the first `item/tool/call`
+whose call id was not seen as a raw function call stops the turn and is
+returned alone. Usage comes from `rawResponse/completed`, because
+`thread/tokenUsage/updated` only follows tool results. The client's follow-up request runs on a fresh thread
 that declares the same tools, injects the full history including
 `function_call` and `function_call_output` items with `thread/inject_items`,
 and starts a turn with empty input. The broker therefore keeps no pending tool
@@ -285,11 +289,14 @@ state between HTTP requests: abandoned follow-ups need no timeout or cleanup,
 edited histories are taken as sent, and restarts do not matter. The cost is
 replaying the conversation and losing prior reasoning items. `tool_choice: none`
 withholds the tools from Codex for that request. Requests that declare tools or
-replay tool calls on a binding without a bundle run with `environments: []`
-and per-thread config that disables web search, sub-agents, image generation,
-apps, plugins, tool suggestions, and code mode, so the model can only call the
-caller's functions; bindings with a reviewed bundle keep that bundle's tools
-and sandbox policy.
+replay tool calls on a binding without a bundle run with `environments: []` on
+both `thread/start` and `turn/start` (turn-level workspace roots would otherwise
+re-create the default environment) and per-thread config that disables the
+shell, unified exec, image viewing, goals, web search, sub-agents (including
+catalog-selected multi-agent v2 tools), user-input requests, image generation,
+apps, plugins, and tool suggestions, so the model can only call the caller's
+functions; bindings with a reviewed bundle keep that bundle's tools and sandbox
+policy.
 
 ## Events
 
