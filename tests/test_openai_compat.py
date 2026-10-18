@@ -110,6 +110,7 @@ class OpenAICompatApiTests(unittest.TestCase):
         os.environ.pop("FAKE_CODEX_RESPONSE_SPLITS_JSON", None)
         os.environ.pop("FAKE_CODEX_TOOL_CALLS_JSON", None)
         os.environ.pop("FAKE_CODEX_TOOL_PREAMBLE", None)
+        os.environ.pop("FAKE_CODEX_CODE_MODE", None)
 
     def test_models_use_openai_shape_and_aliases(self) -> None:
         models = self._request("GET", "/v1/models")
@@ -599,6 +600,7 @@ class OpenAICompatApiTests(unittest.TestCase):
                 "environments": [],
             }
         )
+        os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps({"environments": []})
         completion = self._request(
             "POST",
             "/v1/chat/completions",
@@ -748,6 +750,27 @@ class OpenAICompatApiTests(unittest.TestCase):
         calls = completion["choices"][0]["message"]["tool_calls"]
         self.assertEqual([call["id"] for call in calls], ["call_a"])
         self.assertEqual(calls[0]["function"]["arguments"], '{"city":"Prague"}')
+        self.assertIsNone(completion["usage"])
+
+    def test_code_mode_tool_request_is_returned_as_a_single_call(self) -> None:
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS)
+        os.environ["FAKE_CODEX_CODE_MODE"] = "1"
+        completion = self._request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": [self.WEATHER_TOOL],
+            },
+        )
+        choice = completion["choices"][0]
+        self.assertEqual(choice["finish_reason"], "tool_calls")
+        self.assertEqual(
+            choice["message"]["tool_calls"],
+            [{"id": "exec-call_a", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":"Prague"}'}}],
+        )
+        self.assertEqual(completion["usage"]["total_tokens"], 12)
 
     def test_tool_choice_none_withholds_tools_from_codex(self) -> None:
         os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS)

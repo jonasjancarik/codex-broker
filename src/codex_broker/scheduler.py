@@ -79,7 +79,7 @@ class OpenAICompatTurn:
     isolate_builtin_tools: bool = False
 
 
-# A returned tool call should carry the usage of the model response that made it.
+# A returned tool call carries the usage of the model response that made it.
 TOOL_STOP_USAGE_WAIT_SECONDS = 3.0
 TOOL_STOP_INTERRUPT_WAIT_SECONDS = 5.0
 
@@ -132,10 +132,11 @@ class BrokerTurnContext:
         self.tool_calls: list[dict[str, str]] = []
         self.pending_tool_requests: list[Any] = []
         self.tool_stop = False
-        self.raw_items_seen = 0
-        self.usage_count = 0
-        self.usage_count_at_tool_stop = 0
-        self.usage_event = threading.Event()
+        self.response_in_progress = False
+        self.responses_completed = 0
+        self.responses_completed_at_tool_stop = 0
+        self.last_response_usage: dict[str, Any] | None = None
+        self.response_event = threading.Event()
         self.codex_turn_done = threading.Event()
 
     def register_thread(self, codex_thread_id: str) -> None:
@@ -155,22 +156,21 @@ class BrokerTurnContext:
             # Raw items also echo injected history; only this turn's model output counts.
             return
         with self._lock:
+            if method == "rawResponse/completed":
+                # Ends one model response; its usage is what a returned tool call cost.
+                usage = params.get("usage")
+                self.last_response_usage = usage if isinstance(usage, dict) else None
+                self.response_in_progress = False
+                self.responses_completed += 1
+                self.response_event.set()
+                if self.tool_calls and not self.tool_stop:
+                    self._stop_for_tool_calls(response_completed=True)
+                return
             if self.tool_stop:
-                if method == "thread/tokenUsage/updated":
-                    self._note_usage(method, params, ambiguous=ambiguous)
                 return
             if method == "rawResponseItem/completed":
-                self.raw_items_seen += 1
+                self.response_in_progress = True
                 self._collect_tool_call(params.get("item"))
-            elif method == "thread/tokenUsage/updated":
-                self._note_usage(method, params, ambiguous=ambiguous)
-                if self.tool_calls:
-                    self._stop_for_tool_calls(usage_received=True)
-                return
-            elif method == "rawResponse/completed":
-                if self.tool_calls:
-                    self._stop_for_tool_calls(usage_received=False)
-                return
         event_type, payload = self._normalize(method, params)
         error_info: RuntimeErrorInfo | None = None
         if method == "turn/completed":
@@ -207,12 +207,6 @@ class BrokerTurnContext:
                 turn_id=self.turn_id,
             )
 
-    def _note_usage(self, method: str, params: dict[str, Any], *, ambiguous: bool) -> None:
-        event_type, payload = self._normalize(method, params)
-        self._append_event(event_type, payload, method, params, ambiguous=ambiguous)
-        self.usage_count += 1
-        self.usage_event.set()
-
     def _collect_tool_call(self, item: Any, *, arguments: Any = None) -> None:
         if not isinstance(item, dict) or item.get("type") != "function_call" or item.get("namespace"):
             return
@@ -226,10 +220,12 @@ class BrokerTurnContext:
             raw_arguments = json_dumps(raw_arguments if raw_arguments is not None else {})
         self.tool_calls.append({"callId": call_id, "name": str(name), "arguments": raw_arguments})
 
-    def _stop_for_tool_calls(self, *, usage_received: bool) -> None:
+    def _stop_for_tool_calls(self, *, response_completed: bool) -> None:
         self._flush_stream_turn()
         self.tool_stop = True
-        self.usage_count_at_tool_stop = self.usage_count - (1 if usage_received else 0)
+        # Wait for the end of the model response only while one is still streaming.
+        finished = response_completed or not self.response_in_progress
+        self.responses_completed_at_tool_stop = self.responses_completed - (1 if finished else 0)
         self.final_status = "completed"
         self._set_error_info(None)
         self.terminal_event_type = "turn.completed"
@@ -242,14 +238,17 @@ class BrokerTurnContext:
             if params.get("namespace") or params.get("tool") not in self.dynamic_tool_names:
                 return False
             self.pending_tool_requests.append(message_id)
-            if not self.tool_stop and not self.raw_items_seen:
-                # Without raw items, only this request names the call; return it alone.
+            call_id = params.get("callId")
+            if not self.tool_stop and not any(call["callId"] == call_id for call in self.tool_calls):
+                # No raw function_call names this call: the model reached the tool from a
+                # code-mode script (or raw items are missing). Codex runs such calls one at
+                # a time, so return this one alone.
                 self._collect_tool_call(
-                    {"type": "function_call", "call_id": params.get("callId"), "name": params.get("tool")},
+                    {"type": "function_call", "call_id": call_id, "name": params.get("tool")},
                     arguments=params.get("arguments"),
                 )
                 if self.tool_calls:
-                    self._stop_for_tool_calls(usage_received=False)
+                    self._stop_for_tool_calls(response_completed=False)
             return True
 
     def record_tool_requested(self, method: str, params: dict[str, Any], *, ambiguous: bool) -> None:
@@ -1168,6 +1167,10 @@ class TurnScheduler:
                 allow_internal_overlay=bool(overlay and cwd == overlay),
                 danger_full_access_authorized=danger_full_access_authorized,
             )
+            if compat_turn and compat_turn.isolate_builtin_tools:
+                # Turn-level workspace roots would otherwise re-create the default
+                # environment and bring shell and file tools back.
+                params["environments"] = []
             result = client.request("turn/start", params)
             turn_data = result.get("turn") if isinstance(result.get("turn"), dict) else {}
             if turn_data.get("id"):
@@ -1271,15 +1274,27 @@ class TurnScheduler:
 
     def _return_tool_calls(self, client: AppServerClient, context: BrokerTurnContext, codex_thread_id: str) -> None:
         """Hand the model's tool calls to the caller and end the Codex turn that requested them."""
+        # A code-mode script can ask for a tool before the model response has ended.
         deadline = time.monotonic() + TOOL_STOP_USAGE_WAIT_SECONDS
-        while context.usage_count <= context.usage_count_at_tool_stop and time.monotonic() < deadline:
-            context.usage_event.clear()
-            if context.usage_count > context.usage_count_at_tool_stop:
-                break
-            context.usage_event.wait(max(0.0, deadline - time.monotonic()))
+        while time.monotonic() < deadline:
+            with context._lock:
+                if context.responses_completed > context.responses_completed_at_tool_stop:
+                    break
+                context.response_event.clear()
+            context.response_event.wait(max(0.0, deadline - time.monotonic()))
         with context._lock:
             calls = list(context.tool_calls)
             pending = list(context.pending_tool_requests)
+            usage = context.last_response_usage
+        if usage is not None:
+            # thread/tokenUsage/updated would only follow the tool results.
+            context._append_event(
+                "compat.response.usage",
+                {"threadId": codex_thread_id, "turnId": context.codex_turn_id, "tokenUsage": {"last": usage}},
+                "rawResponse/completed",
+                {"usage": usage},
+                ambiguous=False,
+            )
         for call in calls:
             context._append_event(TOOL_CALL_EVENT, dict(call), "item/tool/call", dict(call), ambiguous=False)
         params: dict[str, Any] = {"threadId": codex_thread_id}

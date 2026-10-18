@@ -280,9 +280,16 @@ def turn_params(
 
 # Built-in capabilities that act beyond the caller's functions. Codex 0.163.0 keys.
 _ISOLATED_TOOL_CONFIG: dict[str, Any] = {
+    # Environment-free threads and turns already drop these; keep them off regardless.
+    "features.shell_tool": False,
+    "features.unified_exec": False,
+    "features.view_image": False,
+    "features.goals": False,
     "web_search": "disabled",
     "features.multi_agent": False,
-    "features.multi_agent_v2": False,
+    # Models whose catalog entry selects multi-agent v2 ignore the feature flag.
+    "features.multi_agent_v2.disable_native_tools": True,
+    "tools.experimental_request_user_input.enabled": False,
     "features.image_generation": False,
     "features.apps": False,
     "features.plugins": False,
@@ -305,7 +312,8 @@ def openai_tool_thread_params(
         params["experimentalRawEvents"] = True
     if isolate_builtin_tools:
         # No execution environment removes shell, file edits, image viewing, and
-        # permission requests; the config switches off hosted and delegation tools.
+        # permission requests; turn/start repeats it. The config switches off the
+        # same tools again plus hosted, delegation, and user-input tools.
         params["environments"] = []
         params["config"] = dict(_ISOLATED_TOOL_CONFIG)
     return params

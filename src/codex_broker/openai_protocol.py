@@ -328,10 +328,11 @@ def turn_id_from_chat(completion_id: str) -> str:
 def response_object(turn: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     compat = compatibility_metadata(turn, "responses")
     status = response_status(str(turn["status"]))
-    output = public_output_items(events) + [response_function_call(call) for call in tool_calls(events)]
+    calls = tool_calls(events)
+    output = public_output_items(events) + [response_function_call(call) for call in calls]
     if status == "completed" and not output:
         raise server_error("Codex completed without a compatible response output item.")
-    usage = response_usage(events, required=status == "completed")
+    usage = response_usage(events, required=status == "completed" and not calls)
     created = _unix_timestamp(str(turn["created_at"]))
     completed = _unix_timestamp(str(turn["completed_at"])) if turn.get("completed_at") else None
     error: dict[str, Any] | None = None
@@ -392,8 +393,8 @@ def chat_completion_object(turn: dict[str, Any], events: list[dict[str, Any]]) -
         raise server_error("The completion failed.")
     text = output_text(events)
     calls = tool_calls(events)
-    usage = response_usage(events, required=True)
-    assert usage is not None
+    # Codex reports no usage for a tool call when raw response items are unavailable.
+    usage = response_usage(events, required=not calls)
     message: dict[str, Any] = {
         "role": "assistant",
         "content": text if text or not calls else None,
@@ -415,15 +416,19 @@ def chat_completion_object(turn: dict[str, Any], events: list[dict[str, Any]]) -
                 "finish_reason": "tool_calls" if calls else "stop",
             }
         ],
-        "usage": {
-            "prompt_tokens": usage["input_tokens"],
-            "completion_tokens": usage["output_tokens"],
-            "total_tokens": usage["total_tokens"],
-            "prompt_tokens_details": usage["input_tokens_details"],
-            "completion_tokens_details": usage["output_tokens_details"],
-        },
+        "usage": chat_usage(usage) if usage is not None else None,
         "service_tier": compat.get("serviceTier") or "default",
         "system_fingerprint": None,
+    }
+
+
+def chat_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "prompt_tokens": usage["input_tokens"],
+        "completion_tokens": usage["output_tokens"],
+        "total_tokens": usage["total_tokens"],
+        "prompt_tokens_details": usage["input_tokens_details"],
+        "completion_tokens_details": usage["output_tokens_details"],
     }
 
 

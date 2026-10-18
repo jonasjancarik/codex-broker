@@ -131,21 +131,28 @@ def request_dynamic_tools(thread_id: str, turn_id: str, request_base: int) -> No
         send({"method": "rawResponseItem/completed", "params": {"threadId": thread_id, "turnId": "", "item": {
             "type": "function_call", "call_id": "call_history", "name": calls[0]["name"], "arguments": "{}",
         }}})
+    code_mode = os.environ.get("FAKE_CODEX_CODE_MODE") == "1"
+    if raw and code_mode:
+        # Code-mode models call tools from one exec script instead of function calls.
+        send({"method": "rawResponseItem/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {
+            "type": "custom_tool_call", "call_id": "call_exec", "name": "exec", "input": "await tools.get_weather()",
+        }}})
+    elif raw:
         for call in calls:
             send({"method": "rawResponseItem/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {
                 "type": "function_call", "call_id": call["id"], "name": call["name"], "arguments": call["arguments"],
             }}})
     first = calls[0]
     send({"id": request_base + 3, "method": "item/tool/call", "params": {
-        "threadId": thread_id, "turnId": turn_id, "callId": first["id"], "tool": first["name"],
-        "arguments": json.loads(first["arguments"]),
+        "threadId": thread_id, "turnId": turn_id, "callId": f"exec-{first['id']}" if code_mode else first["id"],
+        "tool": first["name"], "arguments": json.loads(first["arguments"]),
     }})
-    if raw:
-        send({"method": "rawResponse/completed", "params": {"threadId": thread_id, "turnId": turn_id, "responseId": "resp_fake"}})
     usage = {"totalTokens": 12, "inputTokens": 7, "cachedInputTokens": 2, "outputTokens": 5, "reasoningOutputTokens": 1}
-    send({"method": "thread/tokenUsage/updated", "params": {"threadId": thread_id, "turnId": turn_id, "tokenUsage": {
-        "total": usage, "last": usage, "modelContextWindow": 200000,
-    }}})
+    if raw:
+        send({"method": "rawResponse/completed", "params": {
+            "threadId": thread_id, "turnId": turn_id, "responseId": "resp_fake", "usage": usage,
+        }})
+    # Codex reports thread usage only after tool results, which never arrive here.
 
 
 def complete_turn(thread_id: str, turn_id: str, input_items: list[Any] | None = None) -> None:

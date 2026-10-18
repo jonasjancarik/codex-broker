@@ -15,6 +15,7 @@ from .openai_protocol import (
     chat_completion_object,
     chat_id_from_turn,
     chat_tool_call,
+    chat_usage,
     compatibility_metadata,
     invalid,
     is_terminal,
@@ -338,11 +339,15 @@ def _previous_history(services: Any, binding: OpenAICompatBinding, response_id: 
 
 
 def _history_output_items(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Replayable model output: assistant messages, reasoning, then returned tool calls."""
+    """Replayable model output: assistant messages, then returned tool calls.
+
+    Reasoning items are left out: they belong to the exact items the model produced,
+    which a returned tool call can replace (for example a code-mode script).
+    """
     items = [
         item
         for item in raw_output_items(events)
-        if item.get("type") == "reasoning" or (item.get("type") == "message" and item.get("role") == "assistant")
+        if item.get("type") == "message" and item.get("role") == "assistant"
     ]
     items.extend(
         {"type": "function_call", "call_id": call["callId"], "name": call["name"], "arguments": call["arguments"]}
@@ -610,26 +615,19 @@ def _stream_chat(
                     return
                 if include_usage:
                     try:
-                        usage = response_usage(_turn_events(handler.broker, binding, turn), required=True)
+                        events = _turn_events(handler.broker, binding, turn)
+                        usage = response_usage(events, required=not tool_call_count)
                     except OpenAIProtocolError as exc:
                         _write_data(handler, exc.payload())
                         _finish_sse(handler)
                         return
-                    assert usage is not None
-                    usage_payload = {
-                        "prompt_tokens": usage["input_tokens"],
-                        "completion_tokens": usage["output_tokens"],
-                        "total_tokens": usage["total_tokens"],
-                        "prompt_tokens_details": usage["input_tokens_details"],
-                        "completion_tokens_details": usage["output_tokens_details"],
-                    }
                     payload = {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model,
                         "choices": [],
-                        "usage": usage_payload,
+                        "usage": chat_usage(usage) if usage is not None else None,
                     }
                     if not _write_data(handler, payload):
                         return
