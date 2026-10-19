@@ -10,3 +10,7 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 examples/secrets/codex_broker_key
+
+# Deployment-specific Compose settings and the files they mount.
+compose.override.yaml
+secrets/

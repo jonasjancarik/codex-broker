@@ -9,3 +9,7 @@ __pycache__
 *.pyc
 .pytest_cache
 .ruff_cache
+.local
+compose.override.yaml
+secrets
+examples/secrets/codex_broker_key

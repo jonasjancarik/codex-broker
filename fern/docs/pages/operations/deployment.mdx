@@ -127,6 +127,69 @@ Codex app-server children start with a scrubbed process environment. Secret-look
 CODEX_BROKER_PASSTHROUGH_ENV=ESTF_ARCHIVER_API_URL,ESTF_ARCHIVER_API_KEY
 ```
 
+## Deployment-specific settings
+
+Keep settings that belong to one deployment out of the tracked Compose files.
+`compose.yaml` changes between releases, so local edits to it conflict with
+`git pull`. Put your keys, compatibility bindings, owner-to-account mappings
+and similar settings in a `compose.override.yaml` next to it, and keep the
+files it mounts in `secrets/`. The repository ignores both, for git and for
+the Docker build context.
+
+```yaml
+# compose.override.yaml: settings for this deployment only
+services:
+  codex-broker:
+    environment:
+      CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE: /run/secrets/openai_compat_bindings
+      CODEX_BROKER_AUTH_PRINCIPAL_MAP_JSON: '{"product-a": "shared-codex"}'
+      CODEX_BROKER_OPERATOR_KEY_FILE: /run/secrets/codex_broker_operator_key
+    secrets:
+      - openai_compat_bindings
+      - codex_broker_operator_key
+
+secrets:
+  codex_broker_key:
+    file: ./secrets/codex_broker_key
+  openai_compat_bindings:
+    file: ./secrets/openai_compat_bindings.json
+  codex_broker_operator_key:
+    file: ./secrets/codex_broker_operator_key
+```
+
+Compose merges lists such as `secrets` and `environment`, so the override adds
+to the base file rather than replacing it. Redefining `codex_broker_key` under
+the top-level `secrets` replaces the development key from `examples/secrets/`.
+
+Compose loads `compose.override.yaml` automatically only when you pass no `-f`
+options. The commands in this guide always pass `-f`, so list it last:
+
+```bash
+docker compose -p codex-broker \
+  -f compose.yaml \
+  -f compose.local.yaml \
+  -f compose.override.yaml \
+  up --build -d --wait codex-broker
+```
+
+Check the merged result with `config` before starting the service.
+
+### Recreate a running broker with the same files
+
+Every later `up`, `down` or `logs` command needs the same project name and the
+same `-f` list as the command that started the container. Leaving a file out
+silently drops its settings when the container is recreated. Docker records
+the original list on the container:
+
+```bash
+docker inspect codex-broker-codex-broker-1 \
+  --format '{{index .Config.Labels "com.docker.compose.project"}}: {{index .Config.Labels "com.docker.compose.project.config_files"}}'
+```
+
+Before recreating a container that is serving traffic, check
+`codex_broker_active_turns` and `codex_broker_queued_turns` on `/metrics`.
+A restart interrupts any turn in progress.
+
 ## Configuration profiles
 
 Set `CODEX_BROKER_CONFIG_PROFILES_JSON` or `CODEX_BROKER_CONFIG_PROFILES_FILE` to define named runtime and policy profiles. API requests select one with `configProfile`.
