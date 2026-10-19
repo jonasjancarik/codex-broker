@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Codex Broker Status</title>
+  <link rel="stylesheet" href="/admin/app.css">
+  <script src="/admin/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Codex Broker</span>
+      <span class="version" id="version"></span>
+    </div>
+    <nav class="tabs" id="tabs" hidden aria-label="Sections">
+      <button type="button" data-tab="overview" aria-current="page">Overview</button>
+      <button type="button" data-tab="owners">Owners</button>
+      <button type="button" data-tab="turns">Turns</button>
+      <button type="button" data-tab="processes">App Servers</button>
+      <button type="button" data-tab="audit">Audit log</button>
+    </nav>
+    <div class="topbar-actions" id="session-actions" hidden>
+      <button type="button" class="ghost" id="refresh">Refresh</button>
+      <button type="button" class="ghost" id="sign-out">Sign out</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="sign-in" class="sign-in" hidden>
+      <h1>Sign in to the status page</h1>
+      <p>Enter the operator key configured in <code>CODEX_BROKER_OPERATOR_KEY_FILE</code>. It is kept only in this browser tab and forgotten when you close it.</p>
+      <form id="sign-in-form">
+        <label for="operator-key">Operator key</label>
+        <input id="operator-key" type="password" autocomplete="current-password" required>
+        <button type="submit">Sign in</button>
+        <p class="form-error" id="sign-in-error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section id="view" aria-live="polite"></section>
+  </main>
+</body>
+</html>
