@@ -68,6 +68,8 @@ The implementation uses the Python standard library HTTP server and `subprocess`
 | `src/codex_broker/__main__.py` | Console entry point. |
 | `src/codex_broker/config.py` | Environment parsing and derived filesystem paths. |
 | `src/codex_broker/http_api.py` | HTTP routes, auth header checks, readiness, metrics, SSE, OpenAPI. |
+| `src/codex_broker/admin_api.py` | Operator-key-only routes for the read-only `/admin` status page and its static files. |
+| `src/codex_broker/state_admin.py` | Cross-owner, content-free SQLite queries behind the status page. |
 | `src/codex_broker/openai_api.py` | Compatible routing, synchronous assembly, Responses SSE, and Chat Completions SSE. |
 | `src/codex_broker/openai_protocol.py` | Strict compatible request parsing, OpenAI objects and errors, id mapping, and durable output/usage reconstruction. |
 | `src/codex_broker/openai_auth.py` | Digest-only compatibility-key authentication and immutable caller bindings. |
@@ -232,11 +234,19 @@ that select server-owned identity and policy bindings. Neither credential is
 accepted on the other's route set, and neither replaces the upstream Codex
 credential stored in the selected auth profile.
 
+The optional operator key opens only the read-only status page under `/admin`.
+It is the one credential that can see activity across all owners, so it is
+kept apart from the others: the broker refuses to start if it matches any of
+them, rejects it on every non-admin route, and accepts nothing else on admin
+routes. Admin queries select explicit columns and never read turn input, event
+payloads or interaction bodies, and owners appear only as HMAC fingerprints.
+
 Main controls:
 
 - broker-key authentication for product routes
 - digest-only compatibility-key authentication with immutable server-side bindings
 - strict separation between native, compatibility, and upstream credentials
+- a separate, read-only operator key for the cross-owner status page
 - owner-scoped broker-state isolation and auth-principal/profile auth-home isolation
 - HMAC-derived owner/principal paths and hashes in logs
 - scrubbed child process environments

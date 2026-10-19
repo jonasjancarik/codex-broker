@@ -289,6 +289,7 @@ Core endpoints:
 - `GET /healthz`
 - `GET /readyz`
 - `GET /metrics`
+- `GET /admin` (read-only status page; enabled by `CODEX_BROKER_OPERATOR_KEY_FILE`)
 - `GET /openapi.json`
 - `GET /v1/models`
 - `GET /v1/models/{model}`

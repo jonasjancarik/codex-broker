@@ -115,6 +115,10 @@ its path. A regular authenticated request must also include that value in
 `X-Codex-Broker-Danger-Full-Access-Key`; do not distribute this key to browser
 clients or ordinary workload callers.
 
+To enable the [status page](#status-page), mount a separate operator secret
+and set `CODEX_BROKER_OPERATOR_KEY_FILE` to its path. Give it only to the
+people who operate the broker; it does not let them run turns.
+
 Do not pass auth files, API keys, or access tokens as bundle content. Codex credentials are stored under hashed auth-principal/profile paths in `/data/auth`.
 
 Codex app-server children start with a scrubbed process environment. Secret-looking variables are not passed through by default. If a reviewed deployment needs a helper inside Codex to read specific environment variables, set `CODEX_BROKER_PASSTHROUGH_ENV` to exact variable names:
@@ -492,6 +496,58 @@ for both children to start and finish cleanly.
 - Pending interactions are marked failed with fallback responses during restart recovery.
 - During shutdown, `interrupt` interrupts active turns.
 - With `drain`, the broker rejects new turns, waits for accepted work, then interrupts leftovers.
+
+## Status page
+
+When `CODEX_BROKER_OPERATOR_KEY_FILE` is set, the broker serves a read-only
+status page at `/admin`. It shows readiness and sandbox health, live turn and
+App Server counters, every owner's activity and Codex sign-in status, recent
+turns with their errors, App Server process history, and the audit log.
+
+Create the key and mount it like the other secrets:
+
+```bash
+openssl rand -base64 32 > secrets/codex_broker_operator_key
+```
+
+```yaml
+services:
+  codex-broker:
+    environment:
+      CODEX_BROKER_OPERATOR_KEY_FILE: /run/secrets/codex_broker_operator_key
+    secrets:
+      - codex_broker_key
+      - codex_broker_operator_key
+
+secrets:
+  codex_broker_operator_key:
+    file: ./secrets/codex_broker_operator_key
+```
+
+Open `http://<broker>/admin` and enter the key. The page keeps it in the
+browser tab's session storage and sends it as a bearer token; closing the tab
+or choosing **Sign out** forgets it. The page itself and its script and style
+files contain no data and load without the key. Every `/admin/api/` request
+requires it, and no other key is accepted there.
+
+The broker stores only HMAC fingerprints of owner IDs, so the page lists owners
+by fingerprint. To find a specific owner, enter the owner ID the host app uses
+in **Find an owner by ID**; the broker computes the fingerprint and does not
+store or log the ID.
+
+The status page never returns prompts, model output, event payloads,
+approval or question bodies, or secrets. Stored error messages and audit
+details pass through the same sanitizer as other broker output.
+
+The broker is an internal service, and the status page should stay internal
+too. If operators reach it from outside the private network, put it behind a
+reverse proxy or an access gateway such as Cloudflare Access rather than
+exposing `/admin` directly.
+
+The JSON endpoints under `/admin/api/` (`overview`, `owners`,
+`owners/{ownerHash}`, `owners/lookup`, `turns`, `processes`, `audit`) back the
+page. They are not part of the public OpenAPI document or the generated SDK,
+and their response shapes may change between releases.
 
 ## Observability
 

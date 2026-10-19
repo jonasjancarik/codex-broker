@@ -140,6 +140,7 @@ the profile home. The child process environment is otherwise scrubbed.
 | `CODEX_BROKER_MANAGED_NETWORK_DOMAINS` | empty | CSV allowlist for command traffic from the managed workspace-write profile. A non-empty value enables Codex's network proxy; use `*` only for products that must fetch arbitrary public URLs. The read-only profile remains offline. |
 | `CODEX_BROKER_MANAGED_NETWORK_ALLOW_LOCAL_BINDING` | `false` | Permits allowlisted hostnames that resolve to local/private addresses. Requires a non-empty managed network domain allowlist; keep it false unless the product intentionally calls a local sidecar or host bridge. |
 | `CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE` | unset | File containing the separate key required to authorize `danger-full-access` on a request. The key is never accepted from a regular config profile or option. |
+| `CODEX_BROKER_OPERATOR_KEY_FILE` | unset | File containing the key for the read-only status page at `/admin` and its `/admin/api/` endpoints. When unset, every `/admin` path returns 404. The key must differ from the internal, danger-full-access and OpenAI-compatible keys; startup fails otherwise. The operator key is rejected on every other route. |
 
 For user-input prompts, Codex may provide `autoResolutionMs`; the broker uses the smaller positive value between that prompt timeout and `CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS`.
 

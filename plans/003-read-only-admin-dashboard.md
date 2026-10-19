@@ -21,6 +21,7 @@
 - **Depends on**: none
 - **Category**: operations / observability
 - **Planned at**: commit `94cc4a6`, 2026-10-19
+- **Completed**: 2026-10-19
 
 ## Why this matters
 
