@@ -91,6 +91,10 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
           where idempotency_key is not null;
         create index if not exists idx_turn_owner_turn
           on turns(owner_hash, turn_id);
+        create index if not exists idx_turns_created_at
+          on turns(created_at);
+        create index if not exists idx_turns_status_created_at
+          on turns(status, created_at);
         create table if not exists events (
           id integer primary key autoincrement,
           owner_hash text not null,

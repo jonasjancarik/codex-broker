@@ -4,7 +4,8 @@ import os
 import shutil
 import signal
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from typing import Any
@@ -44,6 +45,7 @@ class BrokerServices:
     openai_auth: OpenAICompatAuth
     sanitizer: SecretSanitizer
     sandbox_probe: SandboxProbe
+    started_at: float = field(default_factory=time.time)
 
     @classmethod
     def build(cls, config: BrokerConfig) -> "BrokerServices":
@@ -73,6 +75,7 @@ class BrokerServices:
                 config.internal_key or "",
                 config.owner_hash_secret or "",
                 config.danger_full_access_key or "",
+                config.operator_key or "",
                 *(os.environ.get(name, "") for name in config.codex_passthrough_env),
             ),
         )

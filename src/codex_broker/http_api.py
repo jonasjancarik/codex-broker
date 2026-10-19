@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, account_api, auth_api, openai_api
+from . import __version__, account_api, admin_api, auth_api, openai_api
 from .app_server import AppServerError
 from .bundles import BundleError
 from .config import BrokerConfig
@@ -25,6 +25,8 @@ from .util import ensure_dir, json_dumps, json_log
 def metric_path_template(path: str) -> str:
     if path in {"/healthz", "/readyz", "/metrics", "/openapi.json"}:
         return path.strip("/") or "root"
+    if admin_api.is_admin_path(path):
+        return admin_api.admin_metric_path(path)
     segments = [part for part in path.strip("/").split("/") if part]
     if segments[:2] == ["v1", "models"]:
         return "v1/models/model" if len(segments) > 2 else "v1/models"
@@ -83,6 +85,8 @@ class BrokerHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/readyz":
                 self._readyz()
+                return
+            if admin_api.handle_admin_route(self, method, path, query):
                 return
             if openai_api.handle_openai_route(self, method, path, query):
                 return
@@ -320,6 +324,10 @@ class BrokerHandler(BaseHTTPRequestHandler):
             self.broker.state.wait_for_events(min(max(10 - (now - last_heartbeat), 0.05), 1.0))
 
     def _readyz(self) -> None:
+        report = self._readiness()
+        self._json(report, HTTPStatus.OK if report["status"] == "ready" else HTTPStatus.SERVICE_UNAVAILABLE)
+
+    def _readiness(self) -> dict[str, Any]:
         errors: list[str] = []
         if not self.broker.state.ping():
             errors.append("state store unavailable")
@@ -347,15 +355,11 @@ class BrokerHandler(BaseHTTPRequestHandler):
             and sandbox_result.status != "healthy"
         ):
             errors.append("The command sandbox could not start.")
-        status = HTTPStatus.OK if not errors else HTTPStatus.SERVICE_UNAVAILABLE
-        self._json(
-            {
-                "status": "ready" if not errors else "not_ready",
-                "errors": errors,
-                "sandboxPreflight": sandbox_result.public(),
-            },
-            status,
-        )
+        return {
+            "status": "ready" if not errors else "not_ready",
+            "errors": errors,
+            "sandboxPreflight": sandbox_result.public(),
+        }
 
     @staticmethod
     def _readable_dir(path: Path) -> bool:
@@ -372,13 +376,22 @@ class BrokerHandler(BaseHTTPRequestHandler):
         self.wfile.write(body.encode("utf-8"))
 
     def _authorized(self) -> bool:
+        auth = self.headers.get("Authorization", "")
+        bearer = auth[len("Bearer ") :] if auth.startswith("Bearer ") else None
+        header_key = self.headers.get("X-Codex-Broker-Key")
+        operator_key = self.broker.config.operator_key
+        if operator_key and any(
+            presented is not None and secrets.compare_digest(presented.encode("utf-8"), operator_key.encode("utf-8"))
+            for presented in (bearer, header_key)
+        ):
+            return False
         key = self.broker.config.internal_key
         if not key:
             return self.broker.config.allow_unauthenticated
-        auth = self.headers.get("Authorization", "")
-        if auth == f"Bearer {key}":
-            return True
-        return self.headers.get("X-Codex-Broker-Key") == key
+        return any(
+            presented is not None and secrets.compare_digest(presented.encode("utf-8"), key.encode("utf-8"))
+            for presented in (bearer, header_key)
+        )
 
     def _danger_full_access_authorized(self) -> bool:
         expected = self.broker.config.danger_full_access_key
