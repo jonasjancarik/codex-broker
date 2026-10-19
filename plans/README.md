@@ -11,6 +11,7 @@ done.
 |---|---|---|---|---|---|
 | 001 | Expose a verified OpenAI-compatible API façade | P1 | L | — | DONE |
 | 002 | Protect broker credentials and deliver secret-safe runtime events | P0 | L | — | DONE |
+| 003 | Add a read-only operator dashboard | P2 | M | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale — finding fixed independently or approach
@@ -27,6 +28,10 @@ abandoned)
   Moby seccomp v0.1.0 policy. The real no-model Bubblewrap canary passes through
   both the direct Docker command and the example Compose service. Broad
   `seccomp=unconfined`, privileged mode, and `CAP_SYS_ADMIN` remain rejected.
+
+- Plan 003 has no plan dependencies. Its operator key must stay separate from
+  the host, danger-full-access and OpenAI-compatible keys, and its endpoints
+  must never return conversation content or raw owner IDs.
 
 ## Findings considered and rejected
 
@@ -50,3 +55,6 @@ abandoned)
   use the existing bundle field.
 - Store both sanitized and uncensored event copies in Plan 002: deferred until
   there is a separate encrypted/admin-only storage and retention design.
+- Store owner display names for the operator dashboard: rejected because the
+  broker deliberately keeps only HMAC owner hashes. Operators find a known
+  owner through a server-side lookup instead.
