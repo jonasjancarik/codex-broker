@@ -95,7 +95,17 @@ Publishing uses the configured `instances` entry in `fern/docs.yml`:
 pnpm docs:publish
 ```
 
-For CI, create a Fern token, store it as `FERN_TOKEN`, then run `pnpm docs:check` and `pnpm docs:publish`.
+The `docs` job in `.github/workflows/docker-publish.yml` publishes the site
+automatically whenever a `v*` release tag is pushed. It needs a `FERN_TOKEN`
+repository secret: create one with `npx fern-api@5.44.6 token` while logged in
+to a member of the `jonasjancarik` Fern organization, and add it under the
+repository's **Settings → Secrets and variables → Actions**. Without the
+secret, the job fails with a message saying so; the Docker image is still
+built and published.
+
+Run `pnpm docs:publish` by hand to publish between releases. Fern asks for
+confirmation before changing the production site; in a non-interactive shell,
+set `CI=true` to skip that prompt.
 
 ## Writing rules
 

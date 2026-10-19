@@ -51,6 +51,33 @@ jobs:
             -f compose.local.yaml \
             config >/dev/null
 
+  # Publish the Fern docs site for each release tag. Requires a FERN_TOKEN
+  # repository secret created with `fern token`.
+  docs:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          prune-cache: true
+      - name: Publish docs to Fern
+        env:
+          FERN_TOKEN: ${{ secrets.FERN_TOKEN }}
+        run: |
+          if [ -z "$FERN_TOKEN" ]; then
+            echo "::error::FERN_TOKEN is not set; add it as a repository secret to publish docs."
+            exit 1
+          fi
+          uv run python scripts/export_openapi.py
+          npx -y fern-api@5.44.6 check
+          npx -y fern-api@5.44.6 generate --docs
+
   build:
     needs: test
     runs-on: ubuntu-latest
