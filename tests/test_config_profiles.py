@@ -90,6 +90,74 @@ class ConfigProfileTests(unittest.TestCase):
                     with self.assertRaisesRegex(error, message):
                         BrokerConfig.from_env()
 
+    def test_operator_key_loads_only_from_file_and_is_not_repr_visible(self) -> None:
+        secret = "operator-dashboard-secret"
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            path = Path(tmp_raw) / "operator.key"
+            path.write_text(secret + "\n", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_BROKER_DATA_DIR": tmp_raw,
+                    "CODEX_BROKER_OPERATOR_KEY": "inline-secret-must-not-load",
+                    "CODEX_BROKER_OPERATOR_KEY_FILE": str(path),
+                },
+                clear=True,
+            ):
+                config = BrokerConfig.from_env()
+            with patch.dict(os.environ, {"CODEX_BROKER_DATA_DIR": tmp_raw}, clear=True):
+                unset = BrokerConfig.from_env()
+
+        self.assertEqual(config.operator_key, secret)
+        self.assertNotIn(secret, repr(config))
+        self.assertIsNone(unset.operator_key)
+
+    def test_operator_key_file_fails_closed_when_invalid_or_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw:
+            missing = Path(tmp_raw) / "missing.key"
+            empty = Path(tmp_raw) / "empty.key"
+            empty.write_text(" \n", encoding="utf-8")
+            shared = Path(tmp_raw) / "shared.key"
+            shared.write_text("shared-secret\n", encoding="utf-8")
+            bindings = Path(tmp_raw) / "bindings.json"
+            bindings.write_text(
+                json.dumps({compatibility_key_digest("shared-secret"): {"ownerId": "owner"}}),
+                encoding="utf-8",
+            )
+            cases = (
+                ({"CODEX_BROKER_OPERATOR_KEY_FILE": str(missing)}, FileNotFoundError, "does not exist"),
+                ({"CODEX_BROKER_OPERATOR_KEY_FILE": str(empty)}, ValueError, "is empty"),
+                (
+                    {"CODEX_BROKER_OPERATOR_KEY_FILE": str(shared), "CODEX_BROKER_INTERNAL_KEY": "shared-secret"},
+                    ValueError,
+                    "differs from the host key",
+                ),
+                (
+                    {
+                        "CODEX_BROKER_OPERATOR_KEY_FILE": str(shared),
+                        "CODEX_BROKER_DANGER_FULL_ACCESS_KEY_FILE": str(shared),
+                    },
+                    ValueError,
+                    "danger-full-access key",
+                ),
+                (
+                    {
+                        "CODEX_BROKER_OPERATOR_KEY_FILE": str(shared),
+                        "CODEX_BROKER_OPENAI_COMPAT_BINDINGS_FILE": str(bindings),
+                    },
+                    ValueError,
+                    "OpenAI-compatible API key",
+                ),
+            )
+            for env, error, message in cases:
+                with self.subTest(env=sorted(env)), patch.dict(
+                    os.environ,
+                    {"CODEX_BROKER_DATA_DIR": tmp_raw, **env},
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(error, message):
+                        BrokerConfig.from_env()
+
     def test_security_configuration_loads_extra_absolute_deny_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
             os.environ,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -132,6 +133,19 @@ def _danger_full_access_key() -> str | None:
     return value
 
 
+def _operator_key() -> str | None:
+    path_value = os.environ.get("CODEX_BROKER_OPERATOR_KEY_FILE")
+    if not path_value:
+        return None
+    path = Path(path_value).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"Operator key file does not exist or is not a file: {path}")
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise ValueError(f"Operator key file is empty: {path}")
+    return value
+
+
 def _owner_hash_secret(data_dir: Path) -> str:
     explicit = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY")
     explicit_file = os.environ.get("CODEX_BROKER_OWNER_HASH_KEY_FILE")
@@ -209,6 +223,7 @@ class BrokerConfig:
     managed_network_domains: tuple[str, ...] = ()
     managed_network_allow_local_binding: bool = False
     danger_full_access_key: str | None = field(default=None, repr=False)
+    operator_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.codex_command:
@@ -240,6 +255,19 @@ class BrokerConfig:
             raise ValueError(
                 "CODEX_BROKER_MANAGED_NETWORK_ALLOW_LOCAL_BINDING requires CODEX_BROKER_MANAGED_NETWORK_DOMAINS."
             )
+        if self.operator_key is not None:
+            if not self.operator_key:
+                raise ValueError("The operator key must not be empty.")
+            if self.operator_key in {self.internal_key, self.danger_full_access_key}:
+                raise ValueError(
+                    "CODEX_BROKER_OPERATOR_KEY_FILE must contain a key that differs from the host key "
+                    "and the danger-full-access key."
+                )
+            operator_digest = hashlib.sha256(self.operator_key.encode("utf-8")).hexdigest()
+            if f"sha256:{operator_digest}" in self.openai_compat_bindings:
+                raise ValueError(
+                    "CODEX_BROKER_OPERATOR_KEY_FILE must not contain an OpenAI-compatible API key."
+                )
         for name, value in (
             ("CODEX_BROKER_REQUEST_TIMEOUT_SECONDS", self.request_timeout_seconds),
             ("CODEX_BROKER_HOST_RESPONSE_TIMEOUT_SECONDS", self.host_response_timeout_seconds),
@@ -334,4 +362,5 @@ class BrokerConfig:
                 "CODEX_BROKER_MANAGED_NETWORK_ALLOW_LOCAL_BINDING", False
             ),
             danger_full_access_key=_danger_full_access_key(),
+            operator_key=_operator_key(),
         )
