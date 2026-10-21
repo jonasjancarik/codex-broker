@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import shutil
+import tempfile
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -109,6 +110,10 @@ class BrokerHandler(BaseHTTPRequestHandler):
                 self._owner_route(method, segments[3:], owner_id, query)
                 return
             self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+        except (BrokenPipeError, ConnectionResetError):
+            # A client deadline/disconnect cannot be answered with another JSON
+            # response. Preserve the original response metric instead of 500.
+            self.close_connection = True
         except ActiveTurnError as exc:
             self._json({"error": str(exc) or "active_turn_exists"}, HTTPStatus.CONFLICT)
         except ConflictError as exc:
@@ -344,9 +349,9 @@ class BrokerHandler(BaseHTTPRequestHandler):
                 errors.append(f"bundle root unreadable: {root}")
         try:
             ensure_dir(self.broker.config.auth_root)
-            probe = self.broker.config.auth_root / ".write-probe"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink()
+            with tempfile.NamedTemporaryFile(mode="w", prefix=".write-probe-", dir=self.broker.config.auth_root) as probe:
+                probe.write("ok")
+                probe.flush()
         except OSError as exc:
             errors.append(f"auth root not writable: {exc}")
         sandbox_result = self.broker.sandbox_probe.result() or self.broker.sandbox_probe.run_once()
