@@ -470,9 +470,22 @@ Authentication, validation, not-found, conflict, and server errors use:
 }
 ```
 
-Terminal Codex failures expose a stable error code and generic message. Raw
-app-server error text, broker ids, internal tool events, and compatibility
-credentials are not included in compatible response objects.
+Terminal Codex failures include the upstream message, for example,
+`The completion failed: Selected model is at capacity. Please try a different model.`
+If no message is available, chat completions return `The completion failed.`
+Only the message text is included; administrator diagnostics, additional error
+details, credentials, and account identifiers are excluded or redacted.
+
+For non-streaming chat completions, recognized capacity and overload failures
+return HTTP `503` with type `server_error` and code `server_busy`; rate limits
+return HTTP `429` with type `rate_limit_error` and code `rate_limit_exceeded`.
+Unclassified failures retain HTTP `500` and `server_error`. Streaming chat
+completions have already sent HTTP `200`, so their final SSE error carries the
+same message, type, and code. Responses retain their failed response object
+(HTTP `200`, or a `response.failed` stream event), with the upstream reason in
+`error.message` prefixed by `The response failed:`. Recognized capacity and
+overload failures use `server_error`; rate limits use `rate_limit_exceeded`.
+Without a reason, the message remains `The response failed.`
 
 Common checks:
 

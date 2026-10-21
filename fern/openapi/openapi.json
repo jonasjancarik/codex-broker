@@ -2523,6 +2523,16 @@
             },
             "description": "Model not found"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Upstream rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -2542,6 +2552,16 @@
               }
             },
             "description": "Codex App Server unavailable"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIError"
+                }
+              }
+            },
+            "description": "Upstream model at capacity or overloaded"
           }
         },
         "security": [
