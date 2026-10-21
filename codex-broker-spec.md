@@ -271,23 +271,49 @@ accepted and discarded for every value, including when both are supplied; they
 do not cap output. Reviewed bundle/MCP tools remain deployment policy and are
 never inferred from an OpenAI `tools` request.
 
-Caller-defined function tools map onto Codex `thread/start.dynamicTools`. The
-compatible API stays stateless: when the model's response calls caller tools,
-the broker collects every call of that response from raw response items
-(`experimentalRawEvents`), persists them as `compat.tool_call` events, returns
-them with `finish_reason: "tool_calls"` (Chat) or `function_call` output items
-(Responses), interrupts the Codex turn, and answers any held `item/tool/call`
-request as handed off. Code-mode models reach dynamic tools from an `exec`
-script, so no raw `function_call` names the call; the first `item/tool/call`
-whose call id was not seen as a raw function call stops the turn and is
-returned alone. Usage comes from `rawResponse/completed`, because
-`thread/tokenUsage/updated` only follows tool results. The client's follow-up request runs on a fresh thread
-that declares the same tools, injects the full history including
-`function_call` and `function_call_output` items with `thread/inject_items`,
-and starts a turn with empty input. The broker therefore keeps no pending tool
-state between HTTP requests: abandoned follow-ups need no timeout or cleanup,
-edited histories are taken as sent, and restarts do not matter. The cost is
-replaying the conversation and losing prior reasoning items. `tool_choice: none`
+Caller-defined function tools map onto Codex `thread/start.dynamicTools`.
+The broker returns every raw function call in a model response and collects
+code-mode callbacks dispatched during a short (50 ms) handoff window. It does
+not parse scripts, invent tool results, or promise that Codex dispatches calls
+concurrently. Returned calls are persisted as `compat.tool_call` events and
+exposed as Chat `tool_calls` or Responses `function_call` items.
+
+By default, the broker interrupts after handoff and replays the full history
+on a fresh thread at the next request, as before. Setting
+`CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=true` enables retention for unbundled,
+isolated caller-tool requests only. Each HTTP request still receives a separate
+broker turn/response record, but a matching follow-up reuses the existing broker
+thread, App Server lease and upstream turn. The actual tool outputs resolve the
+suspended calls; neither `thread/inject_items` nor `turn/start` is sent again.
+Native broker thread/resume and multi-turn APIs retain their existing behavior.
+Native callers cannot insert or steer a turn into a live compatible tool chain.
+
+Matching requires the same authenticated binding, principal/profile incarnation
+and credential fingerprint, effective model/configuration, instructions, tools,
+metadata and canonical history through the returned assistant output, followed
+by exactly the outstanding results. Changed histories/settings, expiry, restart
+or a lost runtime use the existing replay path. Malformed or partial histories
+remain errors. An atomic claim prevents duplicate delivery: identical retries
+reuse a response, while conflicting results for an accepted follow-up fail.
+Receipts last for the idle timeout and are capped at 256 per process. Once a
+result may have been delivered, failures are returned rather than replayed
+silently. Multi-process routing misses also replay; retained execution is not
+persisted or reconstructed from sanitized events.
+
+Default retention is five minutes waiting idle, thirty minutes absolute chain
+age, one chain per owner and two globally. Limits are configurable; a finite
+App Server pool reserves one slot for ordinary work, so a pool of one disables
+retention. Waiting chains hold a pool lease but not an inference worker. Expiry,
+revocation, archive, cancellation and shutdown interrupt and release them.
+Cancel on a completed Responses tool handoff also releases its waiting runtime;
+the persisted response remains retrievable. A disconnected stream is not a
+cancellation; waiting executions expire unless followed up.
+
+Retained response usage sums only new `rawResponse/completed` generations in
+that HTTP segment. Advancing an already-generated script can report zero usage.
+This avoids charging a script again for each of its calls and avoids cumulative
+thread-usage leakage into later HTTP responses. The default replay path keeps
+its prior usage behavior. `tool_choice: none`
 withholds the tools from Codex for that request. Requests that declare tools or
 replay tool calls on a binding without a bundle run with `environments: []` on
 both `thread/start` and `turn/start` (turn-level workspace roots would otherwise
@@ -303,8 +329,7 @@ Pearwrite binding, not guaranteed for every deployment. The host executable
 itself is trusted and is not placed inside the command tool's Bubblewrap
 sandbox. Bindings with a reviewed bundle keep that bundle's tools and sandbox
 policy. See [the live investigation](docs/tool-call-investigation-2026-10-21.md)
-for measured limits and [the proposed thread-reuse plan](plans/004-retain-openai-tool-threads.md);
-thread reuse is not implemented.
+for measured limits and [the implementation plan](plans/004-retain-openai-tool-threads.md).
 
 ## Events
 

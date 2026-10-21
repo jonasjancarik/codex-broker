@@ -39,7 +39,7 @@ class OpenAIImageProtocolTests(unittest.TestCase):
                 scheduler = Mock()
                 active = SimpleNamespace(
                     client=Mock(), codex_thread_id="codex_thread", codex_turn_id="codex_turn",
-                    turn_id="turn", product_correlation_id=None,
+                    turn_id="turn", product_correlation_id=None, allow_continuation=False,
                 )
                 scheduler._active_context.return_value = active
                 if method == "steer_turn":

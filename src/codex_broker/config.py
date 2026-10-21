@@ -217,6 +217,11 @@ class BrokerConfig:
     history_retention_seconds: int = 90 * 24 * 60 * 60
     max_events_per_turn: int = 10_000
     openai_compat_bindings: dict[str, Any] = field(default_factory=dict)
+    openai_tool_continuations: bool = False
+    openai_tool_idle_seconds: int = 300
+    openai_tool_max_age_seconds: int = 1800
+    openai_tool_max_retained: int = 2
+    openai_tool_max_retained_per_owner: int = 1
     event_sanitization_mode: str = "safe"
     sandbox_preflight_mode: str = "required" if sys.platform == "linux" else "warn"
     sandbox_deny_paths: tuple[Path, ...] = ()
@@ -226,6 +231,9 @@ class BrokerConfig:
     operator_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        for name in ("openai_tool_idle_seconds", "openai_tool_max_age_seconds", "openai_tool_max_retained", "openai_tool_max_retained_per_owner"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be greater than zero.")
         if not self.codex_command:
             raise ValueError("Codex command must not be empty.")
         if self.max_active_turns < 0:
@@ -351,6 +359,11 @@ class BrokerConfig:
             history_retention_seconds=_int_env("CODEX_BROKER_HISTORY_RETENTION_SECONDS", 90 * 24 * 60 * 60),
             max_events_per_turn=_int_env("CODEX_BROKER_MAX_EVENTS_PER_TURN", 10_000),
             openai_compat_bindings=_openai_compat_bindings(),
+            openai_tool_continuations=_bool_env("CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS", False),
+            openai_tool_idle_seconds=_int_env("CODEX_BROKER_OPENAI_TOOL_IDLE_SECONDS", 300),
+            openai_tool_max_age_seconds=_int_env("CODEX_BROKER_OPENAI_TOOL_MAX_AGE_SECONDS", 1800),
+            openai_tool_max_retained=_int_env("CODEX_BROKER_OPENAI_TOOL_MAX_RETAINED", 2),
+            openai_tool_max_retained_per_owner=_int_env("CODEX_BROKER_OPENAI_TOOL_MAX_RETAINED_PER_OWNER", 1),
             event_sanitization_mode=os.environ.get("CODEX_BROKER_EVENT_SANITIZATION_MODE", "safe"),
             sandbox_preflight_mode=os.environ.get(
                 "CODEX_BROKER_SANDBOX_PREFLIGHT",

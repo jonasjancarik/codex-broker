@@ -142,11 +142,46 @@ def request_dynamic_tools(thread_id: str, turn_id: str, request_base: int) -> No
             send({"method": "rawResponseItem/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {
                 "type": "function_call", "call_id": call["id"], "name": call["name"], "arguments": call["arguments"],
             }}})
-    first = calls[0]
-    send({"id": request_base + 3, "method": "item/tool/call", "params": {
-        "threadId": thread_id, "turnId": turn_id, "callId": f"exec-{first['id']}" if code_mode else first["id"],
-        "tool": first["name"], "arguments": json.loads(first["arguments"]),
-    }})
+            if call is calls[0] and os.environ.get("FAKE_CODEX_RAW_CALLS_INTERLEAVED") == "1":
+                send({"id": request_base + 3, "method": "item/tool/call", "params": {
+                    "threadId": thread_id, "turnId": turn_id, "callId": call["id"],
+                    "tool": call["name"], "arguments": json.loads(call["arguments"]),
+                }})
+                time.sleep(0.1)
+    if os.environ.get("FAKE_CODEX_TOOL_CONTINUE") == "1":
+        send({"method": "rawResponse/completed", "params": {"threadId": thread_id, "turnId": turn_id,
+              "usage": {"totalTokens": 12, "inputTokens": 7, "cachedInputTokens": 2, "outputTokens": 5, "reasoningOutputTokens": 1}}})
+        responses = []
+        def run_call(index: int, call: dict[str, Any]) -> bool:
+            reply = request_server("item/tool/call", request_base + 3 + index, {
+                "threadId": thread_id, "turnId": turn_id, "callId": f"exec-{call['id']}" if code_mode else call["id"],
+                "tool": call["name"], "arguments": json.loads(call["arguments"]),
+            })
+            result = reply.get("result", {})
+            responses.append(result)
+            return result.get("success") is True
+        if os.environ.get("FAKE_CODEX_TOOL_PARALLEL") == "1":
+            workers = [threading.Thread(target=run_call, args=(i, c)) for i, c in enumerate(calls)]
+            for worker in workers: worker.start()
+            for worker in workers: worker.join()
+            if not all(r.get("success") is True for r in responses): return
+        else:
+            for i, call in enumerate(calls):
+                if not run_call(i, call): return
+        answer = json.dumps(responses)
+        send({"method": "rawResponseItem/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {
+            "id": "final", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": answer}],
+        }}})
+        send({"method": "rawResponse/completed", "params": {"threadId": thread_id, "turnId": turn_id,
+              "usage": {"totalTokens": 3, "inputTokens": 1, "outputTokens": 2}}})
+        send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
+        return
+    if os.environ.get("FAKE_CODEX_RAW_CALLS_INTERLEAVED") != "1":
+        first = calls[0]
+        send({"id": request_base + 3, "method": "item/tool/call", "params": {
+            "threadId": thread_id, "turnId": turn_id, "callId": f"exec-{first['id']}" if code_mode else first["id"],
+            "tool": first["name"], "arguments": json.loads(first["arguments"]),
+        }})
     usage = {"totalTokens": 12, "inputTokens": 7, "cachedInputTokens": 2, "outputTokens": 5, "reasoningOutputTokens": 1}
     if raw:
         send({"method": "rawResponse/completed", "params": {

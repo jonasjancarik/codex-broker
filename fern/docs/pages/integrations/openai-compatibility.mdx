@@ -297,7 +297,7 @@ What the broker supports:
 | --- | --- |
 | Tool declarations | `type: "function"` with `name`, optional `description`, and a JSON Schema object as `parameters`. Names must match `^[A-Za-z0-9_-]{1,64}$`; `mcp` and `mcp__*` are reserved by Codex. At most 128 tools per request. |
 | `tool_choice` | `auto` (the default) lets the model decide. `none` keeps the tools from the model for that request; earlier tool calls and results in the history still count. |
-| Several calls at once | Models that call functions directly can ask for several in one response, and all of them are returned together. Models that Codex runs in code mode, which includes the GPT-5.6 and GPT-6 models in the pinned catalog, call your functions from a script one at a time, so each response carries a single call and the model asks for the next one after you send the result. `parallel_tool_calls` may be omitted or `true`. |
+| Several calls at once | All raw function calls from a response are returned together. Code-mode callbacks dispatched within a short handoff window are also collected. Codex can serialize script calls, so a response may still contain only one. `parallel_tool_calls` may be omitted or `true`. |
 | Call ids | Treat `id` / `call_id` as opaque. Code-mode calls use ids such as `exec-4f2c…`. |
 | Usage | Usage covers the model response that asked for the tools. If Codex reports none for it, `usage` is `null` on a tool-call response. |
 | Text before calls | Text the model writes before calling a tool is returned as the message `content` (Chat) or a message output item (Responses). Otherwise Chat `content` is `null`. |
@@ -313,36 +313,43 @@ enforce strict schemas for caller-defined tools; `strict: false` is accepted),
 and tool types other than `function`. A history in which a tool call has no
 result, or a result answers no earlier call, fails with `400 invalid_parameter`.
 
-### The broker replays tool results into a new Codex turn
+### Continue waiting tool calls without regenerating the script
 
-OpenAI's API is stateless: the client sends the full history every time. Codex
-works differently. A Codex turn that calls a caller-defined function sends
-`item/tool/call` to the broker and waits for the answer inside the same running
-turn.
+Batching and continuation solve different problems. Batching returns multiple
+already-dispatched calls together. Continuation lets an existing script proceed
+when your client supplies a result, even when only one call is dispatched at a
+time. Neither requires client-specific request fields.
 
-The broker does not keep that turn waiting for the client. When the model's
-response contains calls to the client's functions, or a code-mode script asks
-for one, the broker records the calls, ends the HTTP response, and interrupts
-the Codex turn. The follow-up request
-starts a new Codex thread with the same tools, injects the whole conversation,
-including the calls and their results, with `thread/inject_items`, and starts a
-turn with no new user input so the model continues from the results.
+By default, a follow-up still replays history on a fresh Codex thread. Operators
+can set `CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=true` to keep waiting executions
+for bindings without a bundle. The client continues sending standard Chat
+messages or Responses input. A matching follow-up supplies its tool results to
+the same running Codex turn. Each HTTP response has its own ID and stored broker
+turn record, on the existing broker thread. Native thread APIs are unchanged.
 
-Replaying history fits how the compatible API already works: every compatible
-request runs on a fresh broker thread. It also means the broker holds no state
-between the two requests, so:
+Matching checks the authenticated binding, account/profile identity, model,
+instructions, tools, settings and complete conversation history. Supply every
+returned tool result exactly once. Edited histories, changed settings, expired
+waiters, lost runtimes and broker restarts fall back to replay; invalid or
+partial histories still fail validation. Identical retries share one response;
+conflicting results for a follow-up already accepted are rejected. Retry
+receipts are process-local, expire after the idle timeout and are capped at 256.
+A failure after results may have been delivered is returned without silently
+restarting the work.
 
-- a client that never sends the follow-up leaves nothing behind to time out or
-  clean up;
-- a client that edits, trims, or reorders its history gets exactly what it sent;
-  the broker never compares it with an earlier turn;
-- a broker restart between the call and the result changes nothing.
+Waiting executions expire after five idle minutes or thirty minutes of total
+chain age by default. Limits are one per owner and two globally, with one App
+Server pool slot reserved for other work. A finite pool of one therefore does
+not retain waiters. Waiting uses a pool lease, but releases the inference worker.
+See the [configuration reference](../operations/configuration-reference.mdx#turn-execution-and-pooling)
+for settings. Cancel a completed Responses tool handoff to release its waiting
+execution; its stored response remains available. Closing a stream does not
+cancel it, so an abandoned waiter expires normally.
 
-The cost is that each follow-up sends the whole conversation to the model again,
-and reasoning from the earlier request is not carried over. Keeping the Codex
-turn alive across HTTP requests would avoid that, but it would tie each pending
-tool call to one App Server process and need timeouts, matching of edited
-histories, and recovery after restarts.
+Usage counts new model generations for each response. A follow-up that advances
+an already-generated script can legitimately report zero tokens. Retention
+preserves the script and reasoning in the upstream process; it does not expose
+that private state in the client's conversation history.
 
 ### Built-in Codex tools are off unless a bundle allows them
 
@@ -357,8 +364,10 @@ goals, image generation, apps, plugins, and tool suggestions.
 
 What remains is what the model needs to reach your functions: on code-mode
 models, the `exec` and `wait` tools that run a short script calling them, and
-Codex's read-only helpers for listing MCP resources, which find nothing because
-such a binding has no MCP servers.
+Codex's read-only resource helpers and, for some models, a clock. Resource
+helpers returned empty lists on the tested Pearwrite binding. The V8 runtime
+has no Node, filesystem or network APIs; the native host remains trusted and
+is not wrapped in the command tool's Bubblewrap sandbox.
 
 A binding with a reviewed bundle keeps that bundle's skills, MCP servers,
 hosted tools, and sandbox policy alongside the caller's functions, because the
@@ -410,16 +419,15 @@ Closing a client connection does not cancel a stored response. Use
 
 ## Response chaining reconstructs persisted history
 
-Every compatible response runs on a fresh broker thread. When a request supplies
-`previous_response_id`, the broker:
+When a request supplies `previous_response_id`, the broker:
 
 1. verifies that every ancestor belongs to the binding's owner scope;
 2. rejects missing, non-Responses, incomplete, cyclic, or excessively deep
    chains;
 3. reconstructs canonical input and raw compatible output in chronological
    order; and
-4. injects that history with app-server `thread/inject_items` before starting
-   the new turn.
+4. checks for an eligible retained tool execution; on a miss, injects that
+   history with app-server `thread/inject_items` before starting a new turn.
 
 The client receives the requested model name, while the mapped Codex model id is
 kept in private broker execution metadata.

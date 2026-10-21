@@ -544,6 +544,15 @@ class AppServerClient:
                 self._pending_notifications_by_turn[turn_id] = pending[-50:]
 
     def _handle_server_request(self, method: str, message_id: Any, params: dict[str, Any]) -> None:
+        try:
+            self._dispatch_server_request(method, message_id, params)
+        except AppServerError:
+            # A callback already read from stdout can race retention cleanup.
+            # Closing the transport also cancels the upstream waiting request.
+            if not self.closed:
+                raise
+
+    def _dispatch_server_request(self, method: str, message_id: Any, params: dict[str, Any]) -> None:
         context, ambiguous = self._context_for_params(params)
         if method == DYNAMIC_TOOL_CALL_METHOD and not ambiguous:
             handler = getattr(context, "handle_dynamic_tool_request", None)

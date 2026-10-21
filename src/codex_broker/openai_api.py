@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from http import HTTPStatus
 import time
 from typing import Any
 from urllib.parse import unquote
 
+from .scheduler_continuations import digest
 from .app_server import AppServerError
 from .openai_auth import OpenAICompatAuthError, OpenAICompatBinding
 from .openai_protocol import (
@@ -175,6 +177,9 @@ def _handle_response_resource(
         return True
     if method == "POST" and parts[1:] == ["cancel"]:
         if is_terminal(turn):
+            handler.broker.scheduler.continuations.cancel(
+                handler.broker.auth.hash_owner(binding.owner_id), str(turn["thread_id"]), str(turn["turn_id"])
+            )
             handler._json(response_object(turn, _turn_events(handler.broker, binding, turn)))
             return True
         deadline = time.monotonic() + 2
@@ -238,7 +243,6 @@ def _start_request(
         thread_body["bundleId"] = binding.bundle_id
     if binding.cwd:
         thread_body["cwd"] = binding.cwd
-    thread = services.scheduler.create_thread(binding.owner_id, thread_body)
     codex_options: dict[str, Any] = {"model": resolved_model}
     if parsed.instructions:
         codex_options["developerInstructions"] = parsed.instructions
@@ -285,11 +289,39 @@ def _start_request(
         "tools": [dict(tool) for tool in parsed.tools],
         "toolChoice": parsed.tool_choice,
     }
+    full_history = [*history, *current_items]
+    continuation_key = None
+    if services.config.openai_tool_continuations and uses_tools and not binding.bundle_id:
+        scope = services.auth.resolve_scope(binding.owner_id, binding.auth_principal_id)
+        profile = services.state.get_profile(scope.auth_principal_hash, services.auth.profile_key(binding.profile))
+        continuation_key = digest({
+            "binding": asdict(binding), "profileInstance": profile.get("instance_id") if profile else None,
+            "profileFingerprint": profile.get("auth_fingerprint") if profile else None,
+            "profileStatus": profile.get("auth_status") if profile else None,
+            "configProfile": services.config.config_profiles.get(binding.config_profile, {}),
+            "options": codex_options, "tools": parsed.dynamic_tools(), "protocol": parsed.protocol,
+            "toolChoice": parsed.tool_choice, "dangerFullAccess": danger_full_access_authorized,
+            "requestedModel": parsed.requested_model, "metadata": parsed.metadata, "text": parsed.text_config,
+        })
+        def resume(context: Any, outputs: list[dict[str, Any]]) -> dict[str, Any]:
+            return services.scheduler.start_openai_turn(
+                binding.owner_id, context.thread_id, {**body, "mode": "queue"},
+                metadata=metadata, dynamic_tools=parsed.dynamic_tools(), isolate_builtin_tools=True,
+                continuation_key=continuation_key, full_history=full_history,
+                resume_context=context, tool_outputs=outputs,
+                danger_full_access_authorized=danger_full_access_authorized,
+            )
+        existing = services.scheduler.continuations.resume(continuation_key, full_history, resume)
+        if existing is not None:
+            return existing
+    thread = services.scheduler.create_thread(binding.owner_id, thread_body)
     return services.scheduler.start_openai_turn(
         binding.owner_id,
         str(thread["threadId"]),
         body,
         metadata=metadata,
+        continuation_key=continuation_key,
+        full_history=full_history,
         history_items=history,
         dynamic_tools=parsed.dynamic_tools(),
         # Without a reviewed bundle, a caller that brings its own functions gets

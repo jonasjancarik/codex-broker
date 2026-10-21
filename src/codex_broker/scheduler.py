@@ -30,6 +30,7 @@ from .runtime_errors import (
 from .sandbox_probe import SandboxProbe
 from .scheduler_errors import ActiveTurnError, ConflictError, NotFoundError
 from . import scheduler_config, scheduler_interactions, scheduler_threads
+from .scheduler_continuations import Continuations
 from .state import StateStore
 from .security import SecretSanitizer, StreamingSecretSanitizer
 from .util import json_dumps, json_log, utc_now
@@ -77,6 +78,10 @@ class OpenAICompatTurn:
     history_items: tuple[dict[str, Any], ...] = ()
     dynamic_tools: tuple[dict[str, Any], ...] = ()
     isolate_builtin_tools: bool = False
+    continuation_key: str | None = None
+    full_history: tuple[dict[str, Any], ...] = ()
+    resume_context: Any = None
+    tool_outputs: tuple[dict[str, Any], ...] = ()
 
 
 # A returned tool call carries the usage of the model response that made it.
@@ -138,6 +143,21 @@ class BrokerTurnContext:
         self.last_response_usage: dict[str, Any] | None = None
         self.response_event = threading.Event()
         self.codex_turn_done = threading.Event()
+        self.retained = False
+        self.allow_continuation = False
+        self.retention_started = time.monotonic()
+        self.auth_profile = ""
+        self.auth_profile_instance = ""
+        self.auth_profile_fingerprint: str | None = None
+        self.handoff_sealed = False
+        self.published_call_ids: set[str] = set()
+        self.dynamic_requests: dict[str, Any] = {}
+        self.reply_outputs: dict[str, str] = {}
+        self.last_tool_request_at = 0.0
+        self.segment_usage: dict[str, int] = {}
+        self.segment_index = 0
+        self.segment_generations = 0
+
 
     def register_thread(self, codex_thread_id: str) -> None:
         with self._lock:
@@ -160,11 +180,19 @@ class BrokerTurnContext:
                 # Ends one model response; its usage is what a returned tool call cost.
                 usage = params.get("usage")
                 self.last_response_usage = usage if isinstance(usage, dict) else None
+                if self.allow_continuation:
+                    self.segment_generations += 1
+                if self.allow_continuation and isinstance(usage, dict):
+                    for key in ("totalTokens", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"):
+                        self.segment_usage[key] = self.segment_usage.get(key, 0) + int(usage.get(key) or 0)
                 self.response_in_progress = False
                 self.responses_completed += 1
                 self.response_event.set()
                 if self.tool_calls and not self.tool_stop:
                     self._stop_for_tool_calls(response_completed=True)
+                return
+            if self.allow_continuation and (self.responses_completed or self.segment_index) and method == "thread/tokenUsage/updated":
+                # Upstream totals span several HTTP responses; use raw per-response usage.
                 return
             if self.tool_stop:
                 return
@@ -237,17 +265,25 @@ class BrokerTurnContext:
         with self._lock:
             if params.get("namespace") or params.get("tool") not in self.dynamic_tool_names:
                 return False
-            self.pending_tool_requests.append(message_id)
             call_id = params.get("callId")
-            if not self.tool_stop and not any(call["callId"] == call_id for call in self.tool_calls):
-                # No raw function_call names this call: the model reached the tool from a
-                # code-mode script (or raw items are missing). The script may contain
-                # several calls, but this stateless handoff returns only the first.
+            if not isinstance(call_id, str) or not call_id or self.client is None:
+                return False
+            if call_id in self.reply_outputs:
+                output = self.reply_outputs.pop(call_id)
+                self.client.send({"id": message_id, "result": {"contentItems": [{"type": "inputText", "text": output}], "success": True}})
+                return True
+            self.pending_tool_requests.append(message_id)
+            self.dynamic_requests[call_id] = message_id
+            self.last_tool_request_at = time.monotonic()
+            if not self.handoff_sealed or self.allow_continuation:
+                already_collected = any(call["callId"] == call_id for call in self.tool_calls)
                 self._collect_tool_call(
                     {"type": "function_call", "call_id": call_id, "name": params.get("tool")},
                     arguments=params.get("arguments"),
                 )
-                if self.tool_calls:
+                # A known raw function call must wait for rawResponse/completed,
+                # otherwise later raw calls in the same response would be lost.
+                if not already_collected and self.tool_calls and not self.tool_stop:
                     self._stop_for_tool_calls(response_completed=False)
             return True
 
@@ -414,6 +450,7 @@ class TurnScheduler:
         self._future_work: dict[Future[None], QueuedTurn] = {}
         self._workers_lock = threading.RLock()
         self._metrics_lock = threading.Lock()
+        self.continuations = Continuations(self)
         self._metrics = {
             "active_turns": 0,
             "queued_turns": 0,
@@ -462,6 +499,10 @@ class TurnScheduler:
         history_items: list[dict[str, Any]] | None = None,
         dynamic_tools: list[dict[str, Any]] | None = None,
         isolate_builtin_tools: bool = False,
+        continuation_key: str | None = None,
+        full_history: list[dict[str, Any]] | None = None,
+        resume_context: Any = None,
+        tool_outputs: list[dict[str, Any]] | None = None,
         danger_full_access_authorized: bool = False,
     ) -> dict[str, Any]:
         internal_body = dict(body)
@@ -470,6 +511,10 @@ class TurnScheduler:
             history_items=tuple(dict(item) for item in (history_items or [])),
             dynamic_tools=tuple(dict(tool) for tool in (dynamic_tools or [])),
             isolate_builtin_tools=isolate_builtin_tools,
+            continuation_key=continuation_key,
+            full_history=tuple(full_history or ()),
+            resume_context=resume_context,
+            tool_outputs=tuple(tool_outputs or ()),
         )
         return self._start_turn(
             owner_id,
@@ -544,6 +589,10 @@ class TurnScheduler:
                     public["streamUrl"] = self._stream_url(owner_id, thread_id, existing["turn_id"])
                     return public
             gate = self._gate_locked(owner_hash, thread_id)
+            if gate.active_context and gate.active_context.allow_continuation and (
+                not isinstance(compat, OpenAICompatTurn) or compat.resume_context is not gate.active_context
+            ):
+                raise ActiveTurnError("Thread is waiting for OpenAI tool results.")
             busy = gate.running or bool(gate.pending())
             if mode == "reject" and busy:
                 raise ActiveTurnError("active_turn_exists")
@@ -633,6 +682,8 @@ class TurnScheduler:
         active = self._active_context(owner_hash, thread_id)
         if not active or active.turn_id != turn_id:
             raise ActiveTurnError("active_turn_not_found")
+        if active.allow_continuation:
+            raise ConflictError("An OpenAI tool conversation cannot be steered through the native API.")
         if not active.client or not active.codex_thread_id:
             raise ConflictError("Active turn is not steerable yet.")
         params: dict[str, Any] = {
@@ -704,6 +755,9 @@ class TurnScheduler:
     def metrics(self) -> dict[str, int | float]:
         with self._metrics_lock:
             metrics = dict(self._metrics)
+        with self.continuations.lock:
+            metrics["openai_tool_retained_turns"] = len(self.continuations.records)
+            metrics["openai_tool_waiting_turns"] = sum(not r.claimed for r in self.continuations.records.values())
         metrics.update(self.pool.metrics())
         metrics["secret_replacements_total"] = self.sanitizer.replacement_count
         audit_counts = self.state.count_audit_actions()
@@ -772,6 +826,7 @@ class TurnScheduler:
             mode = "interrupt"
         self._shutdown_mode = mode
         self._shutdown.set()
+        self.continuations.shutdown()
         json_log(
             self.config.json_logs,
             "broker.shutdown.start",
@@ -791,6 +846,7 @@ class TurnScheduler:
             self._interrupt_active_contexts("Broker shutdown drain timed out.")
             self._wait_for_workers(min(timeout_seconds, 5))
         self._executor.shutdown(wait=False, cancel_futures=True)
+        self.continuations.expire(include_claimed=True)
         json_log(
             self.config.json_logs,
             "broker.shutdown.finish",
@@ -953,6 +1009,10 @@ class TurnScheduler:
         *,
         danger_full_access_authorized: bool = False,
     ) -> None:
+        compat = body.get("_openaiCompat")
+        if isinstance(compat, OpenAICompatTurn) and compat.resume_context is not None:
+            self._run_tool_continuation(owner_hash, thread_id, turn_id, body, compat)
+            return
         gate = self._gate(owner_hash, thread_id)
         active_metric_incremented = False
         overlay: Path | None = None
@@ -1132,6 +1192,10 @@ class TurnScheduler:
                 ),
             )
             context.client = client
+            context.allow_continuation = bool(compat_turn and compat_turn.continuation_key)
+            context.auth_profile = profile
+            context.auth_profile_instance = str(turn["auth_profile_instance_id"])
+            context.auth_profile_fingerprint = (self.state.get_profile(auth_principal_hash, profile) or {}).get("auth_fingerprint")
             with self._gates_lock:
                 gate.active_context = context
             client.register_context(context)
@@ -1176,6 +1240,8 @@ class TurnScheduler:
             if turn_data.get("id"):
                 client.register_turn_for_context(context, str(turn_data["id"]))
             timeout = self.config.turn_timeout_seconds if self.config.turn_timeout_seconds > 0 else None
+            if context.allow_continuation:
+                timeout = min(timeout or self.config.openai_tool_max_age_seconds, self.config.openai_tool_max_age_seconds)
             if not context.completed_event.wait(timeout):
                 try:
                     client.request("turn/interrupt", {"threadId": codex_thread_id})
@@ -1187,7 +1253,9 @@ class TurnScheduler:
                     self._metric("turns_failed", 1)
                 return
             if context.tool_stop:
-                self._return_tool_calls(client, context, codex_thread_id)
+                self._return_tool_calls(client, context, codex_thread_id, compat_turn)
+            elif context.allow_continuation:
+                self._record_segment_usage(context)
             status = context.final_status or "completed"
             finalized = self._persist_context_terminal(context)
             if context.error_code == CODEX_AUTH_REQUIRES_ADMIN:
@@ -1204,6 +1272,9 @@ class TurnScheduler:
             if finalized:
                 self._metric("turns_completed" if status == "completed" else "turns_failed", 1)
         except Exception as exc:  # noqa: BLE001 - background worker must persist failure state.
+            if context and context.allow_continuation and context.codex_turn_id:
+                self._dispose_retained_context(context)
+                client = None
             error_info = classify_runtime_exception(exc)
             turn = self.state.get_turn(owner_hash, thread_id, turn_id)
             finalized = self.state.finalize_turn(
@@ -1238,14 +1309,16 @@ class TurnScheduler:
                 self._metric("turns_failed", 1)
         finally:
             self.sanitizer.remove_scope(f"turn:{turn_id}")
-            if context and client:
+            retained = bool(context and context.retained)
+            if context and client and not retained:
+                self.continuations.forget(context)
                 client.unregister_context(context)
-            if client:
+            if client and not retained:
                 self.pool.release(client)
             if client and bundle and bundle.hosted_tools:
                 self.pool.close_client(client)
             with self._gates_lock:
-                if gate.active_context is context:
+                if gate.active_context is context and not retained:
                     gate.active_context = None
             if active_metric_incremented:
                 self._metric("active_turns", -1)
@@ -1272,21 +1345,149 @@ class TurnScheduler:
                     durationMs=round(elapsed * 1000, 3),
                 )
 
-    def _return_tool_calls(self, client: AppServerClient, context: BrokerTurnContext, codex_thread_id: str) -> None:
+    def _record_segment_usage(self, context: BrokerTurnContext) -> None:
+        if not context.segment_usage and (context.segment_index == 0 or context.segment_generations):
+            # Missing raw usage is unknown, not free generation.
+            return
+        usage = {key: context.segment_usage.get(key, 0) for key in (
+            "totalTokens", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"
+        )}
+        context._append_event("compat.response.usage", {"tokenUsage": {"last": usage}, "modelResponses": context.segment_generations}, "rawResponse/completed", {"usage": usage}, ambiguous=False)
+
+    def _dispose_retained_context(self, context: BrokerTurnContext) -> None:
+        """Release the original lease exactly once after completion or abandonment."""
+        with context._lock:
+            client = context.client
+            if client is None:
+                return
+            context.client = None
+        self.continuations.forget(context)
+        try:
+            if not client.closed and not context.codex_turn_done.is_set():
+                client.request("turn/interrupt", {"threadId": context.codex_thread_id, "turnId": context.codex_turn_id}, timeout=5)
+                for request_id in context.pending_tool_requests:
+                    client.send({"id": request_id, "result": {"contentItems": [], "success": False}})
+                if not context.codex_turn_done.wait(5):
+                    self.pool.close_client(client)
+        except AppServerError:
+            self.pool.close_client(client)
+        finally:
+            client.unregister_context(context)
+            self.pool.release(client)
+            with self._gates_lock:
+                gate = self._gate_locked(context.owner_hash, context.thread_id)
+                if gate.active_context is context:
+                    gate.active_context = None
+
+    def _run_tool_continuation(self, owner_hash: str, thread_id: str, turn_id: str, body: dict[str, Any], compat: OpenAICompatTurn) -> None:
+        context = compat.resume_context
+        client = context.client
+        started = time.monotonic()
+        self._metric("active_turns", 1)
+        self._metric("turns_started", 1)
+        try:
+            turn = self.state.get_turn(owner_hash, thread_id, turn_id)
+            thread = self.state.get_thread(owner_hash, thread_id)
+            self._validate_execution_auth_binding(thread, turn)
+            profile = self.state.get_profile(context.auth_principal_hash, context.auth_profile)
+            if not profile or profile.get("auth_status") in {"missing", "failed", "requires_admin"} or profile.get("auth_fingerprint") != context.auth_profile_fingerprint:
+                raise ConflictError("The waiting Codex account is no longer available.")
+            if self._shutdown.is_set() or client.closed or context.codex_turn_done.is_set():
+                raise ConflictError("The waiting Codex turn is no longer available.")
+            preflight = self._sandbox_preflight_error(turn)
+            if preflight:
+                raise ConflictError(preflight.public_message)
+            replies = []
+            with context._lock:
+                context.retained = False
+                context.turn_id = turn_id
+                context.product_correlation_id = turn.get("product_correlation_id")
+                context.completed_event.clear()
+                context.final_status = None
+                context._set_error_info(None)
+                context.terminal_event_type = None
+                context.terminal_payload = None
+                context.terminal_raw_method = None
+                context.terminal_raw_params = None
+                context.tool_stop = False
+                context.handoff_sealed = False
+                context.segment_usage = {}
+                context.segment_index += 1
+                context.segment_generations = 0
+                context.last_response_usage = None
+                context.tool_calls = [c for c in context.tool_calls if c["callId"] not in context.published_call_ids]
+                context.published_call_ids.clear()
+                for item in compat.tool_outputs:
+                    call_id = item["call_id"]
+                    if call_id in context.dynamic_requests:
+                        request_id = context.dynamic_requests.pop(call_id)
+                        context.pending_tool_requests.remove(request_id)
+                        replies.append((request_id, item["output"]))
+                    else:
+                        # Raw calls can be advertised before Codex dispatches them.
+                        context.reply_outputs[call_id] = item["output"]
+                self.state.update_turn(owner_hash, thread_id, turn_id, status="running", started=True, codex_turn_id=context.codex_turn_id)
+                self.state.append_audit(owner_hash, "turn.start", {"continuedUpstreamTurn": True},
+                                        auth_principal_hash=context.auth_principal_hash,
+                                        profile=context.auth_profile, thread_id=thread_id, turn_id=turn_id)
+                if context.tool_calls:
+                    context._stop_for_tool_calls(response_completed=True)
+            for request_id, output in replies:
+                client.send({"id": request_id, "result": {"contentItems": [{"type": "inputText", "text": output}], "success": True}})
+            remaining = max(0, self.config.openai_tool_max_age_seconds - (time.monotonic() - context.retention_started))
+            timeout = min(self.config.turn_timeout_seconds or remaining, remaining)
+            if not context.completed_event.wait(timeout):
+                context.fail("Turn timed out.")
+                context.final_status = "timed_out"
+            if context.tool_stop:
+                self._return_tool_calls(client, context, context.codex_thread_id, compat)
+            else:
+                self._record_segment_usage(context)
+            if self._persist_context_terminal(context):
+                self._metric("turns_completed" if context.final_status == "completed" else "turns_failed", 1)
+        except Exception as exc:
+            error = classify_runtime_exception(exc)
+            self.state.finalize_turn(owner_hash, thread_id, turn_id, status="failed", error=error.public_message,
+                                     error_code=error.code, public_message=error.public_message, admin_message=error.admin_message,
+                                     event_type="turn.failed", event_payload=error.public_payload(), auth_principal_hash=context.auth_principal_hash)
+            context.retained = False
+            self._metric("turns_failed", 1)
+        finally:
+            if not context.retained:
+                self._dispose_retained_context(context)
+            self._metric("active_turns", -1)
+            elapsed = time.monotonic() - started
+            self.note_turn_duration(body.get("hostApp"), None, elapsed)
+            final = self.state.get_turn(owner_hash, thread_id, turn_id)
+            json_log(self.config.json_logs, "turn.finish", sanitizer=self.sanitizer,
+                     ownerHash=owner_hash, threadId=thread_id, turnId=turn_id,
+                     status=final.get("status") if final else None,
+                     continuedUpstreamTurn=True, durationMs=round(elapsed * 1000, 3))
+
+    def _return_tool_calls(self, client: AppServerClient, context: BrokerTurnContext, codex_thread_id: str, compat: OpenAICompatTurn | None = None) -> None:
         """Hand the model's tool calls to the caller and end the Codex turn that requested them."""
         # A code-mode script can ask for a tool before the model response has ended.
         deadline = time.monotonic() + TOOL_STOP_USAGE_WAIT_SECONDS
-        while time.monotonic() < deadline:
+        while context.response_in_progress and time.monotonic() < deadline:
             with context._lock:
                 if context.responses_completed > context.responses_completed_at_tool_stop:
                     break
                 context.response_event.clear()
             context.response_event.wait(max(0.0, deadline - time.monotonic()))
+        # Collect callbacks already dispatched by Codex, without speculating about
+        # the script. Never wait indefinitely for a call that depends on a result.
+        batch_deadline = time.monotonic() + 0.05
+        while time.monotonic() < batch_deadline:
+            time.sleep(min(0.005, max(0, batch_deadline - time.monotonic())))
         with context._lock:
+            context.handoff_sealed = True
             calls = list(context.tool_calls)
+            context.published_call_ids = {call["callId"] for call in calls}
             pending = list(context.pending_tool_requests)
             usage = context.last_response_usage
-        if usage is not None:
+        if context.allow_continuation:
+            self._record_segment_usage(context)
+        elif usage is not None:
             # thread/tokenUsage/updated would only follow the tool results.
             context._append_event(
                 "compat.response.usage",
@@ -1297,6 +1498,9 @@ class TurnScheduler:
             )
         for call in calls:
             context._append_event(TOOL_CALL_EVENT, dict(call), "item/tool/call", dict(call), ambiguous=False)
+        if compat and self.continuations.publish(context, compat):
+            return
+        self.continuations.forget(context)
         params: dict[str, Any] = {"threadId": codex_thread_id}
         if context.codex_turn_id:
             params["turnId"] = context.codex_turn_id
@@ -1544,6 +1748,8 @@ class TurnScheduler:
         active = self._active_context(owner_hash, thread_id)
         if not active or not active.client or not active.codex_thread_id:
             return None
+        if active.allow_continuation:
+            raise ConflictError("An OpenAI tool conversation cannot be steered through the native API.")
         params: dict[str, Any] = {
             "threadId": active.codex_thread_id,
             "input": scheduler_config.codex_image_items(input_items),

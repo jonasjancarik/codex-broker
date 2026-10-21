@@ -114,6 +114,7 @@ class OpenAICompatApiTests(unittest.TestCase):
         os.environ.pop("FAKE_CODEX_TOOL_CALLS_JSON", None)
         os.environ.pop("FAKE_CODEX_TOOL_PREAMBLE", None)
         os.environ.pop("FAKE_CODEX_CODE_MODE", None)
+        os.environ.pop("FAKE_CODEX_RAW_CALLS_INTERLEAVED", None)
 
     def test_models_use_openai_shape_and_aliases(self) -> None:
         models = self._request("GET", "/v1/models")
@@ -812,6 +813,15 @@ class OpenAICompatApiTests(unittest.TestCase):
                 for call in calls
             ],
         )
+
+    def test_raw_batch_waits_for_response_end_when_dispatch_starts_early(self) -> None:
+        os.environ["FAKE_CODEX_RAW_CALLS_INTERLEAVED"] = "1"
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS)
+        response = self._request("POST", "/v1/chat/completions", {
+            "model": "gpt-compatible", "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": [self.WEATHER_TOOL],
+        })
+        self.assertEqual([c["id"] for c in response["choices"][0]["message"]["tool_calls"]], ["call_a", "call_b"])
 
     def test_official_sdk_runs_a_chat_tool_round_trip(self) -> None:
         os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS[:1])
