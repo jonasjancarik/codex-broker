@@ -2,9 +2,9 @@
 read_when: implementing continuity for OpenAI-compatible caller-tool requests.
 ---
 
-# Keep caller-tool threads open between requests
+# Batch and continue OpenAI-compatible caller tools
 
-Status: PROPOSED — review required; do not implement yet.
+Status: APPROVED — implementation authorized on 21 October 2026.
 
 The [live investigation](../docs/tool-call-investigation-2026-10-21.md) found
 that models can generate several edits in one exec script, but the stateless
@@ -12,6 +12,24 @@ handoff interrupts that script at its first caller function. Retaining it would
 let the next HTTP request supply the real result and continue execution without
 rebuilding the thread or regenerating the remaining script. It does not by
 itself promise several calls in every HTTP response.
+
+## Scope and two separate issues
+
+Native broker thread creation, thread/resume and multi-turn conversations already
+work and retain their existing contract. Change only the OpenAI-compatible
+adapter and its caller-tool handoff. Reuse the existing broker thread IDs,
+logical turn records, scheduler gates, App Server contexts and pool leases.
+Do not add a second conversation service or require Pearwrite-specific fields.
+
+1. Batching: collect caller functions that have actually been dispatched before
+   returning the HTTP response. Never execute or parse a model script to predict
+   calls. Codex may serialize dispatch; dependent or later calls remain for the
+   next response. This can reduce HTTP requests independently of thread reuse.
+2. Continuation: retain the same upstream turn and suspended exec script after
+   handoff. A matching HTTP follow-up becomes a new broker response/turn record
+   on the existing broker thread, and supplies the real outputs to the waiting
+   upstream requests. It must not call thread/start, inject_items or turn/start.
+   This avoids regeneration even when only one call can be dispatched at a time.
 
 ## Matching and resuming
 
@@ -96,4 +114,4 @@ comment, not just speed. Compare retained-thread hits with forced replay and
 abandoned-chain load. Acceptance requires correct outputs, safe fallback and a
 repeatable end-to-end gain; do not prescribe a speedup before measuring it.
 
-Stop after this proposal for user review.
+Implementation is authorized; record validation and remaining limitations here.
