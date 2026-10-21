@@ -241,8 +241,8 @@ class BrokerTurnContext:
             call_id = params.get("callId")
             if not self.tool_stop and not any(call["callId"] == call_id for call in self.tool_calls):
                 # No raw function_call names this call: the model reached the tool from a
-                # code-mode script (or raw items are missing). Codex runs such calls one at
-                # a time, so return this one alone.
+                # code-mode script (or raw items are missing). The script may contain
+                # several calls, but this stateless handoff returns only the first.
                 self._collect_tool_call(
                     {"type": "function_call", "call_id": call_id, "name": params.get("tool")},
                     arguments=params.get("arguments"),

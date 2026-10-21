@@ -294,6 +294,8 @@ _ISOLATED_TOOL_CONFIG: dict[str, Any] = {
     "features.apps": False,
     "features.plugins": False,
     "features.tool_suggest": False,
+    # This disables opt-in code mode, not a catalog-selected code_mode_only
+    # model. Such models still run exec in Codex's restricted V8 runtime.
     "features.code_mode": False,
 }
 

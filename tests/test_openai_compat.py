@@ -665,6 +665,23 @@ class OpenAICompatApiTests(unittest.TestCase):
                 ],
                 "experimentalRawEvents": True,
                 "environments": [],
+                # Assert the settings sent over JSON-RPC, not just the helper's
+                # return value: a later merge must not restore native tools.
+                "config": {
+                    "features.shell_tool": False,
+                    "features.unified_exec": False,
+                    "features.view_image": False,
+                    "features.goals": False,
+                    "web_search": "disabled",
+                    "features.multi_agent": False,
+                    "features.multi_agent_v2.disable_native_tools": True,
+                    "tools.experimental_request_user_input.enabled": False,
+                    "features.image_generation": False,
+                    "features.apps": False,
+                    "features.plugins": False,
+                    "features.tool_suggest": False,
+                    "features.code_mode": False,
+                },
             }
         )
         os.environ["FAKE_CODEX_EXPECT_TURN_PARAMS"] = json.dumps({"environments": []})
@@ -769,6 +786,32 @@ class OpenAICompatApiTests(unittest.TestCase):
         self.assertEqual(finishes[-1], "tool_calls")
         self.assertEqual(chunks[-1]["usage"]["total_tokens"], 12)
         self.assertTrue(streamed.rstrip().endswith("data: [DONE]"))
+
+    def test_chat_returns_all_five_raw_calls_from_one_response(self) -> None:
+        calls = [
+            {"id": f"call_{index}", "name": "get_weather", "arguments": json.dumps({"city": city})}
+            for index, city in enumerate(["Prague", "Brno", "Ostrava", "Pilsen", "Liberec"])
+        ]
+        os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(calls)
+        completion = self._request(
+            "POST", "/v1/chat/completions",
+            {
+                "model": "gpt-compatible",
+                "messages": [{"role": "user", "content": "Weather in all five cities?"}],
+                "tools": [self.WEATHER_TOOL],
+                "parallel_tool_calls": True,
+            },
+        )
+        choice = completion["choices"][0]
+        self.assertEqual(choice["finish_reason"], "tool_calls")
+        self.assertEqual(
+            choice["message"]["tool_calls"],
+            [
+                {"id": call["id"], "type": "function",
+                 "function": {"name": call["name"], "arguments": call["arguments"]}}
+                for call in calls
+            ],
+        )
 
     def test_official_sdk_runs_a_chat_tool_round_trip(self) -> None:
         os.environ["FAKE_CODEX_TOOL_CALLS_JSON"] = json.dumps(self.TWO_CALLS[:1])
