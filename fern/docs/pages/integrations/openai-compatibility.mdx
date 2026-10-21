@@ -320,9 +320,10 @@ already-dispatched calls together. Continuation lets an existing script proceed
 when your client supplies a result, even when only one call is dispatched at a
 time. Neither requires client-specific request fields.
 
-By default, a follow-up still replays history on a fresh Codex thread. Operators
-can set `CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=true` to keep waiting executions
-for bindings without a bundle. The client continues sending standard Chat
+By default, the broker keeps waiting executions for bindings without a bundle.
+Operators can set `CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=false` to disable
+retention and replay history on a fresh Codex thread instead.
+The client continues sending standard Chat
 messages or Responses input. A matching follow-up supplies its tool results to
 the same running Codex turn. Each HTTP response has its own ID and stored broker
 turn record, on the existing broker thread. Native thread APIs are unchanged.

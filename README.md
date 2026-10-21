@@ -401,10 +401,11 @@ Logout, runtime invalidation, reset-credit consumption, and profile deletion aff
 
 Set `CODEX_BROKER_INTERNAL_KEY` or `CODEX_BROKER_INTERNAL_KEY_FILE`. Unauthenticated mode is only for local development and requires `CODEX_BROKER_ALLOW_UNAUTHENTICATED=true`.
 
-For caller-defined OpenAI tools, `CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=true`
-lets matching follow-ups continue a waiting Codex execution instead of replaying
-history. It is opt-in, applies only to bindings without a bundle, and does not
-change native thread APIs. The broker also batches already-dispatched calls;
+For caller-defined OpenAI tools, matching follow-ups continue a waiting Codex
+execution by default instead of replaying history. This applies only to bindings
+without a bundle and does not change native thread APIs. Set
+`CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=false` to disable retention and use replay.
+The broker also batches already-dispatched calls;
 Codex may still serialize them. See [tool continuation and its limits](fern/docs/pages/integrations/openai-compatibility.mdx#continue-waiting-tool-calls-without-regenerating-the-script).
 
 ## Run Locally

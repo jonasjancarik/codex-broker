@@ -18,8 +18,7 @@ class ContinuationTests(unittest.TestCase):
 
     def setUp(self):
         compat.OpenAICompatApiTests.setUp(self)
-        self.config = replace(self.config, openai_tool_continuations=True)
-        self._restart_broker()
+        self.assertTrue(self.config.openai_tool_continuations)
         os.environ["FAKE_CODEX_TOOL_CONTINUE"] = "1"
         os.environ["FAKE_CODEX_CODE_MODE"] = "1"
         os.environ["FAKE_CODEX_SERVER_REQUEST_TIMEOUT"] = "30"

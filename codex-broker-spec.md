@@ -278,10 +278,10 @@ not parse scripts, invent tool results, or promise that Codex dispatches calls
 concurrently. Returned calls are persisted as `compat.tool_call` events and
 exposed as Chat `tool_calls` or Responses `function_call` items.
 
-By default, the broker interrupts after handoff and replays the full history
-on a fresh thread at the next request, as before. Setting
-`CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=true` enables retention for unbundled,
-isolated caller-tool requests only. Each HTTP request still receives a separate
+By default, the broker retains waiting executions for unbundled, isolated
+caller-tool requests. Setting `CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=false`
+disables retention: the broker interrupts after handoff and replays the full
+history on a fresh thread at the next request. Each HTTP request still receives a separate
 broker turn/response record, but a matching follow-up reuses the existing broker
 thread, App Server lease and upstream turn. The actual tool outputs resolve the
 suspended calls; neither `thread/inject_items` nor `turn/start` is sent again.

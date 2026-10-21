@@ -34,6 +34,15 @@ class ConfigProfileTests(unittest.TestCase):
         self.assertEqual(config.max_pooled_app_servers, 0)
         self.assertEqual(config.managed_network_domains, ())
         self.assertFalse(config.managed_network_allow_local_binding)
+        self.assertTrue(config.openai_tool_continuations)
+
+    def test_tool_continuation_can_be_disabled_in_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(
+            os.environ,
+            {"CODEX_BROKER_DATA_DIR": tmp_raw, "CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS": "false"},
+            clear=True,
+        ):
+            self.assertFalse(BrokerConfig.from_env().openai_tool_continuations)
 
     def test_pool_child_limit_loads_from_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_raw, patch.dict(

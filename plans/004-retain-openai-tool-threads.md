@@ -99,7 +99,7 @@ and becomes unavailable across restarts. Preserve replay as a tested fallback.
 First prove, against pinned Codex, delayed dynamic-tool replies, continuation
 of the same exec cell, interrupt completion, and multiple callbacks from one
 script. Then add the continuation registry and HTTP collector lifecycle behind
-an operator opt-in flag. Tests must cover owner isolation, edited histories,
+an operator-controlled flag. Tests must cover owner isolation, edited histories,
 changed tools/settings, duplicate/conflicting retries, partial batches,
 stream disconnects, timeout, capacity pressure, revocation, pool eviction and
 restart. Update the spec before enabling the flag.
@@ -128,4 +128,8 @@ Live calls still arrive singly, so the measured gain is from continuation.
 Controlled cold-cache experiments, separate phase timings and sustained load
 measurements were not performed; the report preserves failures and outliers.
 
-The feature remains opt-in. No production deployment or push was performed.
+The initial implementation was opt-in. Following user approval, continuation
+now defaults on for eligible unbundled requests; operators can set
+`CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=false` to use replay. The capacity limits,
+timeouts and fallback rules remain unchanged. No production deployment or push
+was performed.

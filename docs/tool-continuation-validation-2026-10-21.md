@@ -12,7 +12,9 @@ this task; the original broker was not redeployed.
 
 Batching and continuation are independent. Dispatched callbacks are collected
 before handoff, while `CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=true` enables
-retention of the suspended upstream turn. Continuation is off by default.
+retention of the suspended upstream turn. At the time of these benchmarks,
+continuation was opt-in. It is now enabled by default for eligible unbundled
+requests; set `CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS=false` to opt out.
 The live models still dispatched one caller function per response in every
 benchmark. The measured improvement came from continuation, not live batching.
 Fake-runtime regressions verify simultaneous callbacks and five raw calls,

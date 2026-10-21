@@ -57,10 +57,17 @@ def png_data_url(*, padding_bytes: int = 0) -> str:
 
 
 class OpenAICompatApiTests(unittest.TestCase):
+    # Keep legacy replay coverage explicit; ContinuationTests uses this setup
+    # without this switch and exercises the production default.
+    stateless_tool_tests = True
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
+        config = config_for(Path(self._tmp.name))
+        if getattr(self, "stateless_tool_tests", False):
+            config = replace(config, openai_tool_continuations=False)
         config = replace(
-            config_for(Path(self._tmp.name)),
+            config,
             debug_raw_events=False,
             openai_compat_bindings={
                 compatibility_key_digest(COMPAT_KEY): {
