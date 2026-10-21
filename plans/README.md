@@ -13,6 +13,7 @@ done.
 | 002 | Protect broker credentials and deliver secret-safe runtime events | P0 | L | — | DONE |
 | 003 | Add a read-only operator dashboard | P2 | M | — | DONE |
 | [004](004-retain-openai-tool-threads.md) | Batch and continue OpenAI-compatible caller tools | P1 | L | — | DONE — default-on; locally validated |
+| [005](005-claude-code-backend.md) | Add a Claude Code backend | TBD | Assess after feasibility spike | 001, 002, 004 | PROPOSED — future reference; feasibility first |
 
 Status values: PROPOSED (review required) | TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale — finding fixed independently or approach
