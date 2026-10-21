@@ -4,7 +4,7 @@ read_when: implementing continuity for OpenAI-compatible caller-tool requests.
 
 # Batch and continue OpenAI-compatible caller tools
 
-Status: APPROVED — implementation authorized on 21 October 2026.
+Status: DONE — implemented in `4fe8de8`; local validation completed on 21 October 2026.
 
 The [live investigation](../docs/tool-call-investigation-2026-10-21.md) found
 that models can generate several edits in one exec script, but the stateless
@@ -36,9 +36,9 @@ Do not add a second conversation service or require Pearwrite-specific fields.
 Start with unbundled, isolated caller-function bindings. Keep an in-memory
 continuation record containing the App Server lease, upstream thread/turn IDs,
 pending JSON-RPC request IDs, public call IDs, completed response identity,
-canonical transcript digest, and effective configuration fingerprint. Retain
-raw reasoning and exec state only in the upstream thread; never expose them in
-OpenAI history or use sanitized diagnostic events as executable state.
+canonical transcript digest, and effective configuration fingerprint. Keep execution continuity in the upstream thread; do not create a separate
+reasoning/exec checkpoint for matching or use sanitized diagnostic events as
+executable state.
 
 Scope lookup to the authenticated binding, owner, principal, profile instance
 and process generation. A public call ID or `previous_response_id` is a lookup
@@ -72,9 +72,9 @@ actual dispatch establishes independence, not by parsing or rewriting JS.
 
 ## Lifetime and capacity
 
-Proposed starting limits: five minutes waiting idle, thirty minutes absolute
+Implemented defaults: five minutes waiting idle, thirty minutes absolute
 chain age, one retained thread per owner and two globally, further constrained
-by App Server capacity. Make limits configurable. Account waiting threads
+by App Server capacity with one finite pool slot reserved for ordinary work. Make limits configurable. Account waiting threads
 separately from active inference, but pin their pool lease and reserve capacity
 so ordinary idle eviction cannot destroy them. Recheck admission on resume.
 At capacity, use the existing stateless handoff for new work; do not evict an
@@ -114,4 +114,18 @@ comment, not just speed. Compare retained-thread hits with forced replay and
 abandoned-chain load. Acceptance requires correct outputs, safe fallback and a
 repeatable end-to-end gain; do not prescribe a speedup before measuring it.
 
-Implementation is authorized; record validation and remaining limitations here.
+## Completed implementation and validation
+
+`src/codex_broker/scheduler_continuations.py` owns process-local matching and
+expiry; the compatibility adapter calls the existing scheduler to create each
+logical response on the retained broker thread. Existing contexts and leases
+carry the suspended upstream turn. Batching also works when retention is off.
+
+All 349 unit tests pass, along with package builds, Fern validation and unchanged
+OpenAPI generation. Five complete canary trials per model
+passed every document check; see [measurements and limitations](../docs/tool-continuation-validation-2026-10-21.md).
+Live calls still arrive singly, so the measured gain is from continuation.
+Controlled cold-cache experiments, separate phase timings and sustained load
+measurements were not performed; the report preserves failures and outliers.
+
+The feature remains opt-in. No production deployment or push was performed.

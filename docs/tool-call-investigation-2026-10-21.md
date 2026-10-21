@@ -4,6 +4,10 @@ read_when: investigating OpenAI-compatible function-call latency, code mode, or 
 
 # Caller-tool investigation, 21 October 2026
 
+This is the initial investigation, before implementation. The subsequent
+[continuation implementation and measurements](tool-continuation-validation-2026-10-21.md)
+are recorded separately.
+
 The broker returns only the first nested call even when the model has already
 written a script containing many independent calls. No performance change was
 shipped: configuration experiments did not produce a multi-call raw response.
