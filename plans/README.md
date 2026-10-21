@@ -12,8 +12,9 @@ done.
 | 001 | Expose a verified OpenAI-compatible API façade | P1 | L | — | DONE |
 | 002 | Protect broker credentials and deliver secret-safe runtime events | P0 | L | — | DONE |
 | 003 | Add a read-only operator dashboard | P2 | M | — | DONE |
+| [004](004-retain-openai-tool-threads.md) | Keep caller-tool threads open between requests | P1 | L | — | PROPOSED — awaiting review |
 
-Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
+Status values: PROPOSED (review required) | TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale — finding fixed independently or approach
 abandoned)
 

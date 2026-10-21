@@ -294,9 +294,17 @@ both `thread/start` and `turn/start` (turn-level workspace roots would otherwise
 re-create the default environment) and per-thread config that disables the
 shell, unified exec, image viewing, goals, web search, sub-agents (including
 catalog-selected multi-agent v2 tools), user-input requests, image generation,
-apps, plugins, and tool suggestions, so the model can only call the caller's
-functions; bindings with a reviewed bundle keep that bundle's tools and sandbox
-policy.
+apps, plugins, and tool suggestions. Catalog-selected code-mode-only models
+can still use Codex's restricted V8 `exec` runtime despite
+`features.code_mode: false`. This runtime does not expose Node, filesystem,
+environment-variable, or network APIs; its tool bridge can also expose clock
+and MCP-resource helpers. Empty resource lists were verified on the unbundled
+Pearwrite binding, not guaranteed for every deployment. The host executable
+itself is trusted and is not placed inside the command tool's Bubblewrap
+sandbox. Bindings with a reviewed bundle keep that bundle's tools and sandbox
+policy. See [the live investigation](docs/tool-call-investigation-2026-10-21.md)
+for measured limits and [the proposed thread-reuse plan](plans/004-retain-openai-tool-threads.md);
+thread reuse is not implemented.
 
 ## Events
 
