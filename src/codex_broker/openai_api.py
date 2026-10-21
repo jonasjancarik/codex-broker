@@ -31,6 +31,7 @@ from .openai_protocol import (
     response_usage,
     server_error,
     tool_calls,
+    turn_failure_error,
     turn_id_from_response,
     validate_tool_history,
 )
@@ -633,7 +634,7 @@ def _stream_chat(
                         return
                 _write_literal_data(handler, "[DONE]")
             else:
-                error = server_error("The completion failed.")
+                error = turn_failure_error(turn)
                 _write_data(handler, error.payload())
             _finish_sse(handler)
             return
@@ -865,8 +866,10 @@ def openapi_paths(ref: Any, json_response: Any, request_body: Any) -> dict[str, 
                     "400": error_response("Invalid or unsupported request"),
                     "401": error_response("Invalid compatibility key"),
                     "404": error_response("Model not found"),
+                    "429": error_response("Upstream rate limit exceeded"),
                     "500": error_response("Completion failed"),
                     "502": error_response("Codex App Server unavailable"),
+                    "503": error_response("Upstream model at capacity or overloaded"),
                 },
             }
         },

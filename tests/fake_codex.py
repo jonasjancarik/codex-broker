@@ -255,6 +255,11 @@ def complete_turn(thread_id: str, turn_id: str, input_items: list[Any] | None = 
             }
         )
     if os.environ.get("FAKE_CODEX_TURN_COMPLETED_ERROR"):
+        error_text = os.environ["FAKE_CODEX_TURN_COMPLETED_ERROR"]
+        try:
+            error = json.loads(error_text)
+        except ValueError:
+            error = {"message": error_text}
         send(
             {
                 "method": "turn/completed",
@@ -263,7 +268,7 @@ def complete_turn(thread_id: str, turn_id: str, input_items: list[Any] | None = 
                     "turn": {
                         "id": turn_id,
                         "status": "failed",
-                        "error": {"message": os.environ["FAKE_CODEX_TURN_COMPLETED_ERROR"]},
+                        "error": error,
                     },
                 },
             }

@@ -7,6 +7,8 @@ from http import HTTPStatus
 import re
 from typing import Any
 
+from .security import REDACTED, SecretSanitizer
+
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
 _TERMINAL_STATUSES = {"completed", "failed", "timed_out", "interrupted", "cancelled"}
@@ -337,9 +339,16 @@ def response_object(turn: dict[str, Any], events: list[dict[str, Any]]) -> dict[
     completed = _unix_timestamp(str(turn["completed_at"])) if turn.get("completed_at") else None
     error: dict[str, Any] | None = None
     if status == "failed":
+        failure = turn_failure_error(turn, subject="response")
+        # Responses has a narrower error-code vocabulary than chat errors.
+        code = str(turn.get("error_code") or "server_error")
+        if failure.status == HTTPStatus.SERVICE_UNAVAILABLE:
+            code = "server_error"
+        elif failure.status == HTTPStatus.TOO_MANY_REQUESTS:
+            code = "rate_limit_exceeded"
         error = {
-            "code": str(turn.get("error_code") or "server_error"),
-            "message": "The response failed.",
+            "code": code,
+            "message": str(failure),
         }
     reasoning = compat.get("reasoning") if isinstance(compat.get("reasoning"), dict) else {}
     text_config = compat.get("text") if isinstance(compat.get("text"), dict) else {"format": {"type": "text"}}
@@ -390,7 +399,7 @@ def response_object(turn: dict[str, Any], events: list[dict[str, Any]]) -> dict[
 def chat_completion_object(turn: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     compat = compatibility_metadata(turn, "chat.completions")
     if str(turn["status"]) != "completed":
-        raise server_error("The completion failed.")
+        raise turn_failure_error(turn)
     text = output_text(events)
     calls = tool_calls(events)
     # Codex reports no usage for a tool call when raw response items are unavailable.
@@ -637,6 +646,36 @@ def server_error(message: str) -> OpenAIProtocolError:
         error_type="server_error",
         code="server_error",
     )
+
+
+def turn_failure_error(turn: dict[str, Any], *, subject: str = "completion") -> OpenAIProtocolError:
+    """Translate a stored public turn message, never administrator diagnostics."""
+    reason = turn.get("public_message") or turn.get("error")
+    reason = reason.strip() if isinstance(reason, str) else ""
+    # Always redact credentials, even for deployments storing raw debug events.
+    # Older stored errors can include diagnostics after a blank line.
+    reason = SecretSanitizer().redact_text(reason.split("\n\n", 1)[0])
+    reason = re.sub(
+        r"(?i)\b(?:account|organization|org|user|thread|request)[_-]?id\b[\"']?\s*[:=]\s*[\"']?[^\s,;\"']+",
+        REDACTED,
+        reason,
+    )
+    reason = re.sub(r"\b(?:acct|org|user|thread|turn|req)[_-][A-Za-z0-9_-]+\b", REDACTED, reason)
+    reason = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", REDACTED, reason)
+    reason = reason[:4000]
+    message = f"The {subject} failed: {reason}" if reason else f"The {subject} failed."
+    normalized = " ".join(reason.lower().split())
+    if any(marker in normalized for marker in ("quota", "billing", "usage limit", "credit balance")):
+        return server_error(message)
+    if any(marker in normalized for marker in ("at capacity", "overloaded", "server_busy")):
+        return OpenAIProtocolError(
+            message, status=HTTPStatus.SERVICE_UNAVAILABLE, error_type="server_error", code="server_busy"
+        )
+    if any(marker in normalized for marker in ("rate limit", "rate_limit_exceeded", "too many requests")):
+        return OpenAIProtocolError(
+            message, status=HTTPStatus.TOO_MANY_REQUESTS, error_type="rate_limit_error", code="rate_limit_exceeded"
+        )
+    return server_error(message)
 
 
 def authentication_error() -> OpenAIProtocolError:

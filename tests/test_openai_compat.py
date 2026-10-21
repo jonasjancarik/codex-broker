@@ -21,13 +21,16 @@ from codex_broker.openai_auth import compatibility_key_digest
 from codex_broker.openai_protocol import (
     OpenAIProtocolError,
     chat_id_from_turn,
+    chat_completion_object,
     parse_chat_request,
     parse_responses_request,
     response_id_from_turn,
     response_object,
     turn_id_from_response,
+    turn_failure_error,
 )
 from codex_broker.scheduler_config import openai_tool_thread_params
+from codex_broker.runtime_errors import classify_app_server_error
 from codex_broker.services import BrokerHTTPServer, BrokerServices
 from test_broker import config_for, wait_turn
 
@@ -419,7 +422,71 @@ class OpenAICompatApiTests(unittest.TestCase):
         )
         self.assertEqual(failed["status"], "failed")
         self.assertEqual(failed["error"]["code"], "codex_runtime_error")
-        self.assertNotIn("simulated internal failure", failed["error"]["message"])
+        self.assertEqual(failed["error"]["message"], "The response failed: simulated internal failure")
+
+    def test_failed_chat_exposes_reason_in_http_and_stream_errors(self) -> None:
+        cases = (
+            ("Selected model is at capacity. Please try a different model.", 503, "server_busy", "server_error"),
+            ("The server is overloaded.", 503, "server_busy", "server_error"),
+            ("Rate limit exceeded. Too many requests.", 429, "rate_limit_exceeded", "rate_limit_error"),
+            ("Unknown model.", 500, "server_error", "server_error"),
+            (None, 500, "server_error", "server_error"),
+        )
+        body = {"model": "gpt-compatible", "messages": [{"role": "user", "content": "Fail"}]}
+        for reason, status, code, error_type in cases:
+            with self.subTest(reason=reason):
+                os.environ["FAKE_CODEX_TURN_COMPLETED_ERROR"] = json.dumps({"message": reason})
+                # Each fake App Server inherits its error configuration at startup.
+                self._restart_broker()
+                expected = f"The completion failed: {reason}" if reason else "The completion failed."
+                with self.assertRaises(urllib.error.HTTPError) as failed:
+                    self._request("POST", "/v1/chat/completions", body)
+                error = json.loads(failed.exception.read())["error"]
+                self.assertEqual(failed.exception.code, status)
+                self.assertEqual(error["message"], expected)
+                self.assertEqual(error["code"], code)
+                self.assertEqual(error["type"], error_type)
+                raw = self._request_text("POST", "/v1/chat/completions", {**body, "stream": True})
+                events = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: ")]
+                self.assertEqual(events[-1]["error"], error)
+                self.assertNotIn("[DONE]", raw)
+
+    def test_failed_responses_expose_reason_without_diagnostics(self) -> None:
+        reason = "Selected model is at capacity. Please try a different model."
+        os.environ["FAKE_CODEX_TURN_COMPLETED_ERROR"] = json.dumps({
+            "message": reason,
+            "additionalDetails": "account_id=private-account sk-private-token /private/internal/path",
+            "accountId": "private-account",
+        })
+        body = {"model": "gpt-compatible", "input": "Fail"}
+        failed = self._request("POST", "/v1/responses", body)
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["error"], {"code": "server_error", "message": f"The response failed: {reason}"})
+        retrieved = self._request("GET", f"/v1/responses/{failed['id']}")
+        self.assertEqual(retrieved["error"], failed["error"])
+        raw = self._request_text("POST", "/v1/responses", {**body, "stream": True})
+        self.assertIn("event: response.failed", raw)
+        events = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: ")]
+        self.assertEqual(events[-1]["response"]["error"], failed["error"])
+        self.assertNotIn("private-account", raw)
+        self.assertNotIn("sk-private-token", raw)
+        self.assertNotIn("/private/internal/path", raw)
+
+    def test_failed_chat_redacts_secrets_even_in_raw_mode(self) -> None:
+        self.config = replace(self.config, event_sanitization_mode="raw")
+        os.environ["FAKE_CODEX_TURN_COMPLETED_ERROR"] = json.dumps({
+            "message": "Selected model is at capacity. private-exact-secret Bearer private-token "
+            'account_id="private-account"',
+            "additionalDetails": "private diagnostics",
+        })
+        self._restart_broker()
+        self.services.sanitizer.register("test-error", "private-exact-secret")
+        raw = self._request_text("POST", "/v1/chat/completions", {
+            "model": "gpt-compatible", "messages": [{"role": "user", "content": "Fail"}], "stream": True,
+        })
+        self.assertIn("model is at capacity", raw)
+        for private in ("private-exact-secret", "private-token", "private-account", "private diagnostics"):
+            self.assertNotIn(private, raw)
 
     def test_responses_stream_emits_typed_events_and_closes(self) -> None:
         raw = self._request_text(
@@ -1214,6 +1281,63 @@ class OpenAICompatApiTests(unittest.TestCase):
 
 
 class OpenAIProtocolTests(unittest.TestCase):
+    def test_failure_messages_exclude_credentials_and_account_identifiers(self) -> None:
+        turn = {
+            "error": "Selected model is at capacity. Bearer secret-token sk-secret-key "
+            'account_id="private-account" org-privateorg user@example.com',
+            "admin_message": "private administrator diagnostics",
+        }
+        error = turn_failure_error(turn)
+        self.assertIn("model is at capacity", str(error))
+        for private in ("secret-token", "sk-secret-key", "private-account", "org-privateorg", "user@example.com",
+                        "private administrator diagnostics"):
+            self.assertNotIn(private, str(error))
+
+    def test_failure_without_message_keeps_generic_fallback(self) -> None:
+        for reason in (None, "", "  ", {"message": "not stored text"}):
+            with self.subTest(reason=reason):
+                turn = {
+                    "status": "failed",
+                    "error": reason,
+                    "admin_message": "private diagnostics",
+                    "resolved_options": {"openaiCompat": {"protocol": "chat.completions"}},
+                }
+                with self.assertRaises(OpenAIProtocolError) as failed:
+                    chat_completion_object(turn, [])
+                self.assertEqual(str(failed.exception), "The completion failed.")
+                self.assertEqual(failed.exception.status, 500)
+
+    def test_failure_does_not_classify_permanent_or_unrecognized_errors_as_temporary(self) -> None:
+        for reason in ("Rate limit exceeded: insufficient_quota", "Billing issue", "Unsupported model", "Timeout"):
+            with self.subTest(reason=reason):
+                error = turn_failure_error({"error": reason})
+                self.assertEqual(error.status, 500)
+                self.assertEqual(error.code, "server_error")
+
+    def test_upstream_diagnostics_are_separate_from_public_message(self) -> None:
+        for message in ("Model is at capacity.", None):
+            with self.subTest(message=message):
+                info = classify_app_server_error({"message": message, "additionalDetails": "private diagnostics"})
+                self.assertIsNotNone(info)
+                self.assertEqual(info.public_message, message or "")
+                self.assertIn("private diagnostics", info.admin_message)
+
+    def test_failed_responses_use_supported_temporary_error_codes(self) -> None:
+        for reason, code, message in (
+            ("Model is at capacity.", "server_error", "The response failed: Model is at capacity."),
+            ("Rate limit exceeded.", "rate_limit_exceeded", "The response failed: Rate limit exceeded."),
+            (None, "server_error", "The response failed."),
+        ):
+            with self.subTest(reason=reason):
+                turn = {
+                    "turn_id": "turn_Abcdefgh12345678",
+                    "status": "failed",
+                    "error": reason,
+                    "created_at": "2026-10-21T10:00:00Z",
+                    "resolved_options": {"openaiCompat": {"protocol": "responses"}},
+                }
+                self.assertEqual(response_object(turn, [])["error"], {"code": code, "message": message})
+
     def test_ids_are_reversible_and_strict(self) -> None:
         turn_id = "turn_Abcdefgh12345678"
         self.assertEqual(turn_id_from_response(response_id_from_turn(turn_id)), turn_id)

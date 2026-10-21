@@ -130,4 +130,16 @@ def is_sandbox_unavailable(message: str) -> bool:
 
 def classify_app_server_error(error: Any) -> RuntimeErrorInfo | None:
     message = render_app_server_error(error)
-    return classify_runtime_error(message) if message else None
+    if not message:
+        return None
+    info = classify_runtime_error(message)
+    if info.code == "codex_runtime_error" and isinstance(error, dict):
+        # Diagnostics may contain account data or other internal state. Keep
+        # them available to administrators, but publish only the message field.
+        public_message = error.get("message")
+        return RuntimeErrorInfo(
+            code=info.code,
+            public_message=public_message.strip() if isinstance(public_message, str) else "",
+            admin_message=info.admin_message,
+        )
+    return info

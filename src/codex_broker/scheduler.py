@@ -377,9 +377,9 @@ class BrokerTurnContext:
             self.public_message = None
             self.admin_message = None
             return
-        self.error_text = error_info.public_message
+        self.error_text = self.sanitizer.redact_text(error_info.public_message)
         self.error_code = error_info.code
-        self.public_message = error_info.public_message
+        self.public_message = self.error_text
         self.admin_message = error_info.admin_message
 
 
