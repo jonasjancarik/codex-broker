@@ -284,6 +284,12 @@ For example, the sample chat bundle declares `host.evidence.search`. The broker 
 
 ## API Overview
 
+Concurrent readiness requests use independent temporary files when checking
+auth-directory writability. A client that disconnects while a response is being
+written closes that connection without a second internal-error response.
+The local CLI check behind `/auth/status` can run for five seconds; probe
+clients should allow response overhead while retaining an overall deadline.
+
 Core endpoints:
 
 - `GET /healthz`

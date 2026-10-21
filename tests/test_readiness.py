@@ -112,5 +112,60 @@ class ReadinessTests(unittest.TestCase):
                 services.state.close()
 
 
+class ConcurrentReadinessTests(unittest.TestCase):
+    def test_concurrent_readiness_requests_do_not_remove_each_others_probe(self) -> None:
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        with tempfile.TemporaryDirectory() as raw:
+            services = BrokerServices.build(config_for(Path(raw)))
+            barrier = threading.Barrier(2)
+            original_write = Path.write_text
+            def simultaneous_legacy_write(path, *args, **kwargs):
+                result = original_write(path, *args, **kwargs)
+                if path.name == ".write-probe":
+                    barrier.wait(timeout=3)
+                return result
+            def readiness(_):
+                handler = BrokerHandler.__new__(BrokerHandler)
+                handler.broker = services
+                captured = {}
+                handler._json = lambda payload, status: captured.update(payload=payload, status=status)
+                handler._readyz()
+                return captured["payload"]
+            try:
+                with patch.object(Path, "write_text", simultaneous_legacy_write):
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        reports = list(executor.map(readiness, range(2)))
+                self.assertEqual([report["status"] for report in reports], ["ready", "ready"])
+                self.assertEqual(list(services.config.auth_root.glob(".write-probe*")), [])
+            finally:
+                services.pool.close_all()
+                services.state.close()
+
+    def test_client_disconnect_is_not_retried_as_internal_server_error(self) -> None:
+        from types import SimpleNamespace
+        for failure in (BrokenPipeError, ConnectionResetError):
+            with self.subTest(failure=failure):
+                handler = BrokerHandler.__new__(BrokerHandler)
+                handler.path = "/healthz"
+                handler.headers = {}
+                handler.close_connection = False
+                metrics = []
+                handler.broker = SimpleNamespace(
+                    config=SimpleNamespace(json_logs=False), sanitizer=None,
+                    scheduler=SimpleNamespace(note_http_request=lambda *args: metrics.append(args)),
+                )
+                responses = []
+                def disconnect(payload, status=HTTPStatus.OK):
+                    responses.append(status)
+                    handler._metric_status = status
+                    raise failure("client disconnected")
+                handler._json = disconnect
+                handler._dispatch("GET")
+                self.assertEqual(responses, [HTTPStatus.OK])
+                self.assertTrue(handler.close_connection)
+                self.assertEqual(metrics[0][1], HTTPStatus.OK)
+
+
 if __name__ == "__main__":
     unittest.main()
