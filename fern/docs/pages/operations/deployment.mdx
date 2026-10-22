@@ -548,9 +548,18 @@ complete.
 
 One App Server child can consume roughly 100–200 MiB depending on Codex version
 and configuration. Measure the container cgroup under representative traffic.
-For a small host, start with two active turns, two pooled children, and a
-60–120 second idle TTL; add container memory and PID limits with enough room
-for both children to start and finish cleanly.
+The shipped Compose configuration allows eight active turns and eight pooled
+App Server children, with a 120-second idle TTL, to support parallel agents
+and evaluations. Children start on demand, so these caps do not reserve eight
+running processes when the broker is idle. More simultaneous work can increase
+CPU and memory use and contention for upstream account rate limits. These caps
+control concurrency, not CPU, memory, or process-count budgets.
+
+Measure container memory and process counts under representative traffic. On a
+small host, lower `CODEX_BROKER_MAX_ACTIVE_TURNS` and
+`CODEX_BROKER_MAX_POOLED_APP_SERVERS` to `2` in `compose.override.yaml`. Add
+container memory and PID limits with enough room for App Servers and their
+tools to start and finish cleanly.
 
 ## Restart and shutdown
 

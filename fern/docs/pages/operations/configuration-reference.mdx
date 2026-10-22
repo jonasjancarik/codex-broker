@@ -128,9 +128,9 @@ the profile home. The child process environment is otherwise scrubbed.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `CODEX_BROKER_MAX_ACTIVE_TURNS` | `0` | Global active-turn cap. `0` uses the broker's bounded 32-worker default; same-thread serialization still applies. |
+| `CODEX_BROKER_MAX_ACTIVE_TURNS` | `0` | Global active-turn cap. `0` uses the broker's bounded 32-worker default; same-thread serialization still applies. The shipped Compose configuration sets `8`. |
 | `CODEX_BROKER_MAX_QUEUED_TURNS` | `1000` | Maximum turns waiting behind active turns. Further queue requests fail closed. |
-| `CODEX_BROKER_MAX_POOLED_APP_SERVERS` | `0` | Maximum live or starting App Server children. `0` preserves the unlimited compatibility behavior. At capacity, the least-recently-used idle child is closed; if every child is active, creation fails with explicit backpressure. Small hosts should set this explicitly. |
+| `CODEX_BROKER_MAX_POOLED_APP_SERVERS` | `0` | Maximum live or starting App Server children. `0` preserves the unlimited compatibility behavior. At capacity, the least-recently-used idle child is closed; if every child is active, creation fails with explicit backpressure. The shipped Compose configuration sets `8`; small hosts can lower it. |
 | `CODEX_BROKER_OPENAI_TOOL_CONTINUATIONS` | `true` | Retain waiting caller-tool execution for unbundled OpenAI-compatible bindings. Set `false` to use stateless replay. Native thread APIs are unchanged. |
 | `CODEX_BROKER_OPENAI_TOOL_IDLE_SECONDS` | `300` | Maximum time a retained execution waits for tool results; also the retry-receipt lifetime. Must be positive. |
 | `CODEX_BROKER_OPENAI_TOOL_MAX_AGE_SECONDS` | `1800` | Maximum total age of a retained execution, including active segments. Must be positive. |
