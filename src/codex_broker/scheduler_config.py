@@ -278,7 +278,7 @@ def turn_params(
     return params
 
 
-# Built-in capabilities that act beyond the caller's functions. Codex 0.163.0 keys.
+# Built-in capabilities that act beyond the caller's functions. Codex 0.164.0 keys.
 _ISOLATED_TOOL_CONFIG: dict[str, Any] = {
     # Environment-free threads and turns already drop these; keep them off regardless.
     "features.shell_tool": False,
@@ -329,7 +329,7 @@ def codex_image_items(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             result.append(item)
             continue
         prepared = dict(item)
-        # Codex 0.163.0 can replace low-detail images with an omission notice.
+        # Codex 0.164.0 can replace low-detail images with an omission notice.
         if prepared.get("type") in ("image", "localImage", "input_image") and prepared.get("detail") == "low":
             prepared["detail"] = "high"
         if prepared.get("type") == "message" and isinstance(prepared.get("content"), list):

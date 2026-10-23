@@ -38,7 +38,7 @@ The app-server protocol exposes two collaboration mode kinds in `ModeKind`: `def
 
 The broker treats app-server mode-like behavior as observable event state unless there is already a stable product-facing API. Model discovery directly maps `model/list` and preserves every model field for forward compatibility.
 
-Codex exposes `experimentalRawEvents` on `ThreadStartParams`. Codex 0.163.0
+Codex exposes `experimentalRawEvents` on `ThreadStartParams`. Codex 0.164.0
 sends `rawResponseItem/completed` and `rawResponse/completed` only to threads
 that opt in. The broker opts in only for compatible requests that declare
 function tools: raw items list every function call of a model response, and
@@ -52,7 +52,7 @@ several calls. The broker holds the requests, returns all collected calls,
 interrupts the turn, and then answers the held requests as handed off.
 
 Models whose catalog entry selects code mode (all GPT-5.6 and GPT-6 models in
-the 0.163.0 catalog) see only `exec` and `wait`; they call dynamic tools from a
+the 0.164.0 catalog) see only `exec` and `wait`; they call dynamic tools from a
 script, so no raw `function_call` exists. An `item/tool/call` whose call id was
 not seen as a raw function call therefore stops the turn on its own. Codex sends
 `thread/tokenUsage/updated` only after tool results, so the broker records the

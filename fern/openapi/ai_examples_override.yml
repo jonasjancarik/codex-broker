@@ -14,7 +14,7 @@ paths:
               sandboxPreflight:
                 backend: docker
                 checkedAt: '2024-01-15T09:30:00Z'
-                codexVersion: 0.163.0
+                codexVersion: 0.164.0
                 durationSeconds: 1.1
                 permissionProfile: default
                 platform: linux/amd64
@@ -581,7 +581,7 @@ paths:
               error: string
               errorCode: string
               execution:
-                brokerVersion: 0.13.0
+                brokerVersion: 0.13.1
                 bundleDigest: sha256:b4e2d1f3a6c7890123456789abcdef0123456789abcdef0123456789abcdef02
                 requestFingerprint: fp_01HXYZ9ABCDEF1234567890abcd
                 resolvedOptions: {}
@@ -630,7 +630,7 @@ paths:
               error: string
               errorCode: string
               execution:
-                brokerVersion: 0.13.0
+                brokerVersion: 0.13.1
                 bundleDigest: sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
                 requestFingerprint: fp_3a7c2e1d4b8f9a0e5c6d2b1f
                 resolvedOptions: {}
@@ -679,7 +679,7 @@ paths:
               error: string
               errorCode: string
               execution:
-                brokerVersion: 0.13.0
+                brokerVersion: 0.13.1
                 bundleDigest: sha256-b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5
                 requestFingerprint: fp-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d
                 resolvedOptions: {}
@@ -731,7 +731,7 @@ paths:
               error: string
               errorCode: string
               execution:
-                brokerVersion: 0.13.0
+                brokerVersion: 0.13.1
                 bundleDigest: sha256-b4e2f1a3c5d6789012345678abcdef01234567890abcdef01234567890abcdef1
                 requestFingerprint: fp-1a2b3c4d5e6f7890abcdef1234567890
                 resolvedOptions: {}
