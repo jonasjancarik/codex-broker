@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,7 +33,7 @@ class EventStreamTests(unittest.TestCase):
                 handler.end_headers = mock.Mock()
                 handler._write_raw = mock.Mock(return_value=False)
 
-                with mock.patch("codex_broker.http_api.time.monotonic", side_effect=[0.0, 11.0]):
+                with mock.patch("codex_broker.http_api.time.monotonic", side_effect=itertools.count(step=11)):
                     handler._sse_events("owner-a", thread["threadId"], {})
 
                 self.assertEqual(handler.protocol_version, "HTTP/1.1")
